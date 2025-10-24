@@ -90,3 +90,47 @@ Place your OHLCV data in the `Tickers/` directory as FlatBuffer `.bin` + `.idx` 
 >    -t 8 \
 >    -r 4min
 > ```
+
+5. **Configure Strategy**
+   Edit `Portfolios/Debug_Portfolio.json` (see Configuration section below).
+6. **Run the Backtester**
+   ```bash
+   cargo run --release -- --config Portfolios/Debug_Portfolio.json
+   ```
+
+## ⚙️ Configuration (JSON Settings)
+
+All behavior is controlled via a single JSON config file passed with `--config`.
+
+**Top-Level Object**
+```json
+{
+  "common": { ... },
+  "portfolio": { ... }
+}
+```
+`common` **(Object): Global Settings**
+* `mode` (String): Operational mode. Valid values: `"Debug"`, `"Optimize"`, `"Visual"`.
+* `initial_capital` (float): Starting capital for the entire portfolio, in base currency (e.g., USD). No need to sum strategy weights to 1.0 — unused capital remains in cash.
+`portfolio` **(Object): Strategy Definitions**
+
+A map where keys are unique strategy IDs (e.g., `"Strategy_1"`), and values are strategy configurations.
+
+**Strategy Configuration** (`portfolio.<strategy_id>`)
+```json
+{
+  "threads": 8,
+  "strategy_name": "MovingAverageCrossStrategy",
+  "strategy_path": "target/release/libstrategy_lib.dylib",
+  "strategy_weight": 1.0,
+  "slippage": [0.005],
+  "data": { ... },
+  "symbol_base_name": "Si",
+  "symbols": ["Si-12.23", "Si-3.24"],
+  "strategy_params": { ... },
+  "pos_sizer_params": { ... },
+  "margin_params": { ... },
+  "portfolio_settings_for_strategy": { ... },
+  "optimizer_type": "Grid_Search"
+}
+```
