@@ -148,3 +148,19 @@ Slippage applied to market orders as a percentage of price.
   * `data_path` (string): Path to directory containing `.bin`/`.idx` files (e.g., `"Tickers/FBS/Si"`).
   * `timeframe` (string): Target resampled timeframe. Valid values: `"1min"`, `"2min"`, `"3min"`, `"4min"`, `"5min"`, `"1d"`.
 * `symbol_base_name` (string): Base symbol name (e.g., `"Si"`) used to look up contract metadata in `instruments_info.json`.
+* `symbols` (array of strings): List of contract symbols to trade (e.g., `["Si-12.23", "Si-3.24"]`). Must exist in `instruments_info.json`.
+* `strategy_params` (object): Strategy hyperparameters.
+Each key is a parameter name; value is an array of discrete values or a range object.
+  * Discrete: `"short_window": [50, 100, 150]`
+  * Range: `"long_window": {"start": 500, "end": 1000, "step": 100}` → `generates [500, 600, 700, 800, 900, 1000]`
+* `pos_sizer_params` (object): Position sizing configuration.
+  * `pos_sizer_name` (string): Sizing method. Valid: `"mpr"`, `"poe"`, `"fixed_ratio"`, `"1"`.
+  * `pos_sizer_params` (object, optional): Additional parameters (currently unused for `mpr`).
+  * `pos_sizer_value` (array of float OR range object):
+Value(s) for the position sizer parameter.
+    * Single: `[1.5]`
+    * Range: `{"start": 1.0, "end": 3.0, "step": 0.5}` → generates `[1.0, 1.5, 2.0, 2.5, 3.0]`
+* `margin_params` (object): Risk control.
+  * `min_margin` (float): Minimum margin requirement as fraction of strategy capital (e.g., 0.5 = 50%).
+  * `margin_call_type` (string): Action on margin breach. Currently only `"close_deal"` supported.
+* `portfolio_settings_for_strategy` (object): Performance metrics mode.
