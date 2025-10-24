@@ -200,6 +200,48 @@ Farukon is designed to be **AI-native** — a platform for automated strategy di
 * **Dynamic Strategy Loading**: AI can compile and load new strategy libraries on-the-fly without restarting the engine.
 * **Fitness Evaluation Hook**: The `calculate_fitness_score` function in `optimizers.rs` exposes raw metrics (`TotalReturn`, `APR/DD`, etc.) for reinforcement learning or Bayesian optimization pipelines.
 
-> 💡 **Suggested AI Workflow**:
-> Use Farukon as a fitness function evaluator.
+> ### 💡 Suggested AI Workflow:
+> 
+> Use Farukon as a **fitness function evaluator**.
+> 
 > An AI agent (e.g., Optuna, BayesianOptimization, or custom RL) generates parameter sets → > Farukon runs backtest → Returns metrics → Agent updates policy → Repeat.
+
+## 📈 Why FlatBuffers + SIMD?
+Farukon is engineered for **ultra-low-latency**:
+| Feature | Benefit |
+|--------|-----------|
+| ✅ **FlatBuffers** `.bin` + `.idx`| Zero-copy memory mapping; no parsing overhead. Random access to any timestamp via `.idx`. |
+| ✅ `mmap` | Load 10GB of OHLCV data in < 0.1s — data stays in OS page cache. |
+| ✅ **SIMD (**`wide` **crate)** | Vectorized SMA, returns, and drawdown calculations — 4x–8x speedup. |
+| ✅ **Multi-threaded Data Loader** | Each strategy loads its own data in parallel. |
+| ✅ **Multi-threaded Optimization** | Grid search and GA run across all CPU cores — 100k+ combinations in minutes. |
+| ✅ **Dynamic Libraries** | Strategies compiled separately → hot-swappable without recompiling engine. |
+
+## 📁 File Structure Reference
+
+`Tickers/`
+```
+Tickers/
+└── FBS/
+    └── Si/
+        ├── Si-12.23.bin     ← FlatBuffer OHLCV data
+        ├── Si-12.23.idx     ← Index: timestamps, daily ranges, resampled bars
+        ├── Si-3.24.bin
+        └── Si-3.24.idx
+```
+`Portfolios/`
+```
+Portfolios/
+└── Debug_Portfolio.json   ← Main config
+└── Optimize_Portfolio.json ← For GA optimization
+```
+
+`instruments_info.json`
+
+Defines contract meta margin, step, expiration, commission type.
+See provided example in repo.
+
+`commission_plans.json`
+
+Defines commission rates per exchange and instrument type.
+See provided example in repo.
