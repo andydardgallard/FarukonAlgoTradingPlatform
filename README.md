@@ -60,3 +60,33 @@ FarukonAlgoTradingPlatform/
 ├── LICENSE
 └── README.md
 ```
+> 💡 **Note**: The [csv-to-flatbuffer](https://github.com/andydardgallard/csv-to-flatbuffer) utility (see below) generates `.bin` and `.idx` files for the `Tickers/` directory.
+
+## 🛠 Getting Started
+
+1. **Prerequisites**: Install [Rust 1.78+](https://rust-lang.org/tools/install/)
+2. **Clone the Repository:**
+   ```bash
+   git clone https://github.com/andydardgallard/FarukonAlgoTradingPlatform.git
+   cd FarukonAlgoTradingPlatform
+   ```
+3. **Build the Project**:
+   ```bash
+   cargo build --release
+   ```
+4. **Prepare Market Data**
+Place your OHLCV data in the `Tickers/` directory as FlatBuffer `.bin` + `.idx` files.
+> ✅ Generate these files using our companion tool:
+>
+> 🔗 [csv-to-flatbuffer](https://github.com/andydardgallard/csv-to-flatbuffer)
+>
+> Converts CSV/TXT files (e.g., `Si-12.23.txt`) into ultra-fast, zero-copy `.bin` + `.idx` format with resampling and indexing.
+> 
+> Example:
+> ```bash
+> cargo run --release -- \
+>    -i ./Tickers/FBS/Si \
+>    -o ./Tickers/FBS/Si/Si-12.23.bin \
+>    -t 8 \
+>    -r 4min
+> ```
