@@ -134,3 +134,17 @@ A map where keys are unique strategy IDs (e.g., `"Strategy_1"`), and values are 
   "optimizer_type": "Grid_Search"
 }
 ```
+
+* `threads` (int, optional): Number of CPU threads to use for this strategy’s calculations. Defaults to `num_cpus::get()`.
+✅ Fully multi-threaded: Each strategy runs independently in its own thread pool.
+* `strategy_name` (string): Name of the strategy class (e.g., `MovingAverageCrossStrategy`). Must match the exported symbol in the `.dylib`.
+* `strategy_path` (string): Path to the compiled dynamic library (`.dylib` on macOS/Linux, `.dll` on Windows).
+* `strategy_weight` (float): Proportion of `initial_capital` allocated to this strategy. Unused capital remains in cash — no need to sum to 1.0.
+* `slippage` (array of float OR range object):
+Slippage applied to market orders as a percentage of price.
+  * Single value: `[0.005]`
+  * Range: `{"start": 0.001, "end": 0.01, "step": 0.001}` → generates `[0.001, 0.002, ..., 0.01]`
+* `data` (object): Data source configuration.
+  * `data_path` (string): Path to directory containing `.bin`/`.idx` files (e.g., `"Tickers/FBS/Si"`).
+  * `timeframe` (string): Target resampled timeframe. Valid values: `"1min"`, `"2min"`, `"3min"`, `"4min"`, `"5min"`, `"1d"`.
+* `symbol_base_name` (string): Base symbol name (e.g., `"Si"`) used to look up contract metadata in `instruments_info.json`.
