@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "Farukon_2_0",
+    "farukon_core",
+    "strategy_lib"
+    ]
+
+resolver = "3"

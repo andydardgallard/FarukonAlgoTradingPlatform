@@ -1,0 +1,99 @@
+{   
+    "common": {
+        "mode": "Optimize",
+        "initial_capital": 1000000
+    },
+    "portfolio": {
+        "Strategy_1": {
+            "threads": 8,
+            "strategy_name": "MovingAverageCrossStrategy",
+            "strategy_path": "target/release/libstrategy_lib.dylib",
+            "strategy_weight": 1,
+            "slippage": [0.005],
+            "data": {
+                "data_path": "Tickers/FBS/Si",
+                "timeframe": "4min"
+            },
+            "symbol_base_name": "Si",
+            "symbols": [
+                "Si-12.23",
+                "Si-3.24"
+            ],
+            "strategy_params": {
+                "short_window": {
+                    "start": 500,
+                    "end": 600,
+                    "step": 100
+                },
+                "long_window": [1000]
+            },
+            "pos_sizer_params": {
+                "pos_sizer_name": "mpr",
+                "pos_sizer_params": {},
+                "pos_sizer_value": [1.5]
+            },
+            "margin_params": {
+                "min_margin": 0.5,
+                "margin_call_type": "close_deal"
+            },
+            "portfolio_settings_for_strategy": {
+                "metrics_calculation_mode": "offline"
+            },
+            "optimizer_type": "Grid_Search"
+        },
+        "Strategy_2": {
+            "threads": 8,
+            "strategy_name": "MovingAverageCrossStrategy",
+            "strategy_path": "target/release/libstrategy_lib.dylib",
+            "strategy_weight": 1,
+            "slippage": [0.005],
+            "data": {
+                "data_path": "Tickers/FBS/RTS",
+                "timeframe": "4min"
+            },
+            "symbol_base_name": "RTS",
+            "symbols": [
+                "RTS-12.23",
+                "RTS-3.24"
+            ],
+            "strategy_params": {
+                "short_window": {
+                    "start": 500,
+                    "end": 600,
+                    "step": 100
+                },
+                "long_window": [1000]
+            },
+            "pos_sizer_params": {
+                "pos_sizer_name": "mpr",
+                "pos_sizer_params": {},
+                "pos_sizer_value": [1.5]
+            },
+            "margin_params": {
+                "min_margin": 0.5,
+                "margin_call_type": "close_deal"
+            },
+            "portfolio_settings_for_strategy": {
+                "metrics_calculation_mode": "offline"
+            },
+            "optimizer_type": {
+                "Genetic": {
+                    "ga_params": {
+                        "population_size": 2,
+                        "p_crossover": 0.8,
+                        "p_mutation": 0.2,
+                        "max_generations": 1,
+                        "fitness_params": {
+                            "fitness_direction": "max",
+                            "fitness_value": {
+                                "Composite": {
+                                    "metrics": ["APR/DD_factor", "Recovery_Factor", "Deals_Count"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

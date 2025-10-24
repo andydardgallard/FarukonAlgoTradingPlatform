@@ -1,0 +1,942 @@
+// Farukon_2_0/src/data_handler.rs
+
+use anyhow::Context;
+use rayon::prelude::*;
+
+use crate:: ohlcv_generated;
+
+// CSV - addittional alternative tool (not used in this project)
+#[allow(dead_code)]
+#[derive(serde::Deserialize)]
+struct CSVRecord {
+    #[serde(rename = "<DATE>")]
+    date: String,
+    #[serde(rename = "<TIME>")]
+    time: String,
+    #[serde(rename = "<OPEN>")]
+    open: f64,
+    #[serde(rename = "<HIGH>")]
+    high: f64,
+    #[serde(rename = "<LOW>")]
+    low: f64,
+    #[serde(rename = "<CLOSE>")]
+    close: f64,
+    #[serde(rename = "<VOL>")]
+    volume: u64,
+}
+
+#[allow(dead_code)]
+impl CSVRecord {
+    fn to_market_bar(&self) -> anyhow::Result<farukon_core::data_handler::MarketBar> {
+        let naive_date = chrono::NaiveDate::parse_from_str(&self.date, "%Y%m%d")?;
+        let naive_time = chrono::NaiveTime::parse_from_str(&self.time, "%H%M%S")?;
+        let naive_datetime = chrono::NaiveDateTime::new(naive_date, naive_time);
+        let datetime = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_datetime, chrono::Utc);
+
+        anyhow::Ok(farukon_core::data_handler::MarketBar {
+            datetime: datetime,
+            open: self.open,
+            high: self.high,
+            low: self.low,
+            close: self.close,
+            volume: self.volume,
+        })
+    }
+
+}
+
+#[allow(dead_code)]
+fn align_data_to_common_index(
+    raw_symbol_data: &std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>,
+    symbol_list: &[String],
+    combined_datetime_list: &[chrono::DateTime<chrono::Utc>],
+) -> anyhow::Result<std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>> {
+    let mut aligned_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>> = std::collections::HashMap::new();
+
+    for symbol in symbol_list {
+        let original_bars = raw_symbol_data.get(symbol)
+            .expect("Symbol data should exist");
+        
+        let original_bar_map: std::collections::HashMap<chrono::DateTime<chrono::Utc>, &farukon_core::data_handler::MarketBar> = original_bars
+            .iter()
+            .map(|bar| (bar.datetime, bar))
+            .collect();
+        let mut aligned_bars: Vec<farukon_core::data_handler::MarketBar> = Vec::with_capacity(combined_datetime_list.len());
+        let mut last_known_bar: Option<&farukon_core::data_handler::MarketBar> = None;
+
+        for &datetime in combined_datetime_list {
+            if let Some(&original_bar) = original_bar_map.get(&datetime) {
+                aligned_bars.push(original_bar.clone());
+                last_known_bar = Some(original_bar);
+            } else {
+                if let Some(last_bar) = last_known_bar {
+                    let padded_bar = farukon_core::data_handler::MarketBar {
+                        datetime,
+                        open: last_bar.open,
+                        high: last_bar.high,
+                        low: last_bar.low,
+                        close: last_bar.close,
+                        volume: last_bar.volume,
+                    };
+                    aligned_bars.push(padded_bar);
+                } else {
+                    let placeholder_bar = farukon_core::data_handler::MarketBar {
+                        datetime,
+                        open: core::f64::NAN,
+                        high: core::f64::NAN,
+                        low: core::f64::NAN,
+                        close: core::f64::NAN,
+                        volume: 0,
+                    };
+                    aligned_bars.push(placeholder_bar);
+                }
+            }
+        }
+        assert_eq!(aligned_bars.len(), combined_datetime_list.len());
+        aligned_data.insert(symbol.clone(), aligned_bars);
+    }
+
+    anyhow::Ok(aligned_data)
+}
+
+#[allow(dead_code)]
+fn create_combined_datetime_list(
+    raw_symbol_data: &std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>
+) -> Vec<chrono::DateTime<chrono::Utc>> {
+    let mut combined_datetime_set: std::collections::HashSet<chrono::DateTime<chrono::Utc>> = std::collections::HashSet::new();
+    for bars in raw_symbol_data.values() {
+        for bar in bars {
+            combined_datetime_set.insert(bar.datetime);
+        }
+    }
+    let mut combined_datetime_list: Vec<chrono::DateTime<chrono::Utc>> = combined_datetime_set.into_iter().collect();
+    combined_datetime_list.sort();
+    combined_datetime_list
+}
+
+#[allow(dead_code)]
+pub struct HistoricCSVDataHandler {
+    event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    csv_dir: String,
+    symbol_list: Vec<String>,
+    symbol_data_iterators: std::collections::HashMap<String, std::vec::IntoIter<farukon_core::data_handler::MarketBar>>,
+    latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>,
+    continue_backtest: bool,
+}
+
+#[allow(dead_code)]
+impl HistoricCSVDataHandler {
+    pub fn new(
+        event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        csv_dir: String,
+        symbol_list: Vec<String>,
+    ) -> anyhow::Result<Self> {
+        let start_time = std::time::Instant::now();
+        println!("Starting to load and process CSV files from {}...", csv_dir);
+        
+        let mut handler = HistoricCSVDataHandler {
+            event_sender,
+            csv_dir,
+            symbol_list: symbol_list.clone(),
+            symbol_data_iterators: std::collections::HashMap::new(),
+            latest_symbol_data: std::collections::HashMap::new(),
+            continue_backtest: true,
+        };
+        handler.load_csv_files()?;
+        
+        let duration = start_time.elapsed();
+        println!(
+            "Finished loading and processing CSV files in {:.3} seconds.",
+            duration.as_secs_f64()
+        );
+        
+        anyhow::Ok(handler)
+    }
+    
+    fn load_single_csv_file(file_path: String) -> anyhow::Result<Vec<farukon_core::data_handler::MarketBar>> {
+        let file = std::fs::File::open(file_path)?;
+        let reader = std::io::BufReader::new(file);
+        let mut csv_reader = csv::Reader::from_reader(reader);
+    
+        let mut bars: Vec<farukon_core::data_handler::MarketBar> = Vec::new();
+        for result in csv_reader.deserialize() {
+            let record: CSVRecord = result?;
+            let market_bar = record.to_market_bar()?;
+            bars.push(market_bar);
+        }
+        bars.sort_by_key(|bar| bar.datetime);
+        anyhow::Ok(bars)
+    }
+
+    fn load_csv_files(&mut self) -> anyhow::Result<()> {
+        let mut raw_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>> = std::collections::HashMap::new();
+        
+        for symbol in &self.symbol_list {
+            let file_path = format!("{}/{}.txt", self.csv_dir, symbol);
+            let bars = Self::load_single_csv_file(file_path)?;
+            raw_symbol_data.insert(symbol.clone(), bars);
+            self.latest_symbol_data.insert(symbol.clone(), Vec::new());
+        }
+
+        let combined_datetime_list = create_combined_datetime_list(&raw_symbol_data);
+
+        let aligned_data = align_data_to_common_index(
+            &raw_symbol_data, 
+            &self.symbol_list, 
+            &combined_datetime_list)?;
+        
+        for (symbol, aligned_bars) in aligned_data {
+            self.symbol_data_iterators.insert(symbol, aligned_bars.into_iter());
+        }
+
+        anyhow::Ok(())
+    }
+
+    fn get_next_bar(&mut self, symbol: &str) -> Option<farukon_core::data_handler::MarketBar> {
+        self.symbol_data_iterators.get_mut(symbol)?.next()
+    }
+
+}
+
+impl farukon_core::data_handler::DataHandler for HistoricCSVDataHandler {
+    fn get_latest_bar(&self, symbol: &str) -> Option<&farukon_core::data_handler::MarketBar> {
+        self.latest_symbol_data.get(symbol)?.last()
+    }
+
+    fn get_latest_bars(&self, symbol: &str, n: usize) -> Vec<&farukon_core::data_handler::MarketBar> {
+        match self.latest_symbol_data.get(symbol) {
+            Some(bars) => {
+                let len = bars.len();
+                if len == 0 {
+                    vec![]
+                } else {
+                    let start = if n > len { 0 } else { len - n };
+                    bars[start..].iter().collect()
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    fn get_latest_bar_datetime(&self, symbol: &str) -> Option<chrono::DateTime<chrono::offset::Utc>> {
+        self.get_latest_bar(symbol).map(|bar| bar.datetime)
+    }
+
+    fn get_latest_bar_value(&self, symbol: &str, val_type: &str) -> Option<f64> {
+        self.get_latest_bar(symbol).map(|bar| match val_type {
+            "open" => bar.open,
+            "high" => bar.high,
+            "low" => bar.low,
+            "close" => bar.close,
+            "volume" => bar.volume as f64,
+            _ => {
+                eprintln!("Warning: Unknown value type '{}'", val_type);
+                0.0
+            }
+        })
+    }
+
+    fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Vec<f64> {
+        self.get_latest_bars(symbol, n)
+            .into_iter()
+            .map(|bar| match val_type {
+                "open" => bar.open,
+                "high" => bar.high,
+                "low" => bar.low,
+                "close" => bar.close,
+                "volume" => bar.volume as f64,
+                _ => {
+                    eprintln!("Warning: Unknown value type '{}'", val_type);
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    fn update_bars(&mut self) {
+        let mut has_data = false;
+        let symbols: Vec<String> = self.symbol_list.clone();
+        for symbol in &symbols {
+            if let Some(bar) = self.get_next_bar(symbol) {
+                has_data = true;
+                self.latest_symbol_data
+                    .get_mut(symbol)
+                    .unwrap()
+                    .push(bar);
+            }
+        }
+        if !has_data {
+            self.continue_backtest = false;
+        } else {
+            if let Err(e) = self.event_sender.send(Box::new(farukon_core::event::MarketEvent::new())) {
+                eprintln!("Error sending MarketEvent: {}", e);
+                self.continue_backtest = false;
+            }
+        }
+    }
+
+    fn get_continue_backtest(&self) -> bool {
+        self.continue_backtest
+    }
+
+    fn set_continue_backtest(&mut self, value: bool) {
+        self.continue_backtest = value;
+    }
+
+}
+
+// FlatBuffers - addittional alternative tool (not used in this project)
+#[allow(dead_code)]
+pub struct HistoricFlatBuffersDataHandler {
+    event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    fbs_dir: String,
+    symbol_list: Vec<String>,
+    symbol_data_fb: std::collections::HashMap<String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>>,
+    symbol_indices: std::collections::HashMap<String, std::sync::Arc<farukon_core::index::FullIndex>>,
+    symbol_data_iterators: std::collections::HashMap<String, std::vec::IntoIter<farukon_core::data_handler::MarketBar>>,
+    latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>,
+    continue_backtest: bool,
+}
+
+#[allow(dead_code)]
+impl HistoricFlatBuffersDataHandler {
+    pub fn new(
+        event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        fbs_dir: String,
+        symbol_list: Vec<String>,
+    ) -> anyhow::Result<Self> {
+        let start_time = std::time::Instant::now();
+        println!("Starting to load and process FlatBuffers files from {}...", fbs_dir);
+
+        let mut handler = HistoricFlatBuffersDataHandler {
+            event_sender,
+            fbs_dir,
+            symbol_list: symbol_list.clone(),
+            symbol_data_fb: std::collections::HashMap::new(),
+            symbol_indices: std::collections::HashMap::new(),
+            symbol_data_iterators: std::collections::HashMap::new(),
+            latest_symbol_data: std::collections::HashMap::new(),
+            continue_backtest: true,
+        };
+
+        handler.load_flatbuffers_files()?;
+
+        let duration = start_time.elapsed();
+        println!(
+            "Finished loading and processing FlatBuffers files in {:.3} seconds.",
+            duration.as_secs_f64()
+        );
+
+        anyhow::Ok(handler)
+    }
+
+    fn load_single_flatbuffer_file(
+        bin_file_path: &str,
+        idx_file_path: &str,
+    ) -> anyhow::Result<(std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>, std::sync::Arc<farukon_core::index::FullIndex>)> {
+        let file = std::fs::File::open(&bin_file_path)
+            .with_context(|| format!("Failed to open .bin file '{}'", bin_file_path))?;
+        let mmap = unsafe {
+            memmap2::Mmap::map(&file)
+                .with_context(|| format!("Failed to memory-map .bin file '{}'", bin_file_path))?
+        };
+        let ohlcv_list = ohlcv_generated::root_as_ohlcvlist(&mmap)
+            .with_context(|| format!("Failed to parse FlatBuffer root in '{}'", bin_file_path))?;
+    
+        let ohlcv_list_static = unsafe {
+            std::mem::transmute::<ohlcv_generated::OHLCVList<'_>, ohlcv_generated::OHLCVList<'static>>(ohlcv_list)
+        };
+        let fb_data = std::sync::Arc::new((mmap, ohlcv_list_static));
+        
+        let idx_data = std::fs::read(&idx_file_path)
+            .with_context(|| format!("Failed to read .idx file '{}'", idx_file_path))?;
+        let full_index: farukon_core::index::FullIndex = bincode::deserialize(&idx_data)
+            .with_context(|| format!("Failed to deserialize .idx file '{}'", idx_file_path))?;
+        let index_data = std::sync::Arc::new(full_index);
+
+        anyhow::Ok((fb_data, index_data))
+    }
+
+    fn convert_ohlcv_list_to_market_bars(
+        ohlcv_list: &ohlcv_generated::OHLCVList,
+        bin_file_path: &str,
+    ) -> anyhow::Result<Vec<farukon_core::data_handler::MarketBar>> {
+        let bars_vector = ohlcv_list.items().unwrap_or_default();
+        let mut bars: Vec<farukon_core::data_handler::MarketBar> = Vec::with_capacity(bars_vector.len());
+        for ohlcv in bars_vector {
+            let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(ohlcv.timestamp() as i64, 0)
+                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {} in file {}", ohlcv.timestamp(), bin_file_path))?;
+        
+            let market_bar = farukon_core::data_handler::MarketBar {
+                datetime,
+                open: ohlcv.open(),
+                high:ohlcv.high(),
+                low: ohlcv.low(),
+                close: ohlcv.close(),
+                volume: ohlcv.volume(),
+            };
+            bars.push(market_bar);
+        }
+        bars.sort_by_key(|bar| bar.datetime);
+        anyhow::Ok(bars)
+    }
+
+    fn load_flatbuffers_files(&mut self) -> anyhow::Result<()> {
+        let mut raw_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>> = std::collections::HashMap::new();
+
+        for symbol in &self.symbol_list {
+            let bin_file_path = format!("{}/{}.bin", self.fbs_dir, symbol);
+            let idx_file_path = format!("{}/{}.idx", self.fbs_dir, symbol);
+
+            let (fb_data, index_data) = Self::load_single_flatbuffer_file(&bin_file_path, &idx_file_path)?;
+
+            let bars = Self::convert_ohlcv_list_to_market_bars(&fb_data.1, &bin_file_path)?;
+            raw_symbol_data.insert(symbol.clone(), bars);
+            
+            self.symbol_data_fb.insert(symbol.clone(), fb_data);
+            self.symbol_indices.insert(symbol.clone(), index_data);
+            self.latest_symbol_data.insert(symbol.clone(), Vec::new());
+            
+        }
+
+        let combined_datetime_list = create_combined_datetime_list(&raw_symbol_data);
+        let aligned_data = align_data_to_common_index(
+            &raw_symbol_data, 
+            &self.symbol_list,
+            &combined_datetime_list,
+        )?;
+        
+        for (symbol, aligned_bars) in aligned_data {
+            self.symbol_data_iterators.insert(symbol, aligned_bars.into_iter());
+        }
+
+        anyhow::Ok(())
+    }
+
+    fn get_next_bar(&mut self, symbol: &str) -> Option<farukon_core::data_handler::MarketBar> {
+        self.symbol_data_iterators.get_mut(symbol)?.next()
+    }
+
+}
+
+impl farukon_core::data_handler::DataHandler for HistoricFlatBuffersDataHandler {
+    fn get_latest_bar(&self, symbol: &str) -> Option<&farukon_core::data_handler::MarketBar> {
+        self.latest_symbol_data.get(symbol)?.last()
+    }
+
+    fn get_latest_bars(&self, symbol: &str, n: usize) -> Vec<&farukon_core::data_handler::MarketBar> {
+        match self.latest_symbol_data.get(symbol) {
+            Some(bars) => {
+                let len = bars.len();
+                if len == 0 {
+                    vec![]
+                } else {
+                    let start = if n > len { 0 } else { len - n };
+                    bars[start..].iter().collect()
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    fn get_latest_bar_datetime(&self, symbol: &str) -> Option<chrono::DateTime<chrono::offset::Utc>> {
+        self.get_latest_bar(symbol).map(|bar| bar.datetime)
+    }
+
+    fn get_latest_bar_value(&self, symbol: &str, val_type: &str) -> Option<f64> {
+        self.get_latest_bar(symbol).map(|bar| match val_type {
+            "open" => bar.open,
+            "high" => bar.high,
+            "low" => bar.low,
+            "close" => bar.close,
+            "volume" => bar.volume as f64,
+            _ => {
+                eprintln!("Warning: Unknown value type '{}' for symbol '{}'", val_type, symbol);
+                0.0
+            }
+        })
+    }
+
+    fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Vec<f64> {
+        self.get_latest_bars(symbol, n)
+            .into_iter()
+            .map(|bar| match val_type {
+                "open" => bar.open,
+                "high" => bar.high,
+                "low" => bar.low,
+                "close" => bar.close,
+                "volume" => bar.volume as f64,
+                _ => {
+                    eprintln!("Warning: Unknown value type '{}' for symbol '{}'", val_type, symbol);
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    fn update_bars(&mut self) {
+        let mut has_data = false;
+        let symbols: Vec<String> = self.symbol_list.clone();
+
+        for symbol in &symbols {
+            if let Some(bar) = self.get_next_bar(symbol) {
+                has_data = true;
+                self.latest_symbol_data
+                    .get_mut(symbol)
+                    .unwrap()
+                    .push(bar);
+            }
+        }
+
+        if !has_data {
+            self.continue_backtest = false;
+        } else {
+            if let Err(e) = self.event_sender.send(Box::new(farukon_core::event::MarketEvent::new())) {
+                eprintln!("Error sending MarketEvent: {}", e);
+                self.continue_backtest = false;
+            }
+        }
+    }
+
+    fn get_continue_backtest(&self) -> bool {
+        self.continue_backtest
+    }
+
+    fn set_continue_backtest(&mut self, value: bool) {
+        self.continue_backtest = value;
+    }
+
+}
+
+//FlatBuffers Zero-Copy
+#[derive(Debug, Clone)]
+struct FbSymbolIteratorState {
+    current_aggregated_index_in_timeline: usize,
+    current_window_start_timestamp: Option<u64>,
+    aggregated_open: Option<f64>,
+    aggregated_high: f64,
+    aggregated_low: f64,
+    aggregated_close: f64,
+    aggregated_volume: u64,
+    next_raw_bar_index_in_vector: usize,
+    last_known_bar_cache: Option<farukon_core::data_handler::MarketBar>,
+}
+
+impl FbSymbolIteratorState {
+    fn new() -> Self {
+        Self {
+            current_aggregated_index_in_timeline: 0,
+            current_window_start_timestamp: None,
+            aggregated_open: None,
+            aggregated_high: std::f64::NEG_INFINITY,
+            aggregated_low: std::f64::INFINITY,
+            aggregated_close: 0.0,
+            aggregated_volume: 0,
+            next_raw_bar_index_in_vector: 0,
+            last_known_bar_cache: None,
+        }
+    }
+
+    fn start_new_aggregation_window(&mut self, window_start_timestamp: u64) {
+        self.current_window_start_timestamp = Some(window_start_timestamp);
+        self.aggregated_open = None;
+        self.aggregated_high = std::f64::NEG_INFINITY;
+        self.aggregated_low = std::f64::INFINITY;
+        self.aggregated_close = 0.0;
+        self.aggregated_volume = 0;
+    }
+
+    fn finish_aggregation_window(
+        &mut self,
+        target_datetime: chrono::DateTime<chrono::Utc>,
+    ) -> Option<farukon_core::data_handler::MarketBar> {
+        self.current_window_start_timestamp = None;
+
+        if let Some(open) = self.aggregated_open {
+            let high = if self.aggregated_high == std::f64::NEG_INFINITY { open } else { self.aggregated_high };
+            let low = if self.aggregated_low == std::f64::INFINITY { open } else { self.aggregated_low };
+
+            Some(farukon_core::data_handler::MarketBar {
+                datetime: target_datetime,
+                open,
+                high,
+                low,
+                close: self.aggregated_close,
+                volume: self.aggregated_volume,
+            })
+        } else {
+            None
+        }
+    }
+
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoricFlatBuffersDataHandlerZC {
+    event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    symbol_data_fb: std::collections::HashMap<String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>>,
+    _symbol_indices: std::collections::HashMap<String, std::sync::Arc<farukon_core::index::FullIndex>>,
+    combined_aggregated_datetime_list: std::sync::Arc<Vec<chrono::DateTime<chrono::Utc>>>,
+    symbol_iterator_states: std::collections::HashMap<String, FbSymbolIteratorState>,
+    latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>,
+    continue_backtest: bool,
+    strategy_settings: farukon_core::settings::StrategySettings,
+}
+
+impl HistoricFlatBuffersDataHandlerZC {
+    pub fn new_with_sequential_load(
+        mode: &String,
+        event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        strategy_settings: &farukon_core::settings::StrategySettings,
+    ) -> anyhow::Result<Self> {
+        let start_time = std::time::Instant::now();
+        let resample = &strategy_settings.data.timeframe;
+        let resample_timeframe_sec = Self::resample_timeframe_sec(resample);
+        let fbs_dir = &strategy_settings.data.data_path;
+        let symbol_list = &strategy_settings.symbols;
+
+        let mode_desc = format!("{} Resample", resample);
+
+        if mode == "Debug" {
+            println!("Starting to load and process FlatBuffer files ({}) from {}...", mode_desc, fbs_dir);
+        }
+
+        let mut loaded_data = Vec::new();
+        for symbol in symbol_list {
+            let result = Self::load_single_symbol(fbs_dir.clone(), symbol.clone())?;
+            loaded_data.push(result);
+        }
+
+        let mut all_aggregated_timestamps: std::collections::BTreeSet<chrono::DateTime<chrono::Utc>> = std::collections::BTreeSet::new();
+        for (symbol, _fb_data, index_data) in &loaded_data {            
+            for time_entry in &index_data.time_index {
+                let raw_timestamp = time_entry.timestamp;
+                let aggregated_window_start = raw_timestamp - (raw_timestamp % resample_timeframe_sec);
+                
+                let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(aggregated_window_start as i64, 0)
+                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {} in index for symbol {}", aggregated_window_start, symbol))?;
+            all_aggregated_timestamps.insert(datetime);
+            }
+        }
+    
+        let combined_aggregated_datetime_list: Vec<chrono::DateTime<chrono::Utc>> = all_aggregated_timestamps.into_iter().collect();
+        let combined_aggregated_datetime_list = std::sync::Arc::new(combined_aggregated_datetime_list);
+        
+        let mut symbol_data_fb: std::collections::HashMap<String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>> = std::collections::HashMap::new();
+        let mut symbol_indices: std::collections::HashMap<String, std::sync::Arc<farukon_core::index::FullIndex>> = std::collections::HashMap::new();
+        let mut symbol_iterator_states: std::collections::HashMap<String, FbSymbolIteratorState> = std::collections::HashMap::new();
+        let mut latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>> = std::collections::HashMap::new();
+        for (symbol, fb_data, index_data) in loaded_data {
+            symbol_data_fb.insert(symbol.clone(), fb_data);
+            symbol_indices.insert(symbol.clone(), index_data);
+            symbol_iterator_states.insert(symbol.clone(), FbSymbolIteratorState::new());
+            latest_symbol_data.insert(symbol.clone(), Vec::new());
+        }
+
+        let duration = start_time.elapsed();
+
+        if mode == "Debug" {
+            println!(
+                "Finished loading and processing FlatBuffer files ({}) in {:.3} seconds.",
+                mode_desc, duration.as_secs_f64()
+            );
+        }
+
+        anyhow::Ok(HistoricFlatBuffersDataHandlerZC {
+            event_sender,
+            symbol_data_fb,
+            _symbol_indices: symbol_indices,
+            combined_aggregated_datetime_list,
+            symbol_iterator_states,
+            latest_symbol_data,
+            continue_backtest: true,
+            strategy_settings: strategy_settings.clone(),
+        })
+    }
+
+    #[allow(dead_code)] // Alternative miltithread load
+    pub fn new_with_parallel_load(
+        mode: &String,
+        event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        strategy_settings: &farukon_core::settings::StrategySettings,
+    ) -> anyhow::Result<Self> {
+        let start_time = std::time::Instant::now();
+        let threads_to_use = strategy_settings.threads.unwrap();
+        let resample = &strategy_settings.data.timeframe;
+        let resample_timeframe_sec = Self::resample_timeframe_sec(resample);
+        let fbs_dir = &strategy_settings.data.data_path;
+        let symbol_list = &strategy_settings.symbols;
+
+        let mode_desc = format!("{} Resample", resample);
+
+        if mode == "Debug" {
+            println!("Starting to load and process FlatBuffer files ({}) from {}...", mode_desc, fbs_dir);
+        }
+
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads_to_use).build()
+            .context("Failed to create custom Rayon thread pool: {}")?;
+
+        let loaded_data: anyhow::Result<Vec<_>> = thread_pool.install( || {
+            symbol_list
+                .par_iter()
+                .map(|symbol| Self::load_single_symbol(fbs_dir.clone(), symbol.clone()))
+                .collect()
+        });
+
+        let loaded_data = loaded_data?;
+
+        let mut all_aggregated_timestamps: std::collections::BTreeSet<chrono::DateTime<chrono::Utc>> = std::collections::BTreeSet::new();
+        for (symbol, _fb_data, index_data) in &loaded_data {            
+            for time_entry in &index_data.time_index {
+                let raw_timestamp = time_entry.timestamp;
+                let aggregated_window_start = raw_timestamp - (raw_timestamp % resample_timeframe_sec);
+                
+                let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(aggregated_window_start as i64, 0)
+                .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {} in index for symbol {}", aggregated_window_start, symbol))?;
+            all_aggregated_timestamps.insert(datetime);
+            }
+        }
+    
+        let combined_aggregated_datetime_list: Vec<chrono::DateTime<chrono::Utc>> = all_aggregated_timestamps.into_iter().collect();
+        let combined_aggregated_datetime_list = std::sync::Arc::new(combined_aggregated_datetime_list);
+        
+        let mut symbol_data_fb: std::collections::HashMap<String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>> = std::collections::HashMap::new();
+        let mut symbol_indices: std::collections::HashMap<String, std::sync::Arc<farukon_core::index::FullIndex>> = std::collections::HashMap::new();
+        let mut symbol_iterator_states: std::collections::HashMap<String, FbSymbolIteratorState> = std::collections::HashMap::new();
+        let mut latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>> = std::collections::HashMap::new();
+        for (symbol, fb_data, index_data) in loaded_data {
+            symbol_data_fb.insert(symbol.clone(), fb_data);
+            symbol_indices.insert(symbol.clone(), index_data);
+            symbol_iterator_states.insert(symbol.clone(), FbSymbolIteratorState::new());
+            latest_symbol_data.insert(symbol.clone(), Vec::new());
+        }
+
+        let duration = start_time.elapsed();
+
+        if mode == "Debug" {
+            println!(
+                "Finished loading and processing FlatBuffer files ({}) using {:?} threads in {:.3} seconds.",
+                mode_desc, threads_to_use, duration.as_secs_f64()
+            );
+        }
+
+        anyhow::Ok(HistoricFlatBuffersDataHandlerZC {
+            event_sender,
+            symbol_data_fb,
+            _symbol_indices: symbol_indices,
+            combined_aggregated_datetime_list,
+            symbol_iterator_states,
+            latest_symbol_data,
+            continue_backtest: true,
+            strategy_settings: strategy_settings.clone(),
+        })
+    }
+
+    fn load_single_symbol(
+        fbs_dir: String,
+        symbol: String,
+    ) -> anyhow::Result<(String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>, std::sync::Arc<farukon_core::index::FullIndex>)> {
+        let bin_file_path = format!("{}/{}.bin", fbs_dir, symbol);
+        let idx_file_path = format!("{}/{}.idx", fbs_dir, symbol);
+
+        // load .bin file
+        let file = std::fs::File::open(&bin_file_path)
+            .with_context(|| format!("Failed to open .bin file {}", bin_file_path))?;
+        let mmap = unsafe {
+            memmap2::Mmap::map(&file)
+                .with_context(|| format!("Failed to memory-map .bin file {}", bin_file_path))?
+        };
+        let ohlcv_list = ohlcv_generated::root_as_ohlcvlist(&*mmap)
+            .with_context(|| format!("Failed to parse FlatBuffer root in {}", bin_file_path))?;
+        let ohlcv_list_static = unsafe {
+            std::mem::transmute::<ohlcv_generated::OHLCVList<'_>, ohlcv_generated::OHLCVList<'static>>(ohlcv_list)
+        };
+        let fb_data = std::sync::Arc::new((mmap, ohlcv_list_static));
+
+        // load .idx file
+        let idx_data = std::fs::read(&idx_file_path)
+            .with_context(|| format!("Failed to read .idx file {}", idx_file_path))?;
+        let full_index: farukon_core::index::FullIndex = bincode::deserialize(&idx_data)
+            .with_context(|| format!("Failed to deserialize .idx file {}", idx_file_path))?;
+        let index_data = std::sync::Arc::new(full_index);
+
+        anyhow::Ok((symbol.clone(), fb_data, index_data))
+    }
+
+    fn get_next_bar(&mut self, symbol: &str) -> Option<farukon_core::data_handler::MarketBar> {
+        let resample_timeframe = Self::resample_timeframe_sec(
+            &self.strategy_settings.data.timeframe);
+        let iterator_state = self.symbol_iterator_states.get_mut(symbol)?;
+        if iterator_state.current_aggregated_index_in_timeline >= self.combined_aggregated_datetime_list.len() {
+            return None;
+        }
+
+        let target_datetime = self.combined_aggregated_datetime_list[iterator_state.current_aggregated_index_in_timeline];
+        let target_timestamp = target_datetime.timestamp() as u64;
+
+        let fb_data_arc = self.symbol_data_fb.get(symbol)?;
+        let fb_data = &**fb_data_arc;
+        let ohlcv_list = &fb_data.1;
+        let bars_vector = ohlcv_list.items().unwrap_or_default();
+
+        iterator_state.start_new_aggregation_window(target_timestamp);
+        let target_window_end = target_timestamp + resample_timeframe - 1;
+
+        while iterator_state.next_raw_bar_index_in_vector < bars_vector.len() {
+            let current_raw_bar = bars_vector.get(iterator_state.next_raw_bar_index_in_vector);
+            let raw_bar_timestamp =current_raw_bar.timestamp();
+
+            if raw_bar_timestamp >= target_timestamp && raw_bar_timestamp <= target_window_end {
+                if iterator_state.aggregated_open.is_none() {
+                    iterator_state.aggregated_open = Some(current_raw_bar.open());
+                }
+                iterator_state.aggregated_high = iterator_state.aggregated_high.max(current_raw_bar.high());
+                iterator_state.aggregated_low = iterator_state.aggregated_low.min(current_raw_bar.low());
+                iterator_state.aggregated_close = current_raw_bar.close();
+                iterator_state.aggregated_volume += current_raw_bar.volume();
+                iterator_state.next_raw_bar_index_in_vector += 1;
+            } else if raw_bar_timestamp < target_timestamp {
+                iterator_state.next_raw_bar_index_in_vector += 1;
+            } else {
+                break;
+            }
+        }
+
+        let maybe_aggregated_bar = iterator_state.finish_aggregation_window(target_datetime);
+        let final_bar: farukon_core::data_handler::MarketBar;
+        if let Some(aggregated_bar) = maybe_aggregated_bar {
+            final_bar = aggregated_bar.clone();
+            iterator_state.last_known_bar_cache = Some(aggregated_bar);
+        } else {
+            if let Some(last_bar) = &iterator_state.last_known_bar_cache {
+                final_bar = farukon_core::data_handler::MarketBar {
+                    datetime: target_datetime,
+                    open: last_bar.open,
+                    high: last_bar.high,
+                    low: last_bar.low,
+                    close: last_bar.close,
+                    volume: 0,
+                };
+            } else {
+                final_bar = farukon_core::data_handler::MarketBar {
+                    datetime: target_datetime,
+                    open: std::f64::NAN,
+                    high: std::f64::NAN,
+                    low: std::f64::NAN,
+                    close: std::f64::NAN,
+                    volume: 0,
+                };
+            }
+        }
+
+        iterator_state.current_aggregated_index_in_timeline += 1;
+
+        Some(final_bar)
+    }
+
+    fn resample_timeframe_sec(resample_timeframe_str: &str) -> u64 {
+        let resample_timeframe_sec = match resample_timeframe_str {
+            "1min" => 60,
+            "2min" => 120,
+            "3min" => 180,
+            "4min" => 240,
+            "5min" => 300,
+            "1d" => 24 * 60 * 60,
+            _ => {
+                println!("Unsupported resample timeframe: {}", resample_timeframe_str);
+                0
+            }
+        };
+        resample_timeframe_sec
+    }
+
+}
+
+impl farukon_core::data_handler::DataHandler for HistoricFlatBuffersDataHandlerZC {
+    fn get_latest_bar(&self, symbol: &str) -> Option<&farukon_core::data_handler::MarketBar> {
+        self.latest_symbol_data.get(symbol)?.last()
+    }
+
+    fn get_latest_bars(&self, symbol: &str, n: usize) -> Vec<&farukon_core::data_handler::MarketBar> {
+        match self.latest_symbol_data.get(symbol) {
+            Some(bars) => {
+                let len = bars.len();
+                if len == 0 {
+                    vec![]
+                } else {
+                    let start = if n > len { 0 } else { len - n };
+                    bars[start..].iter().collect()
+                }
+            }
+            None => vec![]
+        }
+    }
+
+    fn get_latest_bar_datetime(&self, symbol: &str) -> Option<chrono::DateTime<chrono::offset::Utc>> {
+        self.get_latest_bar(symbol).map(|bar| bar.datetime)
+    }
+
+    fn get_latest_bar_value(&self, symbol: &str, val_type: &str) -> Option<f64> {
+        self.get_latest_bar(symbol).map(|bar| match val_type {
+            "open" => bar.open,
+            "high" => bar.high,
+            "low" => bar.low,
+            "close" => bar.close,
+            "volume" => bar.volume as f64,
+            _ => {
+                eprintln!("Warning: Unknown value type '{}' for symbol '{}'", val_type, symbol);
+                0.0
+            }
+        })
+    }
+
+    fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Vec<f64> {
+        self.get_latest_bars(symbol, n)
+            .into_iter()
+            .map(|bar| match val_type {
+                "open" => bar.open,
+                "high" => bar.high,
+                "low" => bar.low,
+                "close" => bar.close,
+                "volume" => bar.volume as f64,
+                _ => {
+                    eprintln!("Warning: Unknown value type '{}' in get_latest_bars_values for symbol '{}'", val_type, symbol);
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    fn update_bars(&mut self) {
+        let mut has_data = false;
+        let symbols:Vec<String> = self.strategy_settings.symbols.clone();
+
+        for symbol in &symbols {
+            if let Some(bar) = self.get_next_bar(symbol) {
+                has_data = true;
+                self.latest_symbol_data
+                    .get_mut(symbol)
+                    .unwrap()
+                    .push(bar);
+            }
+        }
+
+        if !has_data {
+            self.continue_backtest = false;
+        } else {
+            if let Err(e) = self.event_sender.send(Box::new(farukon_core::event::MarketEvent::new())) {
+                eprintln!("Error sending MarketEvent: {}", e);
+                self.continue_backtest = false;
+            }
+        }
+    }
+
+    fn get_continue_backtest(&self) -> bool {
+        self.continue_backtest
+    }
+
+    fn set_continue_backtest(&mut self, value: bool) {
+        self.continue_backtest = value;
+    }
+
+}
