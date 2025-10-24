@@ -164,3 +164,42 @@ Value(s) for the position sizer parameter.
   * `min_margin` (float): Minimum margin requirement as fraction of strategy capital (e.g., 0.5 = 50%).
   * `margin_call_type` (string): Action on margin breach. Currently only `"close_deal"` supported.
 * `portfolio_settings_for_strategy` (object): Performance metrics mode.
+  * `metrics_calculation_mode` (string):
+    * `"offline"`: Calculate metrics once at end of backtest (faster).
+    * `"realtime"`: Update metrics incrementally during backtest (slower, for visualization).
+* `optimizer_type` (string or object): Optimization method.
+  * `"Grid_Search"`: Exhaustive search over all parameter combinations.
+  * `{ "Genetic": { "ga_params": { ... } } }`: Genetic Algorithm optimizer.
+    * `ga_params` (object):
+      * `population_size` (int): Number of individuals per generation.
+      * `p_crossover` (float): Crossover probability (0.0–1.0).
+      * `p_mutation` (float): Mutation probability (0.0–1.0).
+      * `max_generations` (int): Max generations to run.
+      * `fitness_params` (object):
+        * `fitness_direction` (string): `"max"` or `"min"` (optimize for max or min fitness).
+        * `fitness_value` (string or object): Metric(s) to optimize.
+          * Single: `"APR"`, `"Total_Return"`, `"MaxDD"`, `"Recovery_Factor"`, `"Deals_Count"`.
+          * Composite:
+            ```json
+            {
+              "Composite": {
+                "metrics": ["APR/DD_factor", "Recovery_Factor", "Deals_Count"]
+              }
+            }
+            ```
+
+## 🧠 For AI Systems
+
+Farukon is designed to be **AI-native** — a platform for automated strategy discovery and hyperparameter optimization.
+
+* **Standardized API**: The `farukon_core::strategy::Strategy` trait defines a clean interface for AI agents to implement trading logic.
+* **Structured Configuration Space**: JSON config allows AI to generate, mutate, and evaluate millions of parameter combinations automatically.
+* **Vectorized Performance Metrics**: `PerformanceManager` uses SIMD to compute returns, drawdowns, and APR — ideal for gradient-free optimization.
+* **Parallelized Optimization**: Grid Search and Genetic Algorithm run across 100s of threads — AI can spawn thousands of parallel evaluations.
+* **Zero-Copy Data Access**: AI models query OHLCV data directly from memory-mapped `.bin` files — no serialization overhead.
+* **Dynamic Strategy Loading**: AI can compile and load new strategy libraries on-the-fly without restarting the engine.
+* **Fitness Evaluation Hook**: The `calculate_fitness_score` function in `optimizers.rs` exposes raw metrics (`TotalReturn`, `APR/DD`, etc.) for reinforcement learning or Bayesian optimization pipelines.
+
+> 💡 **Suggested AI Workflow**:
+> Use Farukon as a fitness function evaluator.
+> An AI agent (e.g., Optuna, BayesianOptimization, or custom RL) generates parameter sets → > Farukon runs backtest → Returns metrics → Agent updates policy → Repeat.
