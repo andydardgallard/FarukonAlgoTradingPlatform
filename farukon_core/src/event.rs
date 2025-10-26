@@ -1,3 +1,5 @@
+// farukon_core/src/event.rs
+
 pub trait Event: std::fmt::Debug + Send + Sync {
     fn event_type(&self) -> &'static str;
     fn get_signal_event_params(&self) -> Option<&SignalEvent>;

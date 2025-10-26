@@ -1,7 +1,7 @@
 {   
     "common": {
         "mode": "Optimize",
-        "initial_capital": 1000000
+        "initial_capital": 1000000.0
     },
     "portfolio": {
         "Strategy_1": {

@@ -156,8 +156,7 @@ Each key is a parameter name; value is an array of discrete values or a range ob
 * `pos_sizer_params` (object): Position sizing configuration.
   * `pos_sizer_name` (string): Sizing method. Valid: `"mpr"`, `"poe"`, `"fixed_ratio"`, `"1"`.
   * `pos_sizer_params` (object, optional): Additional parameters (currently unused for `mpr`).
-  * `pos_sizer_value` (array of float OR range object):
-Value(s) for the position sizer parameter.
+  * `pos_sizer_value` (array of float OR range object): Value(s) for the position sizer parameter.
     * Single: `[1.5]`
     * Range: `{"start": 1.0, "end": 3.0, "step": 0.5}` → generates `[1.0, 1.5, 2.0, 2.5, 3.0]`
 * `margin_params` (object): Risk control.
@@ -189,7 +188,6 @@ Value(s) for the position sizer parameter.
             ```
 
 ## 🧠 For AI Systems
-
 Farukon is designed to be **AI-native** — a platform for automated strategy discovery and hyperparameter optimization.
 
 * **Standardized API**: The `farukon_core::strategy::Strategy` trait defines a clean interface for AI agents to implement trading logic.

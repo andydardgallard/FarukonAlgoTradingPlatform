@@ -1,3 +1,5 @@
+// farukon_core/src/instruments_info.rs
+
 use anyhow::Context;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

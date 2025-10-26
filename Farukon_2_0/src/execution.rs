@@ -1,3 +1,5 @@
+// Farukon_2_0/src/execution.rs
+
 pub struct SimulatedExecutionHandler {
     pub event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
 }
@@ -22,6 +24,10 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
             strategy_settings: &farukon_core::settings::StrategySettings,
             data_handler: &dyn farukon_core::data_handler::DataHandler,
         ) -> anyhow::Result<()> {
+            // Simulates market or limit order execution with slippage and commission.
+            // Uses current bar's high/low for market orders.
+            // For limit orders: checks if price was hit during bar.
+            
             let symbol = &event.symbol;
             let instruments_info = strategy_instruments_info.get(symbol)
                 .ok_or_else(|| anyhow::anyhow!("No instrument info for {}", symbol))?;
@@ -34,6 +40,7 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
 
             let execution_price = match event.order_type.as_str() {
                 "MKT" => {
+                    // Apply slippage: buy at high + slippage, sell at low - slippage
                     if strategy_settings.slippage.len() == 1 {
                         match event.direction.as_deref() {
                             Some("BUY") => (1.0 + strategy_settings.slippage[0]) * current_bar.high,
@@ -46,6 +53,7 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
 
                 },
                 "LMT" => {
+                    // Limit order: only fills if price was reached
                     let limit_price = event.limit_price.unwrap_or(current_bar.close);
                     match event.direction.as_deref() {
                         Some("BUY") => {

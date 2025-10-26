@@ -1,20 +1,18 @@
-/// Structure representing command-line arguments.
+// Farukon_2_0/src/cli.rs
+
+/// Command-line argument parser using `clap`.
+/// Parses the `--config` flag to locate the strategy configuration file.
 #[derive(Debug)]
 pub struct Args {
     pub config: std::path::PathBuf,
 }
 
-/// Command-line arguments parser using Clap.
-///
-/// Supports input/output paths, threading, and optional resampling with validation.
 impl Args {
-    /// Parses command-line arguments using `clap`.
-    ///
+    /// Parses command-line arguments.
+    /// Expects exactly one required argument: `--config <path>`
     /// # Returns
-    /// * `Args` - Struct containing parsed arguments.
-    ///
-    /// # Errors
-    /// * If required arguments are missing or invalid.    
+    /// * `Args` struct with parsed config path
+    /// * Panics if required argument is missing (clap handles this)    
     pub fn parse() -> Self {
         let matches = clap::Command::new("Farukon")
             .version("2.0.0")
@@ -34,4 +32,5 @@ impl Args {
             config: matches.get_one::<String>("config").unwrap().clone().into(),
         }
     }
+
 }

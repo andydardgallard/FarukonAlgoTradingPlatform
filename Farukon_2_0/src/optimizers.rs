@@ -1,10 +1,14 @@
 // Farukon_2_0/src/optimizers.rs
 
+//! Optimization engine for hyperparameter tuning.
+//! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
+//! Uses Rayon for parallel evaluation of thousands of parameter combinations.
+
 use crate::backtest;
 use crate::portfolio;
 use crate::execution;
 use crate::data_handler;
-use crate::stratagy_loader;
+use crate::strategy_loader;
 
 #[derive(Debug, Clone)]
 pub struct OptimizationRunner {
@@ -40,6 +44,10 @@ impl OptimizationRunner {
     }
 
     pub fn run_grid_search(self, total_combinations: usize, combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>) -> Vec<farukon_core::optimization::OptimizationResult> {
+        // Runs Grid Search in parallel across all CPU cores.
+        // Each parameter set is evaluated by running a full backtest.
+        // Uses Atomic counter to track progress.
+
         let threads = self.strategy_settings.threads.unwrap_or(num_cpus::get());
         let mode = self.mode;
 
@@ -114,8 +122,10 @@ impl OptimizationRunner {
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
     ) -> farukon_core::performance::PerformanceMetrics {
-        let (event_sender, event_receiver) = std::sync::mpsc::channel::<Box<dyn farukon_core::event::Event>>();
+        // Creates a full backtest environment for a single parameter set.
+        // Used by Grid Search and Genetic Algorithm.
 
+        let (event_sender, event_receiver) = std::sync::mpsc::channel::<Box<dyn farukon_core::event::Event>>();
         let data_handler: Box<dyn farukon_core::data_handler::DataHandler> = Box::new(
             data_handler::HistoricFlatBuffersDataHandlerZC::new_with_sequential_load(
                 mode,
@@ -124,8 +134,8 @@ impl OptimizationRunner {
             ).expect("Failed to create data handler")
         );
 
-        let dynamic_strategy: Box<stratagy_loader::DynamicStratagy> = Box::new(
-            stratagy_loader::DynamicStratagy::load_from_path(
+        let dynamic_strategy: Box<strategy_loader::DynamicStratagy> = Box::new(
+            strategy_loader::DynamicStratagy::load_from_path(
                 mode,
                 strategy_settings,
                 strategy_instruments_info,
@@ -165,6 +175,9 @@ impl OptimizationRunner {
     }
 
     pub fn run_genetic_search(self, ga_params: &farukon_core::settings::GAParams) -> anyhow::Result<Vec<farukon_core::optimization::GAStatsPerGeneration>> {
+        // Runs Genetic Algorithm optimization.
+        // Uses fitness function to evaluate chromosomes.
+        
         let ga_config = farukon_core::optimization::GAConfig::from_settings(ga_params);
         let opt_config = farukon_core::utils::parse_optimization_config(&self.strategy_settings);
         let mut ga = farukon_core::optimization::GeneticAlgorythm::new()
@@ -190,6 +203,9 @@ impl OptimizationRunner {
         metrics: &farukon_core::performance::PerformanceMetrics,
         ga_config: &farukon_core::optimization::GAConfig,
     ) -> f64 {
+        // Converts performance metrics into a scalar fitness score.
+        // Supports max/min direction and composite metrics.
+
         let raw_fitness = match ga_config.get_fitness_metric() {
             farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
             farukon_core::settings::FitnessValue::TotalReturnPercent => metrics.get_total_return_percent(),
@@ -219,6 +235,9 @@ impl OptimizationRunner {
         metrics: &farukon_core::performance::PerformanceMetrics,
         composite_metrics: &[String],
     ) -> f64 {
+        // Combines multiple metrics into a single score with equal weights.
+        // Example: APR/DD_factor + Recovery_Factor + Deals_Count
+        
         let mut total_score = 0.0;
         let weight = 1.0 / composite_metrics.len() as f64;
 

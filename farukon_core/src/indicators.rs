@@ -1,3 +1,5 @@
+// farukon_core/src/indicators.rs
+
 use crate::data_handler;
 
 pub fn sma(

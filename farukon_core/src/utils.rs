@@ -1,3 +1,5 @@
+// farukon_core/src/utils.rs
+
 use anyhow::Context;
 
 use crate::settings;

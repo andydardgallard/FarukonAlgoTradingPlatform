@@ -1,3 +1,5 @@
+// farukon_core/src/index.rs
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TimeIndexEntry {
     pub timestamp: u64,

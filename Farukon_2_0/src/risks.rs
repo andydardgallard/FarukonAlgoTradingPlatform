@@ -1,3 +1,5 @@
+// Farukon_2_0/src/risks.rs
+
 use farukon_core;
 
 pub fn margin_call_control_for_signal(
@@ -6,7 +8,9 @@ pub fn margin_call_control_for_signal(
     signal_event: &farukon_core::event::SignalEvent,
     instrument_info: &farukon_core::instruments_info::InstrumentInfo,
 ) -> anyhow::Result<bool> {
-    
+    // Checks if sufficient capital exists to open a new position.
+    // Used during SIGNAL → ORDER conversion.
+
     let symbol = &signal_event.symbol;
     let signal_name = &signal_event.signal_name;
 
@@ -25,7 +29,7 @@ pub fn margin_call_control_for_signal(
             }
         }
     } else {
-        return anyhow::Ok(true);
+        return anyhow::Ok(true);    // EXIT always allowed
     }
 
     anyhow::Ok(true)
@@ -37,8 +41,10 @@ pub fn margin_call_control_for_market(
     strategy_settings: &farukon_core::settings::StrategySettings,
     strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
 ) -> anyhow::Result<bool> {
-    let cash = latest_equity_point.equity_point.cash;
+    // Checks if current portfolio has sufficient equity to maintain open positions.
+    // Triggers margin call if capital < min_margin * total_position_value.
 
+    let cash = latest_equity_point.equity_point.cash;
     if cash < 0.0 {
         let mut capital = 0.0;
         

@@ -1,5 +1,9 @@
 // Farukon_2_0/src/portfolio.rs
 
+//! Portfolio manager: tracks positions, holdings, equity, and risk.
+//! Implements PortfolioHandler trait for integration with Backtest.
+//! Handles fill events, signal events, and margin calls.
+
 use farukon_core::{self, portfolio::PortfolioHandler};
 
 use crate::risks;
@@ -49,8 +53,9 @@ impl Portfolio {
     fn construct_current_positions(
         strategy_settings: &farukon_core::settings::StrategySettings,
     ) -> std::collections::HashMap<String, farukon_core::portfolio::PositionState> {
-        let mut positions: std::collections::HashMap<String, farukon_core::portfolio::PositionState> = std::collections::HashMap::new();
+        // Initializes empty position state for each symbol in strategy.
 
+        let mut positions: std::collections::HashMap<String, farukon_core::portfolio::PositionState> = std::collections::HashMap::new();
         for symbol in &strategy_settings.symbols {
             let current_positions_for_symbol: farukon_core::portfolio::PositionState = farukon_core::portfolio::PositionState::new();
             positions.insert(symbol.clone(), current_positions_for_symbol);
@@ -61,8 +66,9 @@ impl Portfolio {
     fn construct_current_holdings(
         strategy_settings: &farukon_core::settings::StrategySettings,
     ) -> std::collections::HashMap<String, farukon_core::portfolio::HoldingsState> {
-        let mut holdings: std::collections::HashMap<String, farukon_core::portfolio::HoldingsState> = std::collections::HashMap::new();
+        // Initializes empty holding state for each symbol.
 
+        let mut holdings: std::collections::HashMap<String, farukon_core::portfolio::HoldingsState> = std::collections::HashMap::new();
         for symbol in &strategy_settings.symbols {
             let current_holdings_for_symbol: farukon_core::portfolio::HoldingsState = farukon_core::portfolio::HoldingsState::new();
             holdings.insert(symbol.clone(), current_holdings_for_symbol);
@@ -75,6 +81,10 @@ impl Portfolio {
         signal_event: &farukon_core::event::SignalEvent,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>,
     ) -> Option<farukon_core::event::OrderEvent> {
+            // Converts a SIGNAL event into an ORDER event.
+            // Uses position sizer to determine quantity.
+            // Applies margin control to prevent over-leverage.
+
             let signal_name = &signal_event.signal_name;
             let symbol = &signal_event.symbol;
             let cur_quantity = self.get_current_positions().get(&symbol.clone()).unwrap().position;
@@ -126,7 +136,7 @@ impl Portfolio {
             None
         }
 
-    #[allow(dead_code)] // TODO
+    #[allow(dead_code)] // TODO: Used for export
     pub fn export_equity_to_csv(&self, filename: &str) -> anyhow::Result<()> {
         let mut file = std::fs::File::create(filename)?;
         writeln!(file, "datetime,capital")?;
@@ -145,8 +155,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         fill_event: &farukon_core::event::FillEvent,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>
     ) {
-        let timeindex = data_handler.get_latest_bar_datetime(&fill_event.symbol);
+        // Updates position state on FILL.
+        // Adjusts position size, records entry/exit prices.
 
+        let timeindex = data_handler.get_latest_bar_datetime(&fill_event.symbol);
         if self.mode == "Debug".to_string() {
             println!("Start event, Current_positions, {:?}, {:?}", timeindex, self.current_positions);
         }
@@ -191,6 +203,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         fill_event: &farukon_core::event::FillEvent,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>,
     ) {
+        // Updates PnL and blocked margin on FILL.
+        // Uses step_price and step to convert price to currency value.
+
         let timeindex = data_handler.get_latest_bar_datetime(&fill_event.symbol);
         if self.mode == "Debug".to_string() {
             println!("Start event, Current_holdings, {:?}, {:?}", timeindex, self.current_holdings);
@@ -260,6 +275,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         &mut self,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>,
     ) {
+        // Called on every MARKET event to update equity curve, snapshots, and metrics.
+        // Also triggers margin call monitoring.
+
         let positions_snapshot_data = self.current_positions.clone();
         let mut holdings_snapshot_data = self.current_holdings.clone();
         let mut equity_snapshot_data = self.current_equity_point.clone();
@@ -289,7 +307,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             }
         }
 
-        // Update all_positions
+        // Update all_positions snapshot
         if self.all_positions.len() < 2 {
         self.all_positions.push(farukon_core::portfolio::PositionSnapshot::new(
             current_bar_datetime,
@@ -304,7 +322,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             }
         }
 
-        // Update all_holdings
+        // Update all_holdings snapshot
         if self.all_holdings.len() < 2 {
             self.all_holdings.push(farukon_core::portfolio::HoldingSnapshot::new(
                 current_bar_datetime,
@@ -341,7 +359,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         
         self.current_equity_point = equity_snapshot_data.clone();
 
-
+        // Update all_equity_points snapshot
         if self.all_equity_points.len() < 2 {
             self.all_equity_points.push(farukon_core::portfolio::EquitySnapshot::new(
                 current_bar_datetime,
@@ -356,10 +374,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             }
         }
 
-        // udate equity curve data
+        // Udate equity curve data
         self.equity_series.push((current_bar_datetime, equity_snapshot_data.capital));
 
-        // update Metrics
+        // Update metrics incrementally if in RealTime mode
         let start_date = self.get_all_holdings().first().unwrap().datetime;
         let end_date = data_handler.get_latest_bar_datetime(
             self.strategy_settings.symbols.first().unwrap()
@@ -376,6 +394,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             }
         }
 
+        // Update unrealized PnL for open positions
         for symbol in &self.strategy_settings.symbols {
             let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
             let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
@@ -398,7 +417,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             }
         }
 
-        // Close all positions if margin call
+        // Margin call monitoring: if capital falls below min_margin, close all positions
         let margin_call_monitoring = risks::margin_call_control_for_market(
             self.get_latest_equity_point().unwrap(),
             self.get_current_positions(),
@@ -435,6 +454,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         signal_event: &farukon_core::event::SignalEvent,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>,
     ) {
+        // Converts SIGNAL to ORDER and sends to execution engine.
         if self.mode == "Debug".to_string() {
             println!("Start event, Current_positions, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.current_positions);
         }
@@ -452,6 +472,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
     }
 
     fn output_summary_stats(&self) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
+        // Returns final performance metrics after backtest.
         if self.mode == "Debug".to_string() {
             println!("{:#?}", self.equity_series);
         }
@@ -463,6 +484,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
     }
 
     fn calculate_final_performance(&mut self) {
+        // Called after backtest ends to compute offline metrics.
+        // Uses full equity curve for accurate drawdown and return calculations.
+
         if let farukon_core::settings::MetricsMode::Offline = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
             let equity_series = self.get_equity_capital_values();
             let start_date = self.get_all_holdings().first().unwrap().datetime;
@@ -488,6 +512,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
     }
 
+    // Getters
     fn get_current_positions(&self) -> &std::collections::HashMap<String, farukon_core::portfolio::PositionState> {
         &self.current_positions
     }

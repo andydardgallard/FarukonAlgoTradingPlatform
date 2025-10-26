@@ -1,9 +1,13 @@
 // Farukon_2_0/src/strategy_loader.rs
 
+//! Dynamic strategy loader: loads compiled Rust libraries (.dylib/.so/.dll) at runtime.
+//! Enables hot-swapping of trading logic without recompiling the core engine.
+//! Uses `libloading` to load symbols: create_strategy, destroy_strategy, calculate_signals.
+
 pub struct DynamicStratagy {
-    _lib: libloading::Library,
-    strategy_ptr: *mut std::ffi::c_void,
-    destroy_fn: libloading::Symbol<'static, extern "C" fn(*mut std::ffi::c_void)>,
+    _lib: libloading::Library,  // Holds reference to loaded library
+    strategy_ptr: *mut std::ffi::c_void,    // Pointer to strategy instance
+    destroy_fn: libloading::Symbol<'static, extern "C" fn(*mut std::ffi::c_void)>,  // Destructor
 }
 
 impl DynamicStratagy {
@@ -13,6 +17,9 @@ impl DynamicStratagy {
         strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
         event_sender: &std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
     ) -> anyhow::Result<Self> {
+        // Loads dynamic strategy library and creates strategy instance.
+        // Expects 3 exported C functions: create_strategy, destroy_strategy, calculate_signals.
+
         let lib_path = &strategy_settings.strategy_path;
         let lib = unsafe { libloading::Library::new(lib_path)? };
 
@@ -55,6 +62,10 @@ impl DynamicStratagy {
         latest_equity_point: &farukon_core::portfolio::EquitySnapshot,
         symbol_list: &[String],
     ) -> anyhow::Result<()> {
+        // Calls calculate_signals() from the loaded library.
+        // Transforms Rust types into C-compatible pointers.
+        // Returns 0 on success, -1 on error.
+
         let calculate_signals_fn: libloading::Symbol<extern "C" fn (
             *mut std::ffi::c_void,
             *const farukon_core::DataHandlerVTable,
@@ -102,11 +113,15 @@ impl DynamicStratagy {
 
 impl Drop for DynamicStratagy {
     fn drop(&mut self) {
+        // Ensures strategy is destroyed when this object goes out of scope.
+        // Prevents memory leaks.
+
         if !self.strategy_ptr.is_null() {
                 (self.destroy_fn)(self.strategy_ptr);
         }
     }
 }
 
+// Allows DynamicStratagy to be safely shared between threads (used in Grid Search).
 unsafe impl Send for DynamicStratagy {}
 unsafe impl Sync for DynamicStratagy {}
