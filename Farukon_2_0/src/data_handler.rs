@@ -539,14 +539,23 @@ impl farukon_core::data_handler::DataHandler for HistoricFlatBuffersDataHandler 
 // --- ZERO-COPY FLATBUFFERS DATA HANDLER (PRODUCTION) ---
 #[derive(Debug, Clone)]
 struct FbSymbolIteratorState {
+    /// Index of the current aggregated bar within the combined timeline.
     current_aggregated_index_in_timeline: usize,
+    /// Start timestamp of the current aggregation window (e.g., 5-minute bar starting at 10:00:00).
     current_window_start_timestamp: Option<u64>,
+    /// The open price for the current aggregation window, taken from the first raw bar within it.
     aggregated_open: Option<f64>,
+    /// The highest high price seen so far in the current aggregation window.
     aggregated_high: f64,
+    /// The lowest low price seen so far in the current aggregation window.
     aggregated_low: f64,
+    /// The close price for the current aggregation window, taken from the last raw bar within it.
     aggregated_close: f64,
+    /// The total volume accumulated in the current aggregation window.
     aggregated_volume: u64,
+    /// Index of the next raw bar to be processed from the original FlatBuffer vector for this symbol.
     next_raw_bar_index_in_vector: usize,
+    /// Caches the last known bar for padding purposes if no new bar is generated for a timeline step.
     last_known_bar_cache: Option<farukon_core::data_handler::MarketBar>,
 }
 
@@ -605,12 +614,18 @@ impl FbSymbolIteratorState {
 #[derive(Debug, Clone)]
 pub struct HistoricFlatBuffersDataHandlerZC {
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    /// Maps symbol names to Arc-wrapped (memory-mapped FlatBuffer data, FlatBuffer root object).
     symbol_data_fb: std::collections::HashMap<String, std::sync::Arc<(memmap2::Mmap, ohlcv_generated::OHLCVList<'static>)>>,
+    /// Unused field, likely for future indexing needs.
     _symbol_indices: std::collections::HashMap<String, std::sync::Arc<farukon_core::index::FullIndex>>,
+    /// The unified timeline of all aggregated timestamps across all symbols, shared across instances.
     combined_aggregated_datetime_list: std::sync::Arc<Vec<chrono::DateTime<chrono::Utc>>>,
+    /// Maps symbol names to their respective aggregation state machine.
     symbol_iterator_states: std::collections::HashMap<String, FbSymbolIteratorState>,
+    /// Stores the latest aggregated bars for each symbol, used by the DataHandler trait methods.
     latest_symbol_data: std::collections::HashMap<String, Vec<farukon_core::data_handler::MarketBar>>,
     continue_backtest: bool,
+    /// The strategy-specific settings containing data path and target timeframe.
     strategy_settings: farukon_core::settings::StrategySettings,
 }
 
