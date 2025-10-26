@@ -2,6 +2,9 @@
 
 //! Core library entry point.
 //! Re-exports all public modules for use by Farukon_2_0 and strategy_lib.
+//!
+//! This file also defines the VTable for dynamic strategy loading.
+//! The VTable allows C-compatible interfaces to Rust DataHandler, enabling dynamic linking.
 
 pub mod event;
 pub mod index;
@@ -35,7 +38,7 @@ pub struct DataHandlerVTable {
 impl data_handler::DataHandler for DataHandlerVTable {
     // Implements DataHandler trait by calling C function pointers.
     // Used by dynamic strategy to access data without Rust type dependencies.
-    
+
     fn get_latest_bar(&self, symbol: &str) -> Option<&data_handler::MarketBar> {
         unsafe {
             (self.get_latest_bar)(self as *const _ as *const (), symbol)
