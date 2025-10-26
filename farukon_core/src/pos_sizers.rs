@@ -1,9 +1,22 @@
 //farukon_core/src/pos_sizers.rs
 
+//! Position sizing functions.
+//! Calculates the quantity to trade based on available capital and strategy parameters.
+
 use crate::settings;
 use crate::commission_plans;
 use crate::instruments_info;
 
+/// Calculates the position size using the "MPR" (Maximum Possible Risk) method.
+/// # Arguments
+/// * `mode` - Operational mode (Debug, Optimize, etc.).
+/// * `capital` - Available capital.
+/// * `entry_price` - Entry price for the trade.
+/// * `exit_price` - Exit price for the trade.
+/// * `strategy_settings` - Strategy settings.
+/// * `instrument_info` - Instrument metadata.
+/// # Returns
+/// * An optional `f64` representing the quantity to trade.
 fn mpr(
     mode: &String,
     capital: f64,
@@ -45,6 +58,16 @@ fn mpr(
     Some(((max_percent_risk / risk_per_deal_in_value_gross) * 10.0_f64.powi(points_from_zero)).floor() / 10.0_f64.powi(points_from_zero))
 }
 
+/// Calculates the position size based on the strategy settings.
+/// # Arguments
+/// * `mode` - Operational mode.
+/// * `capital` - Available capital.
+/// * `price` - Current price.
+/// * `long_sma` - Long-term SMA (optional).
+/// * `strategy_settings` - Strategy settings.
+/// * `instrument_info` - Instrument metadata.
+/// # Returns
+/// * An optional `f64` representing the quantity to trade.
 pub fn get_pos_sizer_from_settings(
     mode: &String,
     capital: Option<f64>,

@@ -1,10 +1,14 @@
 // farukon_core/src/settings.rs
 
+//! Configuration structures for the Farukon platform.
+//! Loads settings from JSON files and validates them.
+
 use serde::Deserialize;
 
 use crate::commission_plans;
 use crate::instruments_info;
 
+/// Type of optimizer to use.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum OptimizerType {
@@ -14,6 +18,7 @@ pub enum OptimizerType {
     Genetic { ga_params: GAParams },
 }
 
+/// Type of fitness metric to optimize.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub enum FitnessValue {
@@ -45,6 +50,7 @@ impl Default for FitnessValue {
     }
 }
 
+/// Parameters for the Genetic Algorithm optimizer.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GAParams {
@@ -55,6 +61,7 @@ pub struct GAParams {
     pub fitness_params: FitnessParams,
 }
 
+/// Fitness function parameters for the Genetic Algorithm.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FitnessParams {
@@ -69,6 +76,7 @@ pub struct MarginParams {
     pub margin_call_type: String,
 }
 
+/// Position sizing parameters.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PosSizer {
@@ -79,6 +87,7 @@ pub struct PosSizer {
     pub pos_sizer_value: Vec<f64>,
 }
 
+/// Data settings for a strategy.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DataSettings {
@@ -95,6 +104,7 @@ pub enum KellyMode {
     Off,
 }
 
+/// Mode for calculating performance metrics.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum MetricsMode {
@@ -104,12 +114,14 @@ pub enum MetricsMode {
     RealTime { modified_kelly_creterion: KellyMode },
 }
 
+/// Portfolio settings for a strategy.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortfolioSettingsForStrategy {
     pub metrics_calculation_mode: MetricsMode,
 }
 
+/// Settings for a single strategy.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct StrategySettings {
@@ -136,6 +148,7 @@ pub struct StrategySettings {
     pub commission_plans: Option<commission_plans::CommissionPlans>
 }
 
+/// Common settings applicable to the entire platform.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CommonSettings {
@@ -143,6 +156,7 @@ pub struct CommonSettings {
     pub initial_capital: f64,
 }
 
+/// Top-level settings structure.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -151,6 +165,12 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Loads settings from a JSON file.
+    /// # Arguments
+    /// * `config_path` - Path to the JSON configuration file.
+    /// * `instruments_info` - Instrument metadata registry.
+    /// # Returns
+    /// * `anyhow::Result<Settings>` containing the loaded settings.
     pub fn load<P: AsRef<std::path::Path>>(
         settings_file_path: P,
         instruments_info: &instruments_info::InstrumentsInfoRegistry,
@@ -393,6 +413,9 @@ fn check_args(
     anyhow::Ok(())
 }
 
+// --- Deserialization Helpers ---
+
+/// Deserializes strategy parameters from JSON.
 fn deserialize_strategy_params<'de, D>(deserializer: D) -> Result<std::collections::HashMap<String, Vec<serde_json::Value>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -427,6 +450,15 @@ where
     Ok(result)
 }
 
+/// Deserializes a `serde_json::Value` that can represent either a discrete array of floats or a range object into a vector of floats.
+/// The range object is expected to have fields `start`, `end`, and `step`.
+/// This function is typically used for deserializing parameter ranges in optimization settings.
+///
+/// # Arguments
+/// * `deserializer` - The serde deserializer.
+///
+/// # Returns
+/// * `Result<Vec<f64>, D::Error>` - A vector of floats representing either the discrete values or the generated range.
 fn deserialize_float_range<'de, D>(deserializer: D) -> Result<Vec<f64>, D::Error>
 where 
     D: serde::Deserializer<'de>,

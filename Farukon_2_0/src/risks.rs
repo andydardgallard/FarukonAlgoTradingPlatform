@@ -2,6 +2,15 @@
 
 use farukon_core;
 
+/// Checks if sufficient capital exists to execute a signal.
+/// Used during SIGNAL → ORDER conversion.
+/// # Arguments
+/// * `quantity` - The quantity to trade.
+/// * `latest_equity_point` - The latest equity point.
+/// * `signal_event` - The signal event.
+/// * `instrument_info` - The instrument metadata.
+/// # Returns
+/// * `anyhow::Result<bool>` indicating whether the signal can be executed.
 pub fn margin_call_control_for_signal(
     quantity: f64,
     latest_equity_point: &farukon_core::portfolio::EquitySnapshot,
@@ -35,6 +44,15 @@ pub fn margin_call_control_for_signal(
     anyhow::Ok(true)
 }
 
+/// Checks if current portfolio has sufficient equity to maintain open positions.
+/// Triggers margin call if capital < min_margin * total_position_value.
+/// # Arguments
+/// * `latest_equity_point` - The latest equity point.
+/// * `current_positions` - The current positions.
+/// * `strategy_settings` - The strategy settings.
+/// * `strategy_instruments_info` - The instrument metadata.
+/// # Returns
+/// * `anyhow::Result<bool>` indicating whether a margin call has occurred.
 pub fn margin_call_control_for_market(
     latest_equity_point: &farukon_core::portfolio::EquitySnapshot,
     current_positions: &std::collections::HashMap<String, farukon_core::portfolio::PositionState>,

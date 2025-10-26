@@ -10,21 +10,40 @@ use crate::risks;
 use std::io::Write;
 
 pub struct Portfolio {
+    /// Operational mode (Debug, Optimize, Visual).
     mode: String,
+    /// Event sender for communicating with other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    /// Strategy settings for this portfolio.
     strategy_settings: farukon_core::settings::StrategySettings,
+    /// Instrument metadata for all traded instruments.
     strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+    /// Current position state for each symbol.
     current_positions: std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
+    /// Current holding state for each symbol.
     current_holdings: std::collections::HashMap<String, farukon_core::portfolio::HoldingsState>,
+    /// Current equity point (capital, blocked, cash).
     current_equity_point: farukon_core::portfolio::EquityPoint,
+    /// Historical snapshots of positions.
     all_positions: Vec<farukon_core::portfolio::PositionSnapshot>,
+    /// Historical snapshots of holdings.
     all_holdings: Vec<farukon_core::portfolio::HoldingSnapshot>,
+    /// Historical snapshots of equity points.
     all_equity_points: Vec<farukon_core::portfolio::EquitySnapshot>,
+    /// Equity curve for plotting.
     equity_series: Vec<(chrono::DateTime<chrono::Utc>, f64)>,
+    /// Performance manager for calculating metrics.
     performance_manager: farukon_core::performance::PerformanceManager,
 }
 
 impl Portfolio {
+    /// Creates a new Portfolio instance.
+    /// # Arguments
+    /// * `mode` - Operational mode.
+    /// * `event_sender` - Sender for events.
+    /// * `strategy_settings` - Strategy configuration.
+    /// * `strategy_instruments_info` - Instrument metadata.
+    /// * `initial_capital_for_strategy` - Starting capital for this strategy.
     pub fn new(
         mode: &String,
         event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
@@ -50,6 +69,7 @@ impl Portfolio {
         )
     }
 
+    /// Constructs the initial position state for each symbol in the strategy.
     fn construct_current_positions(
         strategy_settings: &farukon_core::settings::StrategySettings,
     ) -> std::collections::HashMap<String, farukon_core::portfolio::PositionState> {
@@ -63,6 +83,7 @@ impl Portfolio {
         positions
     }
 
+    /// Constructs the initial holding state for each symbol in the strategy.
     fn construct_current_holdings(
         strategy_settings: &farukon_core::settings::StrategySettings,
     ) -> std::collections::HashMap<String, farukon_core::portfolio::HoldingsState> {
@@ -76,6 +97,13 @@ impl Portfolio {
         holdings
     }
 
+    /// Generates an order event from a signal event.
+    /// Applies position sizing and margin control.
+    /// # Arguments
+    /// * `signal_event` - The signal event received from the strategy.
+    /// * `data_handler` - The data handler for accessing market data.
+    /// # Returns
+    /// * An optional OrderEvent if the signal should be executed.
     fn generate_order(
         &self,
         signal_event: &farukon_core::event::SignalEvent,
@@ -136,6 +164,11 @@ impl Portfolio {
             None
         }
 
+    /// Exports the equity curve to a CSV file.
+    /// # Arguments
+    /// * `filename` - The name of the output file.
+    /// # Returns
+    /// * `anyhow::Result<()>` indicating success or failure.
     #[allow(dead_code)] // TODO: Used for export
     pub fn export_equity_to_csv(&self, filename: &str) -> anyhow::Result<()> {
         let mut file = std::fs::File::create(filename)?;
@@ -150,6 +183,10 @@ impl Portfolio {
 }
 
 impl farukon_core::portfolio::PortfolioHandler for Portfolio {
+    /// Updates position state based on a fill event.
+    /// # Arguments
+    /// * `fill_event` - The fill event received from the execution engine.
+    /// * `data_handler` - The data handler for accessing market data.
     fn update_positions_from_fill(
         &mut self,
         fill_event: &farukon_core::event::FillEvent,
@@ -198,6 +235,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
     }
 
+    /// Updates holding state based on a fill event.
+    /// # Arguments
+    /// * `fill_event` - The fill event received from the execution engine.
+    /// * `data_handler` - The data handler for accessing market data.
     fn update_holdings_from_fill(
         &mut self,
         fill_event: &farukon_core::event::FillEvent,
@@ -262,6 +303,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
     }
 
+    /// Updates the portfolio state based on a fill event.
+    /// # Arguments
+    /// * `fill_event` - The fill event received from the execution engine.
+    /// * `data_handler` - The data handler for accessing market data.
     fn update_fill(
         &mut self,
         fill_event: &farukon_core::event::FillEvent,
@@ -271,6 +316,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         self.update_holdings_from_fill(fill_event, data_handler);
     }
 
+    /// Updates the portfolio state based on a fill event.
+    /// # Arguments
+    /// * `fill_event` - The fill event received from the execution engine.
+    /// * `data_handler` - The data handler for accessing market data.
     fn update_timeindex(
         &mut self,
         data_handler: &Box<dyn farukon_core::data_handler::DataHandler>,
@@ -449,6 +498,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
     }
 
+    /// Updates the portfolio state based on a signal event.
+    /// # Arguments
+    /// * `signal_event` - The signal event received from the strategy.
+    /// * `data_handler` - The data handler for accessing market data.
     fn update_signal(
         &mut self,
         signal_event: &farukon_core::event::SignalEvent,
@@ -471,6 +524,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
     }
 
+    /// Returns a summary of the final performance metrics.
+    /// # Returns
+    /// * `anyhow::Result<&PerformanceMetrics>` containing the final metrics.
     fn output_summary_stats(&self) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
         // Returns final performance metrics after backtest.
         if self.mode == "Debug".to_string() {
@@ -483,6 +539,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         anyhow::Ok(output_metrics)
     }
 
+    /// Calculates final performance metrics after the backtest ends.
     fn calculate_final_performance(&mut self) {
         // Called after backtest ends to compute offline metrics.
         // Uses full equity curve for accurate drawdown and return calculations.
@@ -513,34 +570,42 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
     }
 
     // Getters
+    /// Returns a reference to the current positions.
     fn get_current_positions(&self) -> &std::collections::HashMap<String, farukon_core::portfolio::PositionState> {
         &self.current_positions
     }
 
+    /// Returns a reference to all historical position snapshots.
     fn get_all_positions(&self) -> &Vec<farukon_core::portfolio::PositionSnapshot> {
         &self.all_positions
     }
 
+    /// Returns a reference to the current holdings.
     fn get_current_holdings(&self) -> &std::collections::HashMap<String, farukon_core::portfolio::HoldingsState> {
         &self.current_holdings
     }
 
+    /// Returns a reference to all historical holding snapshots.
     fn get_all_holdings(&self) -> &Vec<farukon_core::portfolio::HoldingSnapshot> {
         &self.all_holdings
     }
 
+    /// Returns a reference to the current equity point.
     fn get_current_equity_point(&self) -> &farukon_core::portfolio::EquityPoint {
         &self.current_equity_point
     }
 
+    /// Returns a reference to all historical equity snapshots.
     fn get_all_equity_points(&self) -> &Vec<farukon_core::portfolio::EquitySnapshot> {
         &self.all_equity_points
     }
 
+    /// Returns a reference to the latest equity snapshot.
     fn get_latest_equity_point(&self) -> Option<&farukon_core::portfolio::EquitySnapshot> {
         self.all_equity_points.last()
     }
 
+    /// Returns a vector of all capital values from the equity curve.
     fn get_equity_capital_values(&self) -> Vec<f64> {
         self.all_equity_points.iter().map(|point| point.equity_point.capital).collect()
     }

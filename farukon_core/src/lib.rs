@@ -1,5 +1,8 @@
 // farukon_core/src/lib.rs
 
+//! Core library entry point.
+//! Re-exports all public modules for use by Farukon_2_0 and strategy_lib.
+
 pub mod event;
 pub mod index;
 pub mod utils;
@@ -15,6 +18,8 @@ pub mod optimization;
 pub mod instruments_info;
 pub mod commission_plans;
 
+// VTable for dynamic strategy loading.
+// Allows C-compatible interface to Rust DataHandler.
 #[repr(C)]
 pub struct DataHandlerVTable {
     get_latest_bar: unsafe fn(*const (), &str) -> Option<&'static data_handler::MarketBar>,
@@ -28,6 +33,9 @@ pub struct DataHandlerVTable {
 }
 
 impl data_handler::DataHandler for DataHandlerVTable {
+    // Implements DataHandler trait by calling C function pointers.
+    // Used by dynamic strategy to access data without Rust type dependencies.
+    
     fn get_latest_bar(&self, symbol: &str) -> Option<&data_handler::MarketBar> {
         unsafe {
             (self.get_latest_bar)(self as *const _ as *const (), symbol)

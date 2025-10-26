@@ -1,5 +1,9 @@
 // farukon_core/src/optimization.rs
 
+//! Optimization engine for hyperparameter tuning.
+//! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
+//! Uses Rayon for parallel evaluation of thousands of parameter combinations.
+
 use std::hash::Hash;
 use rand::prelude::*;
 use std::hash::Hasher;
@@ -9,7 +13,8 @@ use itertools::Itertools;
 use crate::settings;
 use crate::performance;
 
-
+/// Represents the result of evaluating a single parameter set.
+/// Contains the parameters used and the resulting performance metrics.
 #[derive(Debug, Clone)]
 pub struct OptimizationResult {
     parameters: ParameterSet,
@@ -17,6 +22,7 @@ pub struct OptimizationResult {
 }
 
 impl OptimizationResult {
+    /// Creates a new, empty OptimizationResult.
     pub fn new() -> Self {
         Self {
             parameters: ParameterSet::new(),
@@ -24,11 +30,13 @@ impl OptimizationResult {
         }
     }
 
+    /// Sets the parameters for this result.
     pub fn with_parameters(mut self, parameters: ParameterSet) -> Self {
         self.parameters = parameters;
         self
     }
 
+    /// Sets the performance metrics for this result.
     pub fn with_results(mut self, results: performance::PerformanceMetrics) -> Self {
         self.results = results;
         self
@@ -36,16 +44,24 @@ impl OptimizationResult {
 
 }
 
+/// Represents a single set of strategy, position sizing, and slippage parameters.
+/// Used as input to the backtest engine during optimization.
 #[derive(Debug, Clone)]
 pub struct ParameterSet {
+    /// Strategy-specific parameters (e.g., short_window, long_window).
     strategy_params: Vec<(String, serde_json::Value)>,
+    /// Name of the position sizing method (e.g., "mpr", "fixed_ratio").
     pos_sizer_name: String,
+    /// Value for the position sizing method (e.g., 1.5 for MPR).
     pos_sizer_value: f64,
+    /// Additional parameters for the position sizer (currently unused for MPR).
     pos_sizer_additional_params: std::collections::HashMap<String, serde_json::Value>,
+    /// Slippage value to apply during execution (percentage of price).
     slippage: f64,
 }
 
 impl ParameterSet {
+    /// Creates a new, empty ParameterSet.
     pub fn new() -> Self {
         Self {
             strategy_params: Vec::<(String, serde_json::Value)>::new(),
@@ -56,44 +72,55 @@ impl ParameterSet {
         }
     }
 
+    /// Sets the strategy parameters.
     pub fn with_strategy_params(mut self, params: Vec<(String, serde_json::Value)>) -> Self {
         self.strategy_params = params;
         self
     }
 
+    /// Sets the name of the position sizing method.
     pub fn with_pos_sizer_name(mut self, name: String) -> Self {
         self.pos_sizer_name = name;
         self
     }
 
+    /// Sets the value for the position sizing method.
     pub fn with_pos_sizer_value(mut self, value: f64) -> Self {
         self.pos_sizer_value = value;
         self
     }
 
+    /// Sets additional parameters for the position sizer.
     pub fn with_pos_sizer_additional_params(mut self, params: std::collections::HashMap<String, serde_json::Value>) -> Self {
         self.pos_sizer_additional_params = params;
         self
     }
 
+    /// Sets the slippage value.
     pub fn with_slippage(mut self, value: f64) -> Self {
         self.slippage = value;
         self
     }
 
+    /// Returns a reference to the strategy parameters.
     pub fn get_strategy_params(&self) -> &Vec<(String, serde_json::Value)> {
         &self.strategy_params
     }
 
+    /// Returns a reference to the position sizer value.
     pub fn get_pos_sizer_value(&self) -> &f64 {
         &self.pos_sizer_value
     }
 
+    /// Returns a reference to the slippage value.
     pub fn get_slippage(&self) -> &f64 {
         &self.slippage
     }
 
+    /// Generates a human-readable string representation for logging and display.
     pub fn format_for_display(&self) -> String {
+        // Human-readable string for logging.
+        
         let strategy_str = if self.strategy_params.is_empty() {
             "{}".to_string()
         } else {
@@ -130,14 +157,20 @@ impl ParameterSet {
 
 }
 
+/// Configuration for the optimization process.
+/// Defines the ranges of values to test for each parameter.
 #[derive(Debug, Clone)]
 pub struct OptimizationConfig {
+    /// Maps strategy parameter names to lists of possible values.
     strategy_params_ranges: std::collections::HashMap<String, Vec<serde_json::Value>>,
+    /// List of possible values for the position sizer.
     pos_sizer_value_range: Vec<f64>,
+    /// List of possible values for slippage.
     slippage_range: Vec<f64>,
 }
 
 impl OptimizationConfig {
+    /// Creates a new, empty OptimizationConfig.
     pub fn new() -> Self{
         Self {
             strategy_params_ranges: std::collections::HashMap::new(),
@@ -146,25 +179,31 @@ impl OptimizationConfig {
         }
     }
 
+    /// Sets the ranges for strategy parameters.
     pub fn with_strategy_params_ranges(mut self, ranges: std::collections::HashMap<String,  Vec<serde_json::Value>>) -> Self {
         self.strategy_params_ranges = ranges;
         self
     }
 
+    /// Sets the range of values for the position sizer.
     pub fn with_pos_sizer_value_ranges(mut self, range: Vec<f64>) -> Self {
         self.pos_sizer_value_range = range;
         self
     }
 
+    /// Sets the range of values for slippage.
     pub fn with_slippage_range(mut self, range: Vec<f64>) -> Self {
         self.slippage_range = range;
         self
     }
 
+    /// Generates all possible combinations of parameters.
+    /// Returns a vector of ParameterSet objects.
     pub fn generate_all_combinations_vec(&self) -> Vec<ParameterSet> {
         self.generate_all_combinations_iter().collect()
     }
 
+    /// Generates an iterator over all possible combinations of parameters.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
         let strategy_params_names: Vec<String> = self.strategy_params_ranges.keys().cloned().collect();
         self.slippage_range
@@ -200,28 +239,34 @@ impl OptimizationConfig {
 
 }
 
-// Grid Search Algorythm
+// --- GRID SEARCH OPTIMIZER ---
+
+/// A simple, exhaustive optimizer that tests every combination of parameters.
 #[derive(Debug, Clone)]
 pub struct GridSearchOptimizer {
     config: OptimizationConfig,
 }
 
 impl GridSearchOptimizer {
+    /// Creates a new GridSearchOptimizer.
     pub fn new() -> Self {
         Self {
             config: OptimizationConfig::new()
         }
     }
 
+    /// Sets the optimization configuration.
     pub fn with_optimization_config(mut self, config: OptimizationConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// Returns a reference to the optimization configuration.
     pub fn get_config(&self) -> &OptimizationConfig {
         &self.config
     }
 
+    /// Calculates the total number of parameter combinations to test.
     pub fn calculate_total_combinations(&self) -> usize {
         println!("{:?}", self.config);
         let strategy_combinations = self.config.strategy_params_ranges
@@ -235,6 +280,14 @@ impl GridSearchOptimizer {
         self.config.pos_sizer_value_range.len()
     }
 
+    /// Runs the grid search optimization.
+    /// Evaluates each parameter set in parallel using the provided fitness function.
+    /// # Arguments
+    /// * `fitness_function` - A function that takes a ParameterSet and returns an OptimizationResult.
+    /// * `threads` - Number of threads to use for parallel evaluation.
+    /// * `combinations` - Vector of ParameterSet objects to evaluate.
+    /// # Returns
+    /// * A vector of OptimizationResult objects.
     pub fn run_optimization<F>(
         &self,
         fitness_function: F,
@@ -261,7 +314,9 @@ impl GridSearchOptimizer {
 
 }
 
-// Genetic Algorythm
+// --- GENETIC ALGORITHM OPTIMIZER ---
+
+/// Statistics for a single generation of the Genetic Algorithm.
 #[derive(Debug, Clone)]
 pub struct GAStatsPerGeneration {
     best_fitness: f64,
@@ -272,6 +327,7 @@ pub struct GAStatsPerGeneration {
 }
 
 impl GAStatsPerGeneration {
+    /// Creates a new, empty GAStatsPerGeneration.
     pub fn new() -> Self{
         Self {
             best_fitness: 0.0,
@@ -282,26 +338,31 @@ impl GAStatsPerGeneration {
         }
     }
 
+    /// Sets the best fitness score for this generation.
     pub fn with_best_fitness(mut self, value: f64) -> Self {
         self.best_fitness = value;
         self
     }
 
+    /// Sets the worst fitness score for this generation.
     pub fn with_worst_fitness(mut self, value: f64) -> Self {
         self.worst_fitness = value;
         self
     }
 
+    /// Sets the mean fitness score for this generation.
     pub fn with_mean_fitness(mut self, value: f64) -> Self {
         self.mean_fitness = value;
         self
     }
 
+    /// Sets the ID of the best chromosome for this generation.
     pub fn with_best_chromosome_id(mut self, id: Vec<String>) -> Self {
         self.best_chromosome_id = id;
         self
     }
 
+    /// Sets the generation number.
     pub fn with_generation(mut self, number: usize) -> Self {
         self.generation = number;
         self
@@ -309,6 +370,7 @@ impl GAStatsPerGeneration {
 
 }
 
+/// Configuration for the Genetic Algorithm.
 #[derive(Debug, Clone)]
 pub struct GAConfig {
     population_size: usize,
@@ -320,6 +382,7 @@ pub struct GAConfig {
 }
 
 impl GAConfig {
+    /// Creates a new, empty GAConfig.
     pub fn new() -> Self {
         Self {
             population_size: 0,
@@ -331,6 +394,7 @@ impl GAConfig {
         }
     }
 
+    /// Creates a GAConfig from the provided GAParams.
     pub fn from_settings(ga_params: &settings::GAParams) -> Self {
         Self {
             population_size: ga_params.population_size,
@@ -342,16 +406,19 @@ impl GAConfig {
         }
     }
 
+    /// Returns a reference to the fitness metric.
     pub fn get_fitness_metric(&self) -> &settings::FitnessValue {
         &self.fitness_metric
     }
 
+    /// Returns a reference to the fitness direction.
     pub fn get_fitness_direction(&self) -> &String {
         &self.fitness_direction
     }
 
 }
 
+/// The main Genetic Algorithm optimizer.
 pub struct GeneticAlgorythm {
     ga_config: GAConfig,
     optimization_config: OptimizationConfig,
@@ -360,6 +427,7 @@ pub struct GeneticAlgorythm {
 }
 
 impl GeneticAlgorythm {
+    /// Creates a new GeneticAlgorythm.
     pub fn new() -> Self {
         Self {
             ga_config: GAConfig::new(),
@@ -369,16 +437,24 @@ impl GeneticAlgorythm {
         }
     }
 
+    /// Sets the GA configuration.
     pub fn with_ga_config(mut self, ga_config: GAConfig) -> Self {
         self.ga_config = ga_config;
         self
     }
 
+    /// Sets the optimization configuration.
     pub fn with_optimization_config(mut self, opt_config: OptimizationConfig) -> Self {
         self.optimization_config = opt_config;
         self
     }
 
+    /// Runs the genetic algorithm optimization.
+    /// # Arguments
+    /// * `initial_strategy_settings` - The initial strategy settings.
+    /// * `evaluate` - A function that takes a ParameterSet and returns a fitness score.
+    /// # Returns
+    /// * A vector of GAStatsPerGeneration objects.
     pub fn run<F>(
         &mut self,
         initial_strategy_settings: &settings::StrategySettings,
@@ -417,6 +493,8 @@ impl GeneticAlgorythm {
 
     }
 
+    /// Evaluates a population of parameter sets in parallel.
+    /// Caches fitness scores to avoid redundant calculations.
     fn evaluate_population<F>(
         &self,
         threads: usize,
@@ -476,6 +554,7 @@ impl GeneticAlgorythm {
         anyhow::Ok(results)
     }
 
+    /// Creates the initial population by sampling from all possible parameter combinations.
     fn create_initial_population(&mut self, target_size: usize) {
         let all_combinations = self.optimization_config.generate_all_combinations_vec();
         let mut unique_pool: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -497,6 +576,7 @@ impl GeneticAlgorythm {
         self.populations.push(population);
     }
 
+    /// Creates a human-readable ID for a chromosome (parameter set) for display.
     fn create_chromosome_id_for_display(&self, params: &ParameterSet) -> Vec<String> {
         let mut id = Vec::new();
         for (k, v) in &params.strategy_params {
@@ -507,6 +587,7 @@ impl GeneticAlgorythm {
         id
     }
 
+    /// Calculates statistics (mean, best, worst) for a vector of fitness scores.
     fn calculate_stats(&self, values: &[f64]) -> (f64, f64, f64) {
         if values.is_empty() {
             return (0.0, 0.0, 0.0);
@@ -541,6 +622,7 @@ impl GeneticAlgorythm {
         (mean, global_max, global_min)
     }
 
+    /// Calculates statistics for a generation.
     fn calculate_generation_stats(&self, results: &[(ParameterSet, f64)], gen_idx: usize) -> GAStatsPerGeneration {
         let fitness_values: Vec<f64> = results.iter().map(|(_, f)| *f).collect();
         
@@ -568,6 +650,7 @@ impl GeneticAlgorythm {
 
     }
 
+    /// Performs crossover and mutation on two parent chromosomes to create a child.
     fn crossover_mutation(&self, a: &ParameterSet, b: &ParameterSet) -> ParameterSet {
         let mut new_params = Vec::new();
 
@@ -606,6 +689,7 @@ impl GeneticAlgorythm {
 
     }
 
+    /// Selects a parent chromosome using tournament selection.
     fn choose_parent(&self, results: &[(ParameterSet, f64)], rng: &mut impl rand::Rng) -> ParameterSet {
         let idx_a = rng.gen_range(0..results.len());
         let idx_b = rng.gen_range(0..results.len());
@@ -631,6 +715,7 @@ impl GeneticAlgorythm {
         }
     }
 
+    /// Performs tournament selection to create the next generation.
     fn tournament_selection(&self, results: &[(ParameterSet, f64)]) -> Vec<ParameterSet> {
         let mut next_gen = Vec::with_capacity(self.ga_config.population_size);
         let mut rng = rand::thread_rng();
@@ -660,6 +745,7 @@ impl GeneticAlgorythm {
 
 }
 
+/// Hashes a ParameterSet for caching fitness scores.
 fn hash_parameter_set(params: &ParameterSet) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (k, v) in &params.strategy_params {

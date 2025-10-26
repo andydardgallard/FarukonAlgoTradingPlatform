@@ -1,5 +1,8 @@
 // farukon_core/src/event.rs
 
+//! Event system: defines messages passed between components.
+//! Uses trait-based polymorphism to handle MARKET, SIGNAL, ORDER, FILL uniformly.
+
 pub trait Event: std::fmt::Debug + Send + Sync {
     fn event_type(&self) -> &'static str;
     fn get_signal_event_params(&self) -> Option<&SignalEvent>;

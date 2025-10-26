@@ -1,5 +1,8 @@
 // farukon_core/src/execution.rs
 
+//! Interface for order execution simulation.
+//! Allows swapping between simulated and real brokers.
+
 use crate::event;
 use crate::settings;
 use crate::data_handler;

@@ -1,5 +1,8 @@
 // farukon_core/src/instruments_info.rs
 
+//! Instrument metadata registry.
+//! Loads instruments_info.json and validates all contracts.
+
 use anyhow::Context;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -19,6 +22,10 @@ pub struct InstrumentInfo {
 
 impl InstrumentInfo {
     pub fn validate(&self, contract_name: &str) -> anyhow::Result<()> {
+        // Validates all fields for correctness and consistency.
+        // Prevents invalid configurations from crashing backtest.
+        // Called during InstrumentsInfoRegistry::load()
+
         // Validate instrument_type
         {
             const VALID_INSTRUMENT_TYPES: &[&str] = &["futures", "equity", "reversal_futures"];
@@ -127,6 +134,8 @@ pub struct InstrumentsInfoRegistry(
 
 impl InstrumentsInfoRegistry {
     pub fn load() -> anyhow::Result<Self> {
+        // Validate all instruments
+
         let file_path = "instruments_info.json";
         let contents = std::fs::read_to_string(file_path)?;
         let registry: InstrumentsInfoRegistry = serde_json::from_str(&contents)?;
@@ -145,6 +154,8 @@ impl InstrumentsInfoRegistry {
         &self,
         symbol: &str,
     ) -> Option<&InstrumentInfo> {
+        // Finds instrument info by symbol (e.g., "Si-12.23").
+
         for base_name in self.0.keys() {
             if let Some(instrument_base_info) = self.0.get(base_name) {
                 if let Some(instrument_info) = instrument_base_info.get(symbol) {
@@ -156,6 +167,8 @@ impl InstrumentsInfoRegistry {
     }
 
     pub fn get_instrument_info_for_strategy(&self, symbol_list: &[String]) -> anyhow::Result<std::collections::HashMap<String, InstrumentInfo>> {
+        // Returns a map of InstrumentInfo for all symbols in a strategy.
+        
         let mut result: std::collections::HashMap<String, InstrumentInfo> = std::collections::HashMap::new();
         for symbol in symbol_list {
             let instrument_info = self.get_instrument_info(symbol).unwrap();

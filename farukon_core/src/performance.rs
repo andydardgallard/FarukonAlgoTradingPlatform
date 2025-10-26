@@ -1,21 +1,35 @@
 // farukon_core/src/performance.rs
 
+//! Performance metrics calculation engine.
+//! Uses SIMD for ultra-fast return and drawdown calculations.
+
 use crate:: settings;
 
+/// Structure holding all calculated performance metrics for a strategy.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PerformanceMetrics {
+    /// Total profit or loss in base currency (e.g., USD).
     total_return: f64,
+    /// Total return as a percentage of initial capital.
     total_return_percent: f64,
+    /// Annualized Percentage Return (APR) as a percentage.
     apr_percent: f64,
+    /// Maximum drawdown in base currency.
     max_drawdown: f64,
+    /// Maximum drawdown as a percentage of peak equity.
     max_drawdown_percent: f64,
+    /// Ratio of APR to Max Drawdown (higher is better).
     apr_to_drawdown_ratio: f64,
+    /// Recovery Factor (Total Return / Max Drawdown).
     recovery_factor: f64,
+    /// Recovery Factor as a percentage.
     recovery_factor_percent: f64,
+    /// Total number of trades executed.
     deals_count: usize,
 }
 
 impl PerformanceMetrics {
+    /// Creates a new, empty PerformanceMetrics object with default values.
     pub fn default() -> Self {
         Self {
             total_return: 0.0,
@@ -30,6 +44,7 @@ impl PerformanceMetrics {
         }
     }
 
+    /// Converts the performance metrics into a list of key-value pairs for display.
     pub fn to_stats_list(&self) -> Vec<(String, String)> {
         let mut stats = Vec::new();
 
@@ -46,59 +61,86 @@ impl PerformanceMetrics {
         stats
     }
 
+    // Getters
+
+    /// Returns a reference to the APR to Drawdown ratio.
     pub fn get_apr_to_drawdown_ratio(&self) -> &f64 {
         &self.apr_to_drawdown_ratio
     }
 
+    /// Returns a reference to the total return.
     pub fn get_total_return(&self) -> &f64 {
         &self.total_return
     }
 
+    /// Returns a reference to the total return as a percentage.
     pub fn get_total_return_percent(&self) -> &f64 {
         &self.total_return_percent
     }
 
+    /// Returns a reference to the APR as a percentage.
     pub fn get_apr_percent(&self) -> &f64 {
         &self.apr_percent
     }
 
+    /// Returns a reference to the maximum drawdown.
     pub fn get_max_drawdown(&self) -> &f64 {
         &self.max_drawdown
     }
 
+    /// Returns a reference to the maximum drawdown as a percentage.
     pub fn get_max_drawdown_percent(&self) -> &f64 {
         &self.max_drawdown_percent
     }
 
+    /// Returns a reference to the recovery factor.
     pub fn get_recovery_factor(&self) -> &f64 {
         &self.recovery_factor
     }
 
+    /// Returns a reference to the recovery factor as a percentage.
     pub fn get_recovery_factor_percent(&self) -> &f64 {
         &self.recovery_factor_percent
     }
 
+    /// Returns a reference to the deal count.
     pub fn get_deals_count(&self) -> &usize {
         &self.deals_count
     }
 
 }
 
+/// Manager for calculating performance metrics.
+/// Can calculate metrics incrementally during backtest or offline at the end.
 pub struct PerformanceManager {
+    /// Initial capital allocated to this strategy.
     initial_capital_for_strategy: f64,
+    /// Mode for calculating metrics (offline or realtime).
     #[allow(dead_code)]
     metrics_calculation_mode: settings::MetricsMode, // TODO online calculation
+    /// Current performance metrics.
     metrics: PerformanceMetrics,
+    /// List of daily returns.
     returns: Vec<f64>,
+    /// Equity curve (capital over time).
     equity_curve: Vec<f64>,
+    /// Drawdowns over time.
     drawdowns: Vec<f64>,
+    /// Drawdowns as percentages over time.
     drawdowns_percent: Vec<f64>,
+    /// Highest equity reached so far.
     peak: f64,
+    /// Maximum drawdown encountered.
     max_drawdown: f64,
+    /// Maximum drawdown as a percentage.
     max_drawdown_percent: f64,
 }
 
 impl PerformanceManager {
+    /// Creates a new PerformanceManager.
+    /// # Arguments
+    /// * `initial_capital_for_strategy` - The starting capital for the strategy.
+    /// * `strategy_settings` - The strategy settings, which include the metrics calculation mode.
     pub fn new(
         initial_capital_for_strategy: f64,
         strategy_settings: &settings::StrategySettings
@@ -118,6 +160,13 @@ impl PerformanceManager {
         }
     }
 
+    /// Updates performance metrics incrementally during the backtest.
+    /// This is used when `metrics_calculation_mode` is `RealTime`.
+    /// # Arguments
+    /// * `current_total` - The current total capital.
+    /// * `start_date` - The start date of the backtest.
+    /// * `end_date` - The end date of the backtest.
+    /// * `deals_count` - The number of deals executed so far.
     pub fn update_incremental(
         &mut self,
         current_total: f64,
@@ -139,6 +188,7 @@ impl PerformanceManager {
         self.update_metrics(start_date, end_date, deals_count);
     }
 
+    /// Calculate metrics
     fn update_metrics(
         &mut self,
         start_date: chrono::DateTime<chrono::Utc>,
@@ -167,6 +217,13 @@ impl PerformanceManager {
         }
     } 
 
+    /// Calculates final performance metrics after the backtest is complete.
+    /// This is used when `metrics_calculation_mode` is `Offline`.
+    /// # Arguments
+    /// * `equity_series` - The full equity curve (capital over time).
+    /// * `start_date` - The start date of the backtest.
+    /// * `end_date` - The end date of the backtest.
+    /// * `deals_count` - The total number of deals executed.
     pub fn calculate_final(
         &mut self,
         equity_series: &[f64],
@@ -204,6 +261,7 @@ impl PerformanceManager {
 
     }
 
+    /// Returns a reference to the current performance metrics.
     pub fn get_current_performance_metrics(&self) -> &PerformanceMetrics {
         &self.metrics
     }

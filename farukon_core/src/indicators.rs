@@ -1,5 +1,8 @@
 // farukon_core/src/indicators.rs
 
+//! Simple technical indicators.
+//! Uses DataHandler to access OHLCV data.
+
 use crate::data_handler;
 
 pub fn sma(
@@ -9,6 +12,9 @@ pub fn sma(
     n: usize,
     shift: usize
 ) -> Option<f64> {
+    // Simple Moving Average.
+    // Returns average of last n bars, optionally shifted back by 'shift' bars.
+
     let need = n + shift;
     if need == 0 { return None; }
 

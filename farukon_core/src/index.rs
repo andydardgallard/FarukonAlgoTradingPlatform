@@ -1,9 +1,12 @@
 // farukon_core/src/index.rs
 
+//! Index structures for ultra-fast data navigation in FlatBuffers.
+//! Saved as .idx files via bincode.
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TimeIndexEntry {
-    pub timestamp: u64,
-    pub index: u64,
+    pub timestamp: u64, // Unix timestamp (seconds)
+    pub index: u64, // Index of bar in OHLCVList
 }
 
 /// Daily index for ultra-fast day-based navigation.
@@ -17,7 +20,7 @@ pub struct DailyIndexEntry {
 /// Full index structure saved as .idx file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FullIndex {
-    pub time_index: Vec<TimeIndexEntry>,
-    pub daily_index: Vec<DailyIndexEntry>,
-    pub timeframe_index: std::collections::HashMap<String, Vec<u64>>,       // "3m" → [timestamp1, timestamp2...]
+    pub time_index: Vec<TimeIndexEntry>,    // Every bar timestamp
+    pub daily_index: Vec<DailyIndexEntry>,  // Per-day ranges
+    pub timeframe_index: std::collections::HashMap<String, Vec<u64>>,       // Resampled timestamps (e.g., "5min")
 }

@@ -1,5 +1,8 @@
 // farukon_core/src/commision_plans.rs
 
+//! Manages commission fee structure per exchange and instrument type.
+//! Loads commission_plans.json and calculates commissions for FORTS futures.
+
 use crate::settings;
 use crate::instruments_info;
 
@@ -10,6 +13,7 @@ pub struct CommissionPlans {
 
 impl CommissionPlans {
     pub fn load() -> anyhow::Result<Self> {
+        // Loads commission structure from commission_plans.json.
         let file_path = "commission_plans.json";
         let contents = std::fs::read_to_string(file_path)?;
         let plans: Self = serde_json::from_str(&contents)?;
@@ -23,6 +27,7 @@ impl CommissionPlans {
         instrument_type: &str,
         plan_name: &str,
     ) -> Option<f64> {
+        // Retrieves commission rate from plan.
         let exchange_map = self.exchanges.get(exchange)?;
         let plan_value = exchange_map.get(plan_name)?;
 
@@ -45,6 +50,8 @@ impl CommissionPlans {
         plan_name: &str,
         key: &str,
     ) -> Option<serde_json::Value> {
+        // Generic getter for any plan field.
+
         let exchange_map = self.exchanges.get(exchange)?;
         let plan_value = exchange_map.get(plan_name)?;
         plan_value.get(key).cloned()
@@ -57,6 +64,9 @@ pub fn calculate_forts_comission(
     strategy_instruments_info_for_symbol: &instruments_info::InstrumentInfo,
     strategy_settings: &settings::StrategySettings,
 ) -> Option<f64> {
+    // Calculates commission for FORTS futures based on step_price and step.
+    // Uses commission_plans.json to determine rate per instrument type.
+    
     let exchange = &strategy_instruments_info_for_symbol.exchange;
     let step_price = strategy_instruments_info_for_symbol.step_price;
     let step = strategy_instruments_info_for_symbol.step;
