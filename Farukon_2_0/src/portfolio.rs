@@ -12,6 +12,7 @@ use std::io::Write;
 pub struct Portfolio {
     /// Operational mode (Debug, Optimize, Visual).
     mode: String,
+    initial_capital_for_strategy: f64,
     /// Event sender for communicating with other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
     /// Strategy settings for this portfolio.
@@ -22,14 +23,10 @@ pub struct Portfolio {
     current_positions: std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
     /// Current holding state for each symbol.
     current_holdings: std::collections::HashMap<String, farukon_core::portfolio::HoldingsState>,
-    /// Current equity point (capital, blocked, cash).
-    current_equity_point: farukon_core::portfolio::EquityPoint,
     /// Historical snapshots of positions.
     all_positions: Vec<farukon_core::portfolio::PositionSnapshot>,
     /// Historical snapshots of holdings.
     all_holdings: Vec<farukon_core::portfolio::HoldingSnapshot>,
-    /// Historical snapshots of equity points.
-    all_equity_points: Vec<farukon_core::portfolio::EquitySnapshot>,
     /// Equity curve for plotting.
     equity_series: Vec<(chrono::DateTime<chrono::Utc>, f64)>,
     /// Performance manager for calculating metrics.
@@ -46,23 +43,22 @@ impl Portfolio {
     /// * `initial_capital_for_strategy` - Starting capital for this strategy.
     pub fn new(
         mode: &String,
+        initial_capital_for_strategy: &f64,
         event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
-        initial_capital_for_strategy: &f64,
     ) -> anyhow::Result<Self> {
         anyhow::Ok(
             Self {
-            mode: mode.to_string(),
-            event_sender,
-            strategy_settings: strategy_settings.clone(),
+                mode: mode.to_string(),
+                initial_capital_for_strategy: *initial_capital_for_strategy,
+                event_sender,
+                strategy_settings: strategy_settings.clone(),
                 strategy_instruments_info: strategy_instruments_info.clone(),
-            current_positions: Self::construct_current_positions(strategy_settings),
+                current_positions: Self::construct_current_positions(strategy_settings),
                 current_holdings: Self::construct_current_holdings(strategy_settings),
-                current_equity_point: farukon_core::portfolio::EquityPoint::default(*initial_capital_for_strategy),
-            all_positions: Vec::new(),
-            all_holdings: Vec::new(),
-                all_equity_points: Vec::new(),
+                all_positions: Vec::new(),
+                all_holdings: Vec::new(),
                 equity_series: Vec::new(),
                 performance_manager: farukon_core::performance::PerformanceManager::new(*initial_capital_for_strategy, &strategy_settings),
             }
@@ -116,7 +112,7 @@ impl Portfolio {
             let signal_name = &signal_event.signal_name;
             let symbol = &signal_event.symbol;
             let cur_quantity = self.get_current_positions().get(&symbol.clone()).unwrap().position;
-            let cash = self.get_latest_equity_point().unwrap().equity_point.cash;
+            let cash = self.get_latest_holdings().unwrap().cash;
             let current_datetime = data_handler.get_latest_bar_datetime(symbol).unwrap();
             let order_type = &signal_event.order_type;
             let limit_price = signal_event.limit_price;
@@ -145,18 +141,18 @@ impl Portfolio {
 
             if risks::margin_call_control_for_signal(
                 quantity,
-                self.get_latest_equity_point().unwrap(),
+                self.get_latest_holdings().unwrap(),
                 signal_event, self.strategy_instruments_info.get(symbol).unwrap(),
             ).ok()? {
-            let order = Some(farukon_core::event::OrderEvent::new(
-                current_datetime,
-                symbol.to_string(),
-                order_type.to_string(),
+                let order = Some(farukon_core::event::OrderEvent::new(
+                    current_datetime,
+                    symbol.to_string(),
+                    order_type.to_string(),
                     quantity,
-                direction,
-                signal_name.to_string(),
-                limit_price,
-            ));
+                    direction,
+                    signal_name.to_string(),
+                    limit_price,
+                ));
 
                 return order;
             }
@@ -197,7 +193,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
         let timeindex = data_handler.get_latest_bar_datetime(&fill_event.symbol);
         if self.mode == "Debug".to_string() {
-            println!("Start event, Current_positions, {:?}, {:?}", timeindex, self.current_positions);
+            println!("for Fill event, start Current_positions, {:?}, {:?}", timeindex, self.current_positions);
         }
 
         let fill_dir = match fill_event.direction.as_deref() {
@@ -211,14 +207,13 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         let symbol = &fill_event.symbol;
         let quantity = fill_event.quantity;
         let signal_name = fill_event.signal_name.as_str();
-        let current_cash  = self.get_latest_equity_point().unwrap().equity_point.cash;
+        let current_cash  = self.get_latest_holdings().unwrap().cash;
 
         if let Some(position_state) = self.current_positions.get_mut(symbol) {
             position_state.position += fill_dir * quantity;
 
             match signal_name {
                 "EXIT" => {
-                    position_state.exit_price = fill_event.execution_price;
                     position_state.entry_price = None;
                     position_state.entry_capital = 0.0;
                 },
@@ -231,7 +226,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
 
         if self.mode == "Debug".to_string() {
-            println!("Finish event, Current_positions, {:?}, {:?}", timeindex, self.current_positions);
+            println!("for Fill event, finish Current_positions, {:?}, {:?}", timeindex, self.current_positions);
         }
     }
 
@@ -249,7 +244,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
         let timeindex = data_handler.get_latest_bar_datetime(&fill_event.symbol);
         if self.mode == "Debug".to_string() {
-            println!("Start event, Current_holdings, {:?}, {:?}", timeindex, self.current_holdings);
+            println!("for Fill event, start Current_holdings, {:?}, {:?}", timeindex, self.current_holdings);
         }
         
         let quantity = fill_event.quantity;
@@ -266,6 +261,8 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         let step = strategy_instrument_info_for_symbol.step;
         let cost_of_step_price = ((step_price / step) * 100_000.0).round() / 100_000.0;
       
+        self.current_holdings.get_mut(symbol).unwrap().signal_name = Some(fill_event.signal_name.clone());
+        
         match signal_name {
             "EXIT" => {
                 match  direction.as_str() {
@@ -280,7 +277,15 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
                         return;
                     }
                 }
-                self.current_holdings.get_mut(symbol).unwrap().blocked -= strategy_instrument_info_for_symbol.margin * quantity;
+
+                match self.strategy_instruments_info.get(symbol).unwrap().instrument_type.as_str() {
+                    "futures" => {
+                        self.current_holdings.get_mut(symbol).unwrap().blocked -= strategy_instrument_info_for_symbol.margin * quantity;
+                    }
+                    _ => {
+                        eprintln!("Unknown type of instrument!");
+                    }
+                }
             },
             _ => {
                 match direction.as_str() {
@@ -295,11 +300,20 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
                         return;
                     }
                 }
-                self.current_holdings.get_mut(symbol).unwrap().blocked += strategy_instrument_info_for_symbol.margin * quantity;
+
+                match self.strategy_instruments_info.get(symbol).unwrap().instrument_type.as_str() {
+                    "futures" => {
+                        self.current_holdings.get_mut(symbol).unwrap().blocked += strategy_instrument_info_for_symbol.margin * quantity;
+                    }
+                    _ => {
+                        eprintln!("Unknown type of instrument!");
+                    }
+                }
             }
         }
+
         if self.mode == "Debug".to_string() {
-            println!("Finish event, Current_holdings, {:?}, {:?}", timeindex, self.current_holdings);
+            println!("for Fill event, finish Current_holdings, {:?}, {:?}", timeindex, self.current_holdings);
         }
     }
 
@@ -327,154 +341,156 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         // Called on every MARKET event to update equity curve, snapshots, and metrics.
         // Also triggers margin call monitoring.
 
-        let positions_snapshot_data = self.current_positions.clone();
-        let mut holdings_snapshot_data = self.current_holdings.clone();
-        let mut equity_snapshot_data = self.current_equity_point.clone();
-
         let current_bar_datetime = data_handler.get_latest_bar_datetime(
             &self.strategy_settings.symbols[0]
             ).unwrap();
 
         if self.mode == "Debug".to_string() {
             println!(
-                "Start event, Update timeindex, {}, {:?}, {:?}, {:?}",
+                "Start event, Update timeindex, {}, {:?}, {:?}",
                 current_bar_datetime,
-                self.get_current_positions(),
-                self.get_current_holdings(),
-                self.get_current_equity_point(),
+                self.current_positions,
+                self.current_holdings,
             );
         }
 
-        // Update deals counter
-        let mut deals_count = 0 as usize;
-        for symbol in &self.strategy_settings.symbols {
-            if let Some(position_state) = self.current_positions.get_mut(symbol) {
-                if position_state.position == 0.0 {
-                    position_state.exit_price = None;
+        // Update all_positions snapshot
+        {
+            if self.all_positions.len() < 2 {
+                self.all_positions.push(farukon_core::portfolio::PositionSnapshot::new(
+                    current_bar_datetime,
+                    self.current_positions.clone(),
+                ));
+            } else {
+                if let Some(last) = self.all_positions.last_mut() {
+                    *last = farukon_core::portfolio::PositionSnapshot::new(
+                        current_bar_datetime,
+                        self.current_positions.clone(),
+                    );
                 }
-                deals_count += position_state.deal_number;
             }
         }
 
-        // Update all_positions snapshot
-        if self.all_positions.len() < 2 {
-        self.all_positions.push(farukon_core::portfolio::PositionSnapshot::new(
-            current_bar_datetime,
-            positions_snapshot_data.clone(),
-        ));
-        } else {
-            if let Some(last) = self.all_positions.last_mut() {
-                *last = farukon_core::portfolio::PositionSnapshot::new(
-                    current_bar_datetime,
-                    positions_snapshot_data.clone(),
-                );
+        // Update unrealized PnL for open positions
+        {
+            for symbol in &self.strategy_settings.symbols {
+                let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
+                let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
+                let strategy_instrument_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
+                let step_price = strategy_instrument_info_for_symbol.step_price;
+                let step = strategy_instrument_info_for_symbol.step;
+                let cost_of_step_price = ((step_price / step) * 100_000.0).round() / 100_000.0;
+                
+                if let Some(holdings_state) = self.current_holdings.get_mut(symbol) {
+                    if let Some(position_state) = self.current_positions.get(symbol) {
+                        if holdings_state.signal_name != None {
+                            holdings_state.signal_name = None;
+                        } else {
+                            holdings_state.pnl = (((close - last_close) * cost_of_step_price) * position_state.position * 100.0).round() / 100.0;
+                        }
+                    }
+                }
             }
         }
 
         // Update all_holdings snapshot
-        if self.all_holdings.len() < 2 {
-            self.all_holdings.push(farukon_core::portfolio::HoldingSnapshot::new(
-                current_bar_datetime,
-                holdings_snapshot_data.clone(),
-            ));
-        } else {
-            if let Some(last) = self.all_holdings.last_mut() {
-                *last = farukon_core::portfolio::HoldingSnapshot::new(
+        {
+            if self.all_holdings.len() == 0 {
+                let blocked = 0.0;
+                self.all_holdings.push(farukon_core::portfolio::HoldingSnapshot::new(
                     current_bar_datetime,
-                    holdings_snapshot_data.clone()
-                );
-            }
-        }
+                    self.initial_capital_for_strategy,
+                    self.initial_capital_for_strategy,
+                    blocked, 
+                    self.current_holdings.clone(),
+                ));
+            } else if self.all_holdings.len() == 1 {
+                if let Some(first) = self.all_holdings.first_mut() {
+                    let blocked: f64 = self.current_holdings.iter()
+                        .map(|a| a.1.blocked)
+                        .sum();
+    
+                    let pnl: f64 = self.current_holdings.iter()
+                        .map(|a| a.1.pnl)
+                        .sum();
+    
+                    let capital = first.capital + pnl;
+                    let cash = capital - blocked;
 
-        // construct current equity point
-        if let Some(equity_point) = self.get_latest_equity_point() {
-            let mut total_pnl = 0.0;
-            let mut total_blocked = 0.0;
-            let mut total_capital = equity_point.equity_point.capital;
-
-            for symbol in &self.strategy_settings.symbols {
-                if let Some(holdings_state) = holdings_snapshot_data.get(symbol) {
-                    total_pnl += holdings_state.pnl;
-                    total_blocked += holdings_state.blocked;
+                    self.all_holdings.push(farukon_core::portfolio::HoldingSnapshot::new(
+                        current_bar_datetime,
+                        capital,
+                        cash,
+                        blocked,
+                        self.current_holdings.clone(),
+                    ));
                 }
-            }
-            total_capital += total_pnl;
-            let total_cash = total_capital - total_blocked;
-
-            equity_snapshot_data.capital = total_capital;
-            equity_snapshot_data.blocked = total_blocked;
-            equity_snapshot_data.cash = total_cash;
-        }
-        
-        self.current_equity_point = equity_snapshot_data.clone();
-
-        // Update all_equity_points snapshot
-        if self.all_equity_points.len() < 2 {
-            self.all_equity_points.push(farukon_core::portfolio::EquitySnapshot::new(
-                current_bar_datetime,
-                equity_snapshot_data.clone(),
-            ));
-        } else {
-            if let Some(last) = self.all_equity_points.last_mut() {
-                *last = farukon_core::portfolio::EquitySnapshot::new(
-                    current_bar_datetime,
-                    equity_snapshot_data.clone()
-                )
+            } else {
+                if let Some(last) = self.all_holdings.last_mut() {
+                    let blocked: f64 = self.current_holdings.iter()
+                        .map(|a| a.1.blocked)
+                        .sum();
+    
+                    let pnl: f64 = self.current_holdings.iter()
+                        .map(|a| a.1.pnl)
+                        .sum();
+    
+                    let capital = last.capital + pnl;
+                    let cash = capital - blocked;
+    
+                    *last = farukon_core::portfolio::HoldingSnapshot::new(
+                        current_bar_datetime,
+                        capital,
+                        cash,
+                        blocked,
+                        self.current_holdings.clone(),
+                    );
+                }
             }
         }
 
         // Udate equity curve data
-        self.equity_series.push((current_bar_datetime, equity_snapshot_data.capital));
-
+        if let Some(latest_holdings) = self.get_latest_holdings() {
+            self.equity_series.push((current_bar_datetime, latest_holdings.capital));
+        }
+        
         // Update metrics incrementally if in RealTime mode
         let start_date = self.get_all_holdings().first().unwrap().datetime;
         let end_date = data_handler.get_latest_bar_datetime(
             self.strategy_settings.symbols.first().unwrap()
         ).unwrap();
         
-        if let farukon_core::settings::MetricsMode::RealTime { .. } = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
-            self.performance_manager.update_incremental(equity_snapshot_data.capital, start_date, end_date, deals_count);
-            
-            if self.mode == "Debug".to_string() {
-                println!(
-                    "Metrics, {:?}",
-                    self.performance_manager.get_current_performance_metrics()
-                );
+        // Update deals counter
+        let mut deals_count = 0 as usize;
+        for symbol in &self.strategy_settings.symbols {
+            if let Some(position_state) = self.current_positions.get_mut(symbol) {
+                deals_count += position_state.deal_number;
             }
         }
 
-        // Update unrealized PnL for open positions
-        for symbol in &self.strategy_settings.symbols {
-            let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
-            let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
-            let strategy_instrument_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
-            let step_price = strategy_instrument_info_for_symbol.step_price;
-            let step = strategy_instrument_info_for_symbol.step;
-            let cost_of_step_price = ((step_price / step) * 100_000.0).round() / 100_000.0;
-
-            if let Some(holdings_state) = self.current_holdings.get_mut(symbol) {
-                if let Some(position_state) = self.current_positions.get(symbol) {
-                    if position_state.position == 0.0 {
-                        holdings_state.pnl = 0.0;
-                    }
-                    else {
-                        holdings_state.pnl = (((close - last_close) * cost_of_step_price) * position_state.position * 100.0).round() / 100.0;
-                    }
-                    holdings_snapshot_data.insert(symbol.clone(), holdings_state.clone());
-                }
+        if let farukon_core::settings::MetricsMode::RealTime { .. } = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
+            if let Some(latest_holdings) = self.get_latest_holdings() {
+                self.performance_manager.update_incremental(latest_holdings.capital, start_date, end_date, deals_count);
                 
+                if self.mode == "Debug".to_string() {
+                    println!(
+                        "Metrics, {:?}",
+                        self.performance_manager.get_current_performance_metrics()
+                    );
+                }
             }
         }
 
         // Margin call monitoring: if capital falls below min_margin, close all positions
         let margin_call_monitoring = risks::margin_call_control_for_market(
-            self.get_latest_equity_point().unwrap(),
+            self.get_latest_holdings().unwrap(),
             self.get_current_positions(),
             &self.strategy_settings,
             &self.strategy_instruments_info
         ).unwrap();
         if !margin_call_monitoring {
             for symbol in &self.strategy_settings.symbols {
+                println!("{:?}", margin_call_monitoring);
                 let quantity = Some(self.get_current_positions().get(symbol).unwrap().position);
                 let _ = self.event_sender.send(Box::new(farukon_core::event::SignalEvent::new(
             current_bar_datetime,
@@ -489,11 +505,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
         if self.mode == "Debug".to_string() {
             println!(
-                "Finish event, Update timeindex, {}, {:?}, {:?}, {:?}",
+                "Finish event, Update timeindex, {}, {:?}, {:?}",
                 current_bar_datetime,
-                positions_snapshot_data,
-                holdings_snapshot_data,
-                equity_snapshot_data,
+                self.current_positions,
+                self.current_holdings,
             );
         }
     }
@@ -509,7 +524,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
     ) {
         // Converts SIGNAL to ORDER and sends to execution engine.
         if self.mode == "Debug".to_string() {
-            println!("Start event, Current_positions, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.current_positions);
+            println!("for Signal event, Current_positions, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.current_positions);
+            println!("for Signal event, Current_holdings, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.current_holdings);
+            println!("for Signal event, latest_holdings, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.get_latest_holdings());
         }
 
         if let Some(order) = self.generate_order(signal_event, data_handler) {
@@ -517,10 +534,6 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
                 Ok(()) => {},
                 Err(e) => eprintln!("Failed to send OrderEvent: {}", e),
             }
-        }
-
-        if self.mode == "Debug".to_string() {
-            println!("Finish event, Current_positions, {}, {:?}", data_handler.get_latest_bar_datetime(&signal_event.symbol).unwrap(), self.current_positions);
         }
     }
 
@@ -544,29 +557,32 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         // Called after backtest ends to compute offline metrics.
         // Uses full equity curve for accurate drawdown and return calculations.
 
-        if let farukon_core::settings::MetricsMode::Offline = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
-            let equity_series = self.get_equity_capital_values();
-            let start_date = self.get_all_holdings().first().unwrap().datetime;
-            let end_date = self.get_all_holdings().last().unwrap().datetime;
-            
-            let deals_count: usize = self.get_all_positions()
-                .last()
-                .map(|snapshot| {
-                    self.strategy_settings.symbols
-                        .iter()
-                        .filter_map(|symbol| snapshot.positions.get(symbol))
-                        .map(|position_state| position_state.deal_number)
-                        .sum()
-                })
-                .unwrap_or(0);
-
-            self.performance_manager.calculate_final(
-                &equity_series,
-                start_date,
-                end_date,
-                deals_count,
-            );
+        if let Some(holdings) = self.get_all_holdings().first() {
+            if let farukon_core::settings::MetricsMode::Offline = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
+                let equity_series = self.get_equity_capital_values();
+                let start_date = holdings.datetime;
+                let end_date = self.get_latest_holdings().unwrap().datetime;
+                
+                let deals_count: usize = self.get_all_positions()
+                    .last()
+                    .map(|snapshot| {
+                        self.strategy_settings.symbols
+                            .iter()
+                            .filter_map(|symbol| snapshot.positions.get(symbol))
+                            .map(|position_state| position_state.deal_number)
+                            .sum()
+                    })
+                    .unwrap_or(0);
+    
+                self.performance_manager.calculate_final(
+                    &equity_series,
+                    start_date,
+                    end_date,
+                    deals_count,
+                );
+            }
         }
+
     }
 
     // Getters
@@ -590,24 +606,14 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         &self.all_holdings
     }
 
-    /// Returns a reference to the current equity point.
-    fn get_current_equity_point(&self) -> &farukon_core::portfolio::EquityPoint {
-        &self.current_equity_point
-    }
-
-    /// Returns a reference to all historical equity snapshots.
-    fn get_all_equity_points(&self) -> &Vec<farukon_core::portfolio::EquitySnapshot> {
-        &self.all_equity_points
-    }
-
     /// Returns a reference to the latest equity snapshot.
-    fn get_latest_equity_point(&self) -> Option<&farukon_core::portfolio::EquitySnapshot> {
-        self.all_equity_points.last()
+    fn get_latest_holdings(&self) -> Option<&farukon_core::portfolio::HoldingSnapshot> {
+        self.all_holdings.last()
     }
 
     /// Returns a vector of all capital values from the equity curve.
     fn get_equity_capital_values(&self) -> Vec<f64> {
-        self.all_equity_points.iter().map(|point| point.equity_point.capital).collect()
+        self.all_holdings.iter().map(|point| point.capital).collect()
     }
 
 }

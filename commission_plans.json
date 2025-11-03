@@ -2,18 +2,18 @@
     "exchanges": {
         "FORTS": {
             "commission_plan_exchange_futures": {
-                "currency": 0.002655,
-                "interest_rate": 0.009486,
-                "stock": 0.011385,
-                "index": 0.003795,
-                "commodities": 0.007590
+                "currency": 0.00462,
+                "interest_rate": 0.0165,
+                "stock": 0.0198,
+                "index": 0.0066,
+                "commodities": 0.0132
             },
             "commission_plan_clearing_futures": {
-                "currency": 0.000885,
-                "interest_rate": 0.003162,
-                "stock": 0.003795,
-                "index": 0.001265,
-                "commodities": 0.002530
+                "currency": 0.0,
+                "interest_rate": 0.0,
+                "stock": 0.0,
+                "index": 0.0,
+                "commodities": 0.0
             }
         }
     }

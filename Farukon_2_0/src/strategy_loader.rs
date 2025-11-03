@@ -59,7 +59,7 @@ impl DynamicStratagy {
         &self,
         data_handler: &dyn farukon_core::data_handler::DataHandler,
         current_positions: &std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
-        latest_equity_point: &farukon_core::portfolio::EquitySnapshot,
+        latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
         symbol_list: &[String],
     ) -> anyhow::Result<()> {
         // Calls calculate_signals() from the loaded library.
@@ -71,7 +71,7 @@ impl DynamicStratagy {
             *const farukon_core::DataHandlerVTable,
             *const (),
             *const std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
-            *const farukon_core::portfolio::EquitySnapshot,
+            *const farukon_core::portfolio::HoldingSnapshot,
             *const *const std::os::raw::c_char,
             usize,
         ) -> i32> = unsafe {
@@ -97,7 +97,7 @@ impl DynamicStratagy {
             data_handler_vtable,
             data_handler_ptr,
             current_positions as *const _,
-            latest_equity_point as *const _,
+            latest_holdings as *const _,
             c_str_ptrs.as_ptr(),
             symbol_list.len(),
         );

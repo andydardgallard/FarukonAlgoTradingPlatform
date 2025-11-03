@@ -72,4 +72,5 @@ pub trait DataHandler {
     /// # Arguments
     /// * `value` - The new value for the flag.
     fn set_continue_backtest(&mut self, value: bool);   // Stop backtest manually
+
 }

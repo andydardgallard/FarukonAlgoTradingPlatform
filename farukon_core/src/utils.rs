@@ -76,7 +76,11 @@ pub fn parse_optimization_config(
         strategy_params_ranges.insert(key.clone(), values.clone());
     }
 
-    let pos_sizer_value_range = strategy_settings.pos_sizer_params.pos_sizer_value.clone();
+    let mut pos_sizer_value_range = vec![0.0];
+    if strategy_settings.pos_sizer_params.pos_sizer_name != "1" {
+        pos_sizer_value_range = strategy_settings.pos_sizer_params.pos_sizer_value.clone();   
+    }
+
     let slippage_range = strategy_settings.slippage.clone();
 
     optimization::OptimizationConfig::new()

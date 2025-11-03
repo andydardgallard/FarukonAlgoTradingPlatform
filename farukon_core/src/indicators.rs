@@ -1,46 +1,162 @@
 // farukon_core/src/indicators.rs
 
-//! Simple technical indicators.
-//! Uses DataHandler to access OHLCV data.
+//! Technical indicator library.
 //!
-//! Currently, only the Simple Moving Average (SMA) is implemented.
-//! More indicators can be added here in the future.
+//! This module provides foundational technical indicators used by trading strategies
+//! within the Farukon event-driven backtesting framework. Indicators operate on
+//! time-series data (e.g., OHLCV) supplied via iterators, enabling decoupling from
+//! the underlying data storage mechanism.
+//!
+//! Currently implemented indicators:
+//! - Simple Moving Average (`sma`)
+//! - Highest High over N periods (`highest`)
+//! - Lowest Low over N periods (`lowest`)
+//!
+//! All functions are pure, stateless, and return `None` when insufficient historical
+//! data is available for the requested lookback window.
 
-use crate::data_handler;
-
-/// Calculates the Simple Moving Average (SMA) for a specified symbol and value type.
+/// Computes the **Simple Moving Average (SMA)** over the last `n` data points.
+///
+/// The SMA is the unweighted mean of the previous `n` values. It is commonly used
+/// to smooth price data and identify trend direction.
+///
+/// # Type Parameters
+/// * `I` — An iterator yielding references to `f64` values (e.g., closing prices).
+///
 /// # Arguments
-/// * `dh` - The data handler for accessing market data.
-/// * `symbol` - The symbol to calculate the SMA for.
-/// * `val_type` - The type of value to use ("open", "high", "low", "close", "volume").
-/// * `n` - The number of bars to average.
-/// * `shift` - The number of bars to shift back (0 for current bar, 1 for previous bar, etc.).
+/// * `dh` — An iterator over historical data points (e.g., a slice of `&f64`).
+/// * `n` — The lookback period (number of bars to average). Must be ≥ 1.
+///
 /// # Returns
-/// * An optional `f64` representing the SMA, or `None` if insufficient data is available.
-pub fn sma(
-    dh: &dyn data_handler::DataHandler,
-    symbol: &str,
-    val_type: &str,
+/// * `Some(f64)` — The computed SMA value.
+/// * `None` — If `n == 0` or fewer than `n` data points are available.
+pub fn sma<'a, I>(
+    dh: I,
     n: usize,
-    shift: usize
-) -> Option<f64> {
+) -> Option<f64>
+where
+    I: IntoIterator<Item = &'a f64>,
+    I::IntoIter: Clone,
+{
     // Simple Moving Average.
-    // Returns average of last n bars, optionally shifted back by 'shift' bars.
+    // Returns average of last n bars.
+    if n == 0 { return None; }
 
-    // Calculate the total number of bars needed.
-    let need = n + shift;
-    // If no bars are needed, return None.
-    if need == 0 { return None; }
+    // Convert to Vec
+    let data: Vec<f64> = dh.into_iter().copied().collect();
+    let total_count = data.len();
 
-    // Get the last `need` bars for the specified symbol.
-    let vals = dh.get_latest_bars_values(symbol, val_type, need);
     // If insufficient data is available, return None.
-    if vals.len() < need { return None; }
+    if total_count < n { return None; }
 
     // Calculate the sum of the last `n` bars, starting from `shift` bars ago.
-    let end = vals.len() - shift;
-    let start = end.checked_sub(n)?;
-    let sum: f64 = vals[start..end].iter().copied().sum();
+    let start = total_count - n;
+    let end = start + n;
+    let sum: f64 = data[start..end]
+        .iter()
+        .sum();
     // Return the average.
     Some(sum / (n as f64))
+}
+
+/// Finds the **highest value** over the last `n` bars, shifted back by `shift` bars.
+///
+/// This function is typically used with high prices to identify resistance levels
+/// or channel boundaries. It skips any `None` values in the input sequence.
+///
+/// # Type Parameters
+/// * `I` — An iterator yielding references to `Option<f64>` (e.g., high prices that may be missing).
+///
+/// # Arguments
+/// * `dh` — An iterator over optional historical data points.
+/// * `n` — The lookback period (number of bars to scan). Must be ≥ 1.
+/// * `shift` — Number of bars to shift the window backward (0 = current bar included).
+///
+/// # Returns
+/// * `Some(f64)` — The maximum value in the specified window.
+/// * `None` — If `n == 0`, `n + shift == 0`, or insufficient data is available.
+///
+/// # Note
+/// The effective required data length is `n + shift`. For example, to get the highest
+/// high of the last 5 bars as of 2 bars ago, use `n=5, shift=2` (requires 7 bars total).
+pub fn highest<'a, I>(
+    dh: I,
+    n: usize,
+    shift: usize,
+) -> Option<f64> 
+where
+    I: IntoIterator<Item = &'a Option<f64>>,
+    I::IntoIter: Clone,
+{
+    if n == 0 { return None; }
+
+    let need = n + shift;
+    if need == 0 { return None; }
+    
+    // Convert to Vec, filtering out None values
+    let data: Vec<f64> = dh.into_iter()
+        .filter_map(|x| *x)
+        .collect();
+    let total_count = data.len();
+
+    // If insufficient data is available, return None.
+    if total_count < need { return None; }
+    
+    let start = total_count - need;
+    let end = start + n;
+    data[start..end]
+        .iter()
+        .copied()
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+}
+
+/// Finds the **lowest value** over the last `n` bars, shifted back by `shift` bars.
+///
+/// This function is typically used with low prices to identify support levels
+/// or channel boundaries. It skips any `None` values in the input sequence.
+///
+/// # Type Parameters
+/// * `I` — An iterator yielding references to `Option<f64>`.
+///
+/// # Arguments
+/// * `dh` — An iterator over optional historical data points.
+/// * `n` — The lookback period (number of bars to scan). Must be ≥ 1.
+/// * `shift` — Number of bars to shift the window backward (0 = current bar included).
+///
+/// # Returns
+/// * `Some(f64)` — The minimum value in the specified window.
+/// * `None` — If `n == 0`, `n + shift == 0`, or insufficient data is available.
+///
+/// # Note
+/// The effective required data length is `n + shift`. For example, to get the lowest
+/// low of the last 5 bars as of 2 bars ago, use `n=5, shift=2` (requires 7 bars total).
+pub fn lowest<'a,I>(
+    dh: I,
+    n: usize,
+    shift: usize,
+) -> Option<f64> 
+where
+    I: IntoIterator<Item = &'a Option<f64>>,
+    I::IntoIter: Clone,
+{
+    if n == 0 { return None; }
+
+    let need = n + shift;
+    if need == 0 { return None; }
+    
+    // Convert to Vec, filtering out None values
+    let data: Vec<f64> = dh.into_iter()
+        .filter_map(|x| *x)
+        .collect();
+    let total_count = data.len();
+
+    // If insufficient data is available, return None.
+    if total_count < need { return None; }
+    
+    let start = total_count - need;
+    let end = start + n;
+    data[start..end]
+        .iter()
+        .copied()
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
 }

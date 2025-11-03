@@ -275,9 +275,14 @@ impl GridSearchOptimizer {
             .product::<usize>()
             .max(1);
 
-        strategy_combinations *
-        self.config.slippage_range.len() *
-        self.config.pos_sizer_value_range.len()
+        if self.config.pos_sizer_value_range.len() != 0 {
+            strategy_combinations *
+            self.config.slippage_range.len() *
+            self.config.pos_sizer_value_range.len()
+        } else {
+            strategy_combinations *
+            self.config.slippage_range.len()
+        }
     }
 
     /// Runs the grid search optimization.

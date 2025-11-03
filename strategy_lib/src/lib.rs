@@ -82,14 +82,14 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             &mut self,
             data_handler: &dyn farukon_core::data_handler::DataHandler,
             current_positions: &std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
-            latest_equity_point: &farukon_core::portfolio::EquitySnapshot,
+            latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
             symbol_list: &[String],
     ) -> anyhow::Result<()> {
         // Iterate through each symbol in the list.
         for symbol in symbol_list{
 
             // Get the current capital from the equity point.
-            let capital = Some(latest_equity_point.equity_point.capital);
+            let capital = Some(latest_holdings.capital);
             // Get the current capital from the equity point.
             let strategy_instruments_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
 
@@ -111,14 +111,17 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             let current_position_quantity = current_position_state.position;
 
             // Calculate signals
+            let short_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.short_window);
+            let long_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.long_window);
+
             if let (Some(short_sma), Some(long_sma)) = (
-                farukon_core::indicators::sma(data_handler, symbol, "close", self.short_window, 0),
-                farukon_core::indicators::sma(data_handler, symbol, "close", self.long_window, 0),
+                farukon_core::indicators::sma(&short_sma_bars, self.short_window),
+                farukon_core::indicators::sma(&long_sma_bars, self.long_window),
             ) {
                 // Print debug information if in Debug mode.
                 if self.mode == "Debug".to_string() {
                     println!("Start event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Start event, Indicators + equity_point, {:?}", latest_equity_point);
+                    println!("Start event, Indicators + equity_point, {:?}", latest_holdings);
                 }
                                 
                 // if position exist
@@ -234,7 +237,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
 
                 if self.mode == "Debug".to_string() {
                     println!("Finish event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Finish event, Indicators + equity_point, {:?}", latest_equity_point);
+                    println!("Finish event, Indicators + equity_point, {:?}", latest_holdings);
                 }
             }
         }
@@ -350,11 +353,11 @@ pub extern "C" fn calculate_signals(
     data_handler_vtable: *const farukon_core::DataHandlerVTable,
     data_handler_ptr: *const (),
     current_positions_ptr: *mut std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
-    latest_equity_point_ptr: *mut farukon_core::portfolio::EquitySnapshot,
+    latest_holdings_ptr: *mut farukon_core::portfolio::HoldingSnapshot,
     symbol_list_ptr: *const *const std::os::raw::c_char,
     symbol_list_size: usize,
 ) -> i32 {
-    if strategy_ptr.is_null() || current_positions_ptr.is_null() || latest_equity_point_ptr.is_null() || symbol_list_ptr.is_null() {
+    if strategy_ptr.is_null() || current_positions_ptr.is_null() || /*latest_holdings_ptr.is_null() ||*/symbol_list_ptr.is_null() {
         return -1;
     }
     // Cast the void pointer to the correct type and get a mutable reference to the strategy.
@@ -370,7 +373,7 @@ pub extern "C" fn calculate_signals(
 
     // Get mutable references to the current positions and latest equity point.
     let current_positions = unsafe { &mut *current_positions_ptr };
-    let latest_equity_point = unsafe { &mut *latest_equity_point_ptr };
+    let latest_holdings = unsafe { &mut *latest_holdings_ptr };
 
     // Convert the C string array to a Vec<String>.
     let symbols: Vec<String> = (0..symbol_list_size)
@@ -388,7 +391,7 @@ pub extern "C" fn calculate_signals(
     match strategy.calculate_signals(
         data_handler,
         current_positions,
-        latest_equity_point,
+        latest_holdings,
         &symbols,
     ) {
         Ok(_) => 0,

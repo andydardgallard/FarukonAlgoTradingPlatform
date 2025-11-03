@@ -313,10 +313,16 @@ fn check_args(
                     anyhow::bail!("Wrong pos sizer. Use one of: {:#?}", VALID_POS_SIZERS);
                 }
 
-                if strategy_settings.pos_sizer_params.pos_sizer_value.is_empty() {
-                    anyhow::bail!("Pos sizer value vector cannot be empty!");
+                if &strategy_settings.pos_sizer_params.pos_sizer_name == "1" {
+                    if !strategy_settings.pos_sizer_params.pos_sizer_value.is_empty() {
+                        anyhow::bail!("Pos sizer value vector of plain '1' param must be empty!");
+                    }
+                } else {
+                    if strategy_settings.pos_sizer_params.pos_sizer_value.is_empty() {
+                        anyhow::bail!("Pos sizer value vector cannot be empty!");
+                    }
                 }
-
+                
                 for &pos_val in &strategy_settings.pos_sizer_params.pos_sizer_value {
                     if pos_val <= 0.0 {
                         anyhow::bail!("Pos sizer values must be positive!");

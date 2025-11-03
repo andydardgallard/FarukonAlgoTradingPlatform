@@ -202,10 +202,10 @@ impl OptimizationRunner {
         let portfolio: Box<dyn farukon_core::portfolio::PortfolioHandler> = Box::new(
             portfolio::Portfolio::new(
                 mode,
+                initial_capital_for_strategy,
                 event_sender.clone(),
                 strategy_settings,
                 strategy_instruments_info,
-                initial_capital_for_strategy,
             ).expect("Failed to create portfolio")
         );
 

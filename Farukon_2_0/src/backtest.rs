@@ -55,6 +55,98 @@ impl Backtest {
         }
     }
 
+    fn process_pending_events(&mut self) -> anyhow::Result<()> {
+        loop {
+            match self.event_receiver.try_recv() {
+                Ok(event_box) => {
+                    match event_box.event_type() {
+                        "MARKET" => {
+                            // Debug: Print current state before strategy runs
+                            if self.mode == "Debug".to_string() {
+                                print!("Start event, {:?}, ", event_box);
+                                for symbol in &self.strategy_settings.symbols {
+                                    print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
+                                }
+                                println!();
+                                println!("Start_all position, {:?}", self.portfolio.get_all_positions());
+                                println!("Start_all holdings, {:?}", self.portfolio.get_all_holdings());
+                                // println!("All equity, {:?}", self.portfolio.get_all_equity_points())
+                            }
+
+                            // // Debug: Print state after strategy and portfolio update
+                            // if self.mode == "Debug".to_string() {
+                            //     print!("Finish event, {:?}, ", event_box);
+                            //     for symbol in &self.strategy_settings.symbols {
+                            //         print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
+                            //     }
+                            //     println!()
+                            // }
+                        }
+                        "SIGNAL" => {
+                            if self.mode == "Debug".to_string() {
+                                println!("Start event, {:?}, ", event_box);
+                            }
+
+                            // Signal → create order
+                            self.portfolio.update_signal(
+                                event_box.get_signal_event_params().unwrap(),
+                                &self.data_handler,
+                            );
+                            
+                            if self.mode == "Debug".to_string() {
+                                println!("Finish event, {:?}, ", event_box);
+                            }
+                        }
+                        "ORDER" => {
+                            if self.mode == "Debug".to_string() {
+                                println!("Start event, {:?}, ", event_box);
+                            }
+
+                            // Order → simulate execution (slippage, commission)
+                            self.execution_handler.execute_order(
+                                event_box.get_order_event_params().unwrap(),
+                                &self.strategy_instruments_info,
+                                &self.strategy_settings,
+                                &*self.data_handler
+                            )?;
+
+                            if self.mode == "Debug".to_string() {
+                                println!("Finish event, {:?}, ", event_box);
+                            }
+                        }
+                        "FILL" => {
+                            if self.mode == "Debug".to_string() {
+                                println!("Start event, {:?}, ", event_box);
+                            }
+                            
+                            self.portfolio.update_fill(
+                                event_box.get_fill_event_params().unwrap(),
+                                &self.data_handler,
+                            );
+
+                            if self.mode == "Debug".to_string() {
+                                println!("Finish event, {:?}, ", event_box);
+                            }
+                        }
+                        _ => {
+                            println!("Received unknown event type: {}", event_box.event_type());
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    eprintln!("Event channel disconnected.");
+                    self.data_handler.set_continue_backtest(false);
+                    break;
+                }
+            }
+        }
+
+        anyhow::Ok(())
+    }
+
     /// The core event loop: processes market data updates and strategy events.
     /// Runs until data is exhausted or a stop condition is triggered.
     /// Events are processed in FIFO order:
@@ -65,8 +157,8 @@ impl Backtest {
     /// In Debug mode, prints detailed state for every event.
     /// On negative capital, stops backtest immediately.
     fn run_backtest(&mut self) -> anyhow::Result<()> {
-        let symbol_list = &self.strategy_settings.symbols;
-        let mut fill_flag: Option<Box<dyn farukon_core::event::Event>> = None;
+        // let symbol_list = &self.strategy_settings.symbols;
+        // let mut fill_flag: Option<Box<dyn farukon_core::event::Event>> = None;
 
         loop {
             // Advance data: load next bar for all symbols
@@ -75,123 +167,41 @@ impl Backtest {
 
             } else { break; }
 
-            // Drain all pending events from channel (non-blocking)
-            loop {
-                match self.event_receiver.try_recv() {
-                    Ok(event_box) => {
-                        match event_box.event_type() {
-                            "MARKET" => {
-                                // Debug: Print current state before strategy runs
-                                if self.mode == "Debug".to_string() {
-                                    print!("Start event, {:?}, ", event_box);
-                                    for symbol in symbol_list {
-                                        print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
-                                    }
-                                    println!();
-                                    println!("All position, {:?}", self.portfolio.get_all_positions());
-                                    println!("All holdings, {:?}", self.portfolio.get_all_holdings());
-                                    println!("All equity, {:?}", self.portfolio.get_all_equity_points())
-                                }
+            self.process_pending_events()?;
 
-                                // Process any pending FILL event from previous cycle
-                                if let Some(event) = fill_flag.as_ref() {
-                                    if self.mode == "Debug".to_string() {
-                                        println!("Start event, {:?}, ", event);
-                                    }
-                                    
-                                    self.portfolio.update_fill(
-                                        event.get_fill_event_params().unwrap(),
-                                        &self.data_handler,
-                                    );
-
-                                    if self.mode == "Debug".to_string() {
-                                        println!("Finish event, {:?}, ", event);
-                                    }
-                                };
-                                fill_flag = None;   // Clear after processing
-                                
-                                // Run strategy logic on new market data
-                                if let Some(latest_equity_point) = self.portfolio.get_latest_equity_point() {
-                                    if let Err(e) = self.dynamic_strategy.calculate_signals(
-                                        &*self.data_handler,
-                                        self.portfolio.get_current_positions(),
-                                        latest_equity_point,
-                                        symbol_list,
-                                    ) {
-                                        eprintln!("Error in Strategy::calculate_signals: {}", e);
-                                        self.data_handler.set_continue_backtest(false);
-                                        break;
-                                    }
-                                }
-
-                                // Update portfolio time index (equity, positions, holdings)
-                                self.portfolio.update_timeindex(&self.data_handler);
-
-                                // Risk check: stop if capital becomes negative
-                                if self.portfolio.get_latest_equity_point().unwrap().equity_point.capital < 0.0 {
-                                    self.data_handler.set_continue_backtest(false);
-                                    println!("STOP BACKTEST DUE TO NEGATIVE CAPITAL!");
-                                }
-
-                                // Debug: Print state after strategy and portfolio update
-                                if self.mode == "Debug".to_string() {
-                                    print!("Finish event, {:?}, ", event_box);
-                                    for symbol in symbol_list {
-                                        print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
-                                    }
-                                    println!()
-                                }
-                            }
-                            "SIGNAL" => {
-                                if self.mode == "Debug".to_string() {
-                                    println!("Start event, {:?}, ", event_box);
-                                }
-
-                                // Signal → create order
-                                self.portfolio.update_signal(
-                                    event_box.get_signal_event_params().unwrap(),
-                                    &self.data_handler,
-                                );
-                                
-                                if self.mode == "Debug".to_string() {
-                                    println!("Finish event, {:?}, ", event_box);
-                                }
-                            }
-                            "ORDER" => {
-                                if self.mode == "Debug".to_string() {
-                                    println!("Start event, {:?}, ", event_box);
-                                }
-
-                                // Order → simulate execution (slippage, commission)
-                                self.execution_handler.execute_order(
-                                    event_box.get_order_event_params().unwrap(),
-                                    &self.strategy_instruments_info,
-                                    &self.strategy_settings,
-                                    &*self.data_handler
-                                )?;
-
-                                if self.mode == "Debug".to_string() {
-                                    println!("Finish event, {:?}, ", event_box);
-                                }
-                            }
-                            "FILL" => {
-                                // Store FILL event to be processed on next MARKET
-                                fill_flag = Some(event_box);
-                            },
-                            _ => {
-                                println!("Received unknown event type: {}", event_box.event_type());
-                            }
-                        }
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        break;  // No more events in queue
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        eprintln!("Event channel disconnected.");
-                        self.data_handler.set_continue_backtest(false);
-                        break;
-                    }
+            // Run strategy logic on new market data
+            if let Some(latest_holdings) = self.portfolio.get_latest_holdings() {
+                if let Err(e) = self.dynamic_strategy.calculate_signals(
+                    &*self.data_handler,
+                    self.portfolio.get_current_positions(),
+                    latest_holdings,
+                    &self.strategy_settings.symbols,
+                ) {
+                    eprintln!("Error in Strategy::calculate_signals: {}", e);
+                    self.data_handler.set_continue_backtest(false);
+                    break;
                 }
+            }
+
+            // Update portfolio time index (equity, positions, holdings)
+            self.portfolio.update_timeindex(&self.data_handler);
+
+            // Risk check: stop if capital becomes negative
+            if let Some(holdings) = self.portfolio.get_latest_holdings() {
+                if holdings.capital < 0.0 {
+                    self.data_handler.set_continue_backtest(false);
+                    println!("STOP BACKTEST DUE TO NEGATIVE CAPITAL!");
+                }
+            }
+
+            if self.mode == "Debug".to_string() {
+                for symbol in &self.strategy_settings.symbols {
+                    print!("Finish_loop {}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
+                }
+                println!();
+                println!("Finish_all position, {:?}", self.portfolio.get_all_positions());
+                println!("Finish_all holdings, {:?}", self.portfolio.get_all_holdings());
+                // println!("All equity, {:?}", self.portfolio.get_all_equity_points())
             }
 
             // Debug separator
@@ -241,7 +251,7 @@ impl Backtest {
         if self.mode == "Debug" {
             println!("all_positions: {:#?}", self.portfolio.get_all_positions());
             println!("all_holdings: {:#?}", self.portfolio.get_all_holdings());
-            println!("all_equity: {:#?}", self.portfolio.get_all_equity_points());
+            // println!("all_equity: {:#?}", self.portfolio.get_all_equity_points());
         }
         
         let result = self.output_performance()

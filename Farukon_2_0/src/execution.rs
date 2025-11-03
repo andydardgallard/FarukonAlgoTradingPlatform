@@ -75,9 +75,35 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         // Check the order direction (BUY/SELL).
                         match event.direction.as_deref() {
                             // For a buy order, use the bar's High and add slippage.
-                            Some("BUY") => (1.0 + strategy_settings.slippage[0]) * current_bar.high,
+                            Some("BUY") => {
+                                let market_price = (1.0 + strategy_settings.slippage[0]) * current_bar.high;
+                                if current_bar.low <= market_price {
+                                    if current_bar.high <= market_price {
+                                        current_bar.high
+                                    } else {
+                                        // If yes, the order is executed at the limit price.
+                                        market_price
+                                    }
+                                } else {
+                                    // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
+                                    return anyhow::Ok(());
+                                }
+                            }
                             // For a sell order, use the bar's Low and subtract slippage.
-                            Some("SELL") => (1.0 - strategy_settings.slippage[0]) * current_bar.low,
+                            Some("SELL") => {
+                                let market_price = (1.0 - strategy_settings.slippage[0]) * current_bar.low;
+                                if current_bar.high >= market_price {
+                                    if current_bar.low >= market_price {
+                                        current_bar.low
+                                    } else {
+                                        // If yes, the order is executed at the limit price.
+                                        market_price
+                                    }
+                                } else {
+                                    // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
+                                    return anyhow::Ok(());
+                                }
+                            }
                             // If the direction is not specified or unknown, return a price of 0.0.
                             _ => 0.0,
                         }
@@ -86,7 +112,6 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         // The current implementation expects only a single slippage value for a market order.
                         anyhow::bail!("Wrong len of slippage vector!!");
                     }
-
                 },
                 "LMT" => {
                     // Limit order: execution occurs only if the price was reached during the bar.
@@ -97,8 +122,12 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         // For a buy order, check if the bar's Low was less than or equal to the limit price.
                         Some("BUY") => {
                             if current_bar.low <= limit_price {
-                                // If yes, the order is executed at the limit price.
-                                limit_price
+                                if current_bar.open <= limit_price {
+                                    current_bar.open
+                                } else {
+                                    // If yes, the order is executed at the limit price.
+                                    limit_price
+                                }
                             } else {
                                 // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
                                 return anyhow::Ok(());
@@ -107,8 +136,12 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         // For a sell order, check if the bar's High was greater than or equal to the limit price.
                         Some("SELL") => {
                             if current_bar.high >= limit_price {
-                                // If yes, the order is executed at the limit price.
-                                limit_price
+                                if current_bar.open >= limit_price {
+                                    current_bar.open
+                                } else {
+                                    // If yes, the order is executed at the limit price.
+                                    limit_price
+                                }
                             } else {
                                 // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
                                 return anyhow::Ok(());

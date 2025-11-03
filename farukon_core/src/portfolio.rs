@@ -20,8 +20,6 @@ pub struct PositionState {
     pub entry_capital: f64,
     /// Price at which the current position was opened.
     pub entry_price: Option<f64>,
-    /// Price at which the current position was closed (if applicable).
-    pub exit_price: Option<f64>,
 }
 
 impl PositionState {
@@ -32,7 +30,6 @@ impl PositionState {
             position: 0.0,
             entry_capital: 0.0,
             entry_price: None,
-            exit_price: None,
         }
     }
 
@@ -67,12 +64,13 @@ pub struct HoldingsState {
     pub pnl: f64,
     /// Margin blocked by open positions for this symbol.
     pub blocked: f64,
+    pub signal_name: Option<String>,
 }
 
 impl HoldingsState {
     /// Creates a new `HoldingsState` with default values (zero PnL, zero blocked margin).
     pub fn new() -> Self {
-        Self { pnl: 0.0, blocked: 0.0 }
+        Self { pnl: 0.0, blocked: 0.0, signal_name: None }
     }
 
 }
@@ -82,6 +80,12 @@ impl HoldingsState {
 pub struct HoldingSnapshot {
     /// The timestamp of this snapshot.
     pub datetime: chrono::DateTime<chrono::Utc>,
+    /// Total capital (cash + realized PnL + unrealized PnL).
+    pub capital: f64,
+    /// Available cash (not blocked by positions).
+    pub cash: f64,
+    /// Total capital blocked by all open positions.
+    pub blocked: f64,
     /// A map of symbol names to their `HoldingsState`.
     pub holdings: std::collections::HashMap<String, HoldingsState>,
 }
@@ -94,82 +98,14 @@ impl HoldingSnapshot {
     /// * `holdings` - The map of symbol states.
     pub fn new(
         datetime: chrono::DateTime<chrono::Utc>,
+        capital: f64,
+        cash: f64,
+        blocked: f64,
         holdings: std::collections::HashMap<String, HoldingsState>,
     ) -> Self {
-        Self { datetime, holdings }
+        Self { datetime, capital, cash, blocked, holdings }
     }
 
-}
-
-/// Represents the overall equity state (blocked margin, cash, total capital) at a point in time.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct EquityPoint {
-    /// Total margin blocked by all open positions.
-    pub blocked: f64,
-    /// Available cash (not blocked by positions).
-    pub cash: f64,
-    /// Total capital (cash + realized PnL + unrealized PnL).
-    pub capital: f64,
-}
-
-impl EquityPoint {
-    /// Creates a new `EquityPoint` with specified values.
-    ///
-    /// # Arguments
-    /// * `blocked` - Blocked margin.
-    /// * `cash` - Available cash.
-    /// * `capital` - Total capital.
-    pub fn new(
-        blocked: f64,
-        cash: f64,
-        capital: f64,
-    ) -> Self {
-        Self {
-            blocked,
-            cash,
-            capital
-        }
-    }
-
-    /// Creates a default `EquityPoint` initialized with the strategy's starting capital.
-    /// Initially, no margin is blocked, so cash equals capital.
-    ///
-    /// # Arguments
-    /// * `initial_capital_for_strategy` - The starting capital for the strategy.
-    pub fn default(
-        initial_capital_for_strategy: f64
-    ) -> Self {
-        Self {
-            blocked: 0.0,
-            cash: initial_capital_for_strategy,
-            capital: initial_capital_for_strategy
-        }
-    }
-
-}
-
-/// A snapshot of the overall equity state at a specific point in time.
-#[derive(Debug, Clone)]
-pub struct EquitySnapshot {
-    /// The timestamp of this snapshot.
-    pub datetime: chrono::DateTime<chrono::Utc>,
-    /// The equity state at this time.
-    pub equity_point: EquityPoint,
-}
-
-impl EquitySnapshot {
-    /// Creates a new `EquitySnapshot`.
-    ///
-    /// # Arguments
-    /// * `datetime` - The timestamp for the snapshot.
-    /// * `equity_point` - The equity state.
-    pub fn new(
-        datetime: chrono::DateTime<chrono::Utc>,
-        equity_point: EquityPoint,
-    ) -> Self {
-        Self { datetime, equity_point }
-    }
-    
 }
 
 /// Defines the interface for a portfolio manager.
@@ -207,9 +143,7 @@ pub trait PortfolioHandler {
     fn get_all_positions(&self) -> &Vec<PositionSnapshot>;
     fn get_current_holdings(&self) -> &std::collections::HashMap<String, HoldingsState>;
     fn get_all_holdings(&self) -> &Vec<HoldingSnapshot>;
-    fn get_current_equity_point(&self) -> &EquityPoint;
-    fn get_all_equity_points(&self) -> &Vec<EquitySnapshot>;
-    fn get_latest_equity_point(&self) -> Option<&EquitySnapshot>;
+    fn get_latest_holdings(&self) -> Option<&HoldingSnapshot>;
     fn get_equity_capital_values(&self) -> Vec<f64>;
     fn output_summary_stats(&self) -> anyhow::Result<&performance::PerformanceMetrics>;
     fn calculate_final_performance(&mut self);

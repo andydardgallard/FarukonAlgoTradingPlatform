@@ -2,3 +2,6 @@
 /tmp
 .DS_Store
 start.sh
+TODO's.txt
+lib1.rs
+*Debug_Portfolio.json

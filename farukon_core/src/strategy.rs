@@ -22,7 +22,7 @@ pub trait Strategy {
         &mut self,
         data_handler: &dyn data_handler::DataHandler,
         current_positions: &std::collections::HashMap<String, portfolio::PositionState>,
-        latest_equity_point: &portfolio::EquitySnapshot,
+        latest_holdings: &portfolio::HoldingSnapshot,
         symbol_list: &[String],
     ) -> anyhow::Result<()>;
 

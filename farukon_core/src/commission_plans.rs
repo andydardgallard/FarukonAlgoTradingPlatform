@@ -131,7 +131,7 @@ pub fn calculate_forts_comission(
             if let Some(obj) = plan_value.as_object() {
                 if let Some(currency_val) = obj.get(&commission_type) {
                     if let Some(amount) = currency_val.as_f64() {
-                        total_commission_rate += amount;
+                        total_commission_rate += amount / 100.0;
                     }
                 }
             }
