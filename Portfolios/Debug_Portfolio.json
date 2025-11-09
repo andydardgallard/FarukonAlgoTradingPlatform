@@ -1,30 +1,26 @@
 {   
     "common": {
-        "mode": "Optimize",
+        "mode": "Debug",
         "initial_capital": 1000000.0
     },
     "portfolio": {
         "Strategy_1": {
             "threads": 8,
-            "strategy_name": "SYMI_Ch_SMA_Up",
+            "strategy_name": "MA_cross",
             "strategy_path": "target/release/libstrategy_lib.dylib",
-            "exit_results_path": "opt_results/SYMI_Ch_SMA_Up_Si_4min",
             "strategy_weight": 1,
             "slippage": [0.005],
             "data": {
                 "data_path": "Tickers/FBS/Si",
-                "timeframe": "4min"
+                "timeframe": "5min"
             },
             "symbol_base_name": "Si",
             "symbols": [
                 "Si-3.24"
             ],
             "strategy_params": {
-                "avg_price_period": [13],
-                "channel_period": [220],
-                "prct_width_channel": [55],
-                "sma_period": [2125],
-                "width_channel": [1465]
+                "short_window": [25],
+                "long_window": [350]
             },
             "pos_sizer_params": {
                 "pos_sizer_name": "mpr",
@@ -36,7 +32,11 @@
                 "margin_call_type": "close_deal"
             },
             "portfolio_settings_for_strategy": {
-                "metrics_calculation_mode": "offline"
+                "metrics_calculation_mode": {
+                    "realtime": {
+                        "modified_kelly_creterion": "off"
+                    }
+                }
             },
             "optimizer_type": "Grid_Search"
         }
