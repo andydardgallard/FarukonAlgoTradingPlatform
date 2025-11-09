@@ -3,6 +3,7 @@
 //! Utility functions for the Farukon platform.
 //! Includes helper functions for parsing settings, calculating quantities, and validating data.
 
+use std::io::Write;
 use anyhow::Context;
 
 use crate::settings;
@@ -82,11 +83,19 @@ pub fn parse_optimization_config(
     }
 
     let slippage_range = strategy_settings.slippage.clone();
+    let pos_sizer_name = strategy_settings.pos_sizer_params.pos_sizer_name.clone();
+
+    let mut pos_sizer_additional_params = std::collections::HashMap::new();
+    for (key, values) in &strategy_settings.pos_sizer_params.pos_sizer_params {
+        pos_sizer_additional_params.insert(key.clone(), values.clone());
+    }
 
     optimization::OptimizationConfig::new()
         .with_strategy_params_ranges(strategy_params_ranges)
         .with_pos_sizer_value_ranges(pos_sizer_value_range)
         .with_slippage_range(slippage_range)
+        .with_pos_sizer_name(pos_sizer_name)
+        .with_pos_sizer_additional_params(pos_sizer_additional_params)
 }
 
 /// Creates a new strategy settings object from a parameter set.
@@ -114,4 +123,25 @@ pub fn create_stratagy_settings_from_params(
     }
     new_strategy_settings.strategy_params = map;
     new_strategy_settings
+}
+
+/// Exports the equity curve to a CSV file.
+/// # Arguments
+/// * `filename` - The name of the output file.
+/// # Returns
+/// * `anyhow::Result<()>` indicating success or failure.
+// #[allow(dead_code)] // TODO: Used for export
+pub fn export_equity_to_csv(
+    equity_series: &Vec<(chrono::DateTime<chrono::Utc>, f64)>,
+    strategy_settings: &settings::StrategySettings,
+) -> anyhow::Result<()> {
+    let path = format!("{}/equity_series.csv", strategy_settings.exit_results_path);
+
+    let mut file = std::fs::File::create(path)?;
+    writeln!(file, "datetime;capital")?;
+    for point in equity_series {
+        writeln!(file, "{};{}", point.0.format("%Y-%m-%d %H:%M:%S"), point.1)?;
+    }
+
+    anyhow::Ok(())
 }

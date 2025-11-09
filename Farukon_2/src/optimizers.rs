@@ -4,6 +4,8 @@
 //! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
 //! Uses Rayon for parallel evaluation of thousands of parameter combinations.
 
+use::std::io::Write;
+
 use crate::backtest;
 use crate::portfolio;
 use crate::execution;
@@ -44,6 +46,7 @@ impl OptimizationRunner {
     ) -> Self {
         // Parse the strategy settings to extract the ranges for parameters to be optimized.
         let config = farukon_core::utils::parse_optimization_config(strategy_settings);
+
         // Create the Grid Search optimizer and configure it with the extracted ranges.
         let grid_search_optimizer = farukon_core::optimization::GridSearchOptimizer::new()
             .with_optimization_config(config);
@@ -72,7 +75,7 @@ impl OptimizationRunner {
     /// * `combinations_to_grid_search` - A vector of `ParameterSet` objects to test.
     /// # Returns
     /// * A vector of `OptimizationResult` objects, one for each evaluated parameter set.
-    pub fn run_grid_search(self, total_combinations: usize, combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>) -> Vec<farukon_core::optimization::OptimizationResult> {
+    pub fn run_grid_search(&self, total_combinations: usize, combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>) -> Vec<farukon_core::optimization::OptimizationResult> {
         // Runs Grid Search in parallel across all CPU cores.
         // Each parameter set is evaluated by running a full backtest.
         // Uses Atomic counter to track progress.
@@ -80,7 +83,7 @@ impl OptimizationRunner {
         // Determine the number of threads to use for parallel execution.
         // Defaults to the number of logical CPU cores if not specified in settings.
         let threads = self.strategy_settings.threads.unwrap_or(num_cpus::get());
-        let mode = self.mode;
+        let mode = self.mode.clone();
 
         if mode == "Debug" {
             println!("Starting grid search optimization:");
@@ -93,8 +96,7 @@ impl OptimizationRunner {
         let initial_capital = self.initial_capital_for_strategy;
         let strategy_settings = self.strategy_settings.clone();
         let strategy_instruments_info = self.strategy_instruments_info.clone();
-        let pos_sizer_name = self.strategy_settings.pos_sizer_params.pos_sizer_name.clone();
-        let pos_sizer_additional_params = self.strategy_settings.pos_sizer_params.pos_sizer_params.clone();
+
         // Shared atomic counter to track the number of completed evaluations.
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -115,9 +117,9 @@ impl OptimizationRunner {
                     // Construct the full parameter set object, including non-strategy parameters like pos_sizer and slippage.
                     let full_parameter_set = farukon_core::optimization::ParameterSet::new()
                         .with_strategy_params(params.get_strategy_params().clone())
-                        .with_pos_sizer_name(pos_sizer_name.clone())
+                        .with_pos_sizer_name(params.get_pos_sizer_name().clone())
                         .with_pos_sizer_value(params.get_pos_sizer_value().clone())
-                        .with_pos_sizer_additional_params(pos_sizer_additional_params.clone())
+                        .with_pos_sizer_additional_params(params.get_pos_sizer_additional_params().clone())
                         .with_slippage(params.get_slippage().clone());
 
                     // Increment the counter and get the current count for logging.
@@ -289,12 +291,10 @@ impl OptimizationRunner {
         let raw_fitness = match ga_config.get_fitness_metric() {
             farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
             farukon_core::settings::FitnessValue::TotalReturnPercent => metrics.get_total_return_percent(),
-            farukon_core::settings::FitnessValue::APR => metrics.get_apr_percent(),
+            farukon_core::settings::FitnessValue::APR => metrics.get_apr(),
             farukon_core::settings::FitnessValue::MaxDD => metrics.get_max_drawdown(),
-            farukon_core::settings::FitnessValue::MaxDDPercent => metrics.get_max_drawdown_percent(),
             farukon_core::settings::FitnessValue::AprDDFactor => metrics.get_apr_to_drawdown_ratio(),
             farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
-            farukon_core::settings::FitnessValue::RecoveryFactorPercent => metrics.get_recovery_factor_percent(),
             farukon_core::settings::FitnessValue::DealsCount => &(metrics.get_deals_count().clone() as f64),
             farukon_core::settings::FitnessValue::Composite { metrics: composite_metrics } => {
                 // For composite metrics, calculate a combined score.
@@ -337,12 +337,10 @@ impl OptimizationRunner {
             let metric_value = match metric_name.as_str() {
                 "Total_Return" => metrics.get_total_return(),
                 "Total_Return_%" => metrics.get_total_return_percent(), 
-                "APR" => metrics.get_apr_percent(),
-                "max_DD" => &(-metrics.get_max_drawdown()), // Negative drawdown for maximization (smaller loss is better)
-                "max_DD_%" => &(-metrics.get_max_drawdown_percent()),
+                "APR" => metrics.get_apr(),
+                "max_DD" => &(-metrics.get_max_drawdown()),
                 "APR/DD_factor" => metrics.get_apr_to_drawdown_ratio(),
                 "Recovery_Factor" => metrics.get_recovery_factor(),
-                "Recovery_Factor_%" => metrics.get_recovery_factor_percent(),
                 "Deals_Count" => &(-(*metrics.get_deals_count() as f64)), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
                 _ => &0.0, // Default to 0 if the metric name is unknown.
             };
@@ -353,4 +351,170 @@ impl OptimizationRunner {
         total_score
     }
 
+    /// Saves the results of a Grid Search optimization to a CSV file.
+    /// The CSV file contains the tested parameter sets and their corresponding performance metrics.
+    /// This allows for easy analysis and comparison of different hyperparameter combinations.
+    ///
+    /// # Arguments
+    /// * `results` - A slice of `OptimizationResult` objects, each containing a parameter set and its performance metrics.
+    ///
+    /// # Returns
+    /// * `anyhow::Result<()>` - `Ok(())` on success, or an `Err` if file creation or writing fails.
+    pub fn save_grid_search_optimization_results(&self, results: &[farukon_core::optimization::OptimizationResult]) -> anyhow::Result<()> {
+        // --- 1. Determine Output Filename ---
+        // Constructs the path for the output CSV file based on the strategy's settings.
+        // The filename includes a fixed name "optimization_results.csv" appended to the 'exit_results_path'.
+        let filename = format!(
+            "{}/optimization_results.csv",
+            self.strategy_settings.exit_results_path,
+        );
+        // --- 2. Create/Open Output File ---
+        // Attempts to create the file. If it exists, it will be truncated.
+        // Returns an error if the file cannot be created (e.g., directory doesn't exist, permission denied).
+        let mut file = std::fs::File::create(&filename)?;
+
+        // --- 3. Prepare Header Row (Column Names) ---
+        // --- 3.1: Extract Strategy Parameter Names ---
+        // Gets the names of the strategy-specific parameters that were optimized.
+        // These become the first few column names in the CSV.
+        let mut strategy_params: Vec<String> = self.strategy_settings.strategy_params
+            .iter()
+            .map(|(key, _value)| key.clone())
+            .collect();
+        strategy_params.sort();
+
+        // --- 3.2: Write Strategy Parameter Column Names ---
+        // Writes the names of the strategy parameters to the file header, separated by semicolons.
+        for name in &strategy_params {
+                write!(file, "{};", name)?;
+            }
+        
+        // --- 3.3: Write Position Sizer Column Names ---
+        // Adds column names for the position sizing method name and its value.
+        write!(file, "pos_sizer_name;")?;
+        write!(file, "pos_sizer_value;")?;
+
+        // --- 3.4: Extract Position Sizer Additional Parameter Names ---
+        // Gets the names of any additional parameters for the position sizer (e.g., MPR multiplier).
+        let mut possizers_additional_params: Vec<String> = self.strategy_settings.pos_sizer_params.pos_sizer_params
+            .iter()
+            .map(|(key, _value)| key.clone())
+            .collect();
+        possizers_additional_params.sort();
+
+        // --- 3.5: Write Position Sizer Additional Parameter Column Names ---
+        // Writes the names of the position sizer's additional parameters to the header.
+        for name in &possizers_additional_params {
+            write!(file, "{};", name)?;
+        }
+
+        // --- 3.6: Write Slippage Column Name ---
+        // Adds a column name for the slippage parameter used in the test.
+        write!(file, "slippage;")?;
+
+        // --- 3.7: Extract Performance Metric Names ---
+        // Gets the names of the performance metrics from the *first* result.
+        // Assumes all results have the same set of metrics.
+        // This could be fragile if results have different metrics, but is common for grid search.
+        let mut result_names: Vec<String> = results[0]
+            .get_results()
+            .to_stats_list()
+            .iter()
+            .map(|(key, _value)| key.clone())
+            .collect();
+        result_names.sort();
+
+        // --- 3.8: Write Performance Metric Column Names ---
+        // Writes all performance metric names except the last one, followed by a semicolon.
+        // The last metric name is written with a newline character using `writeln!`.element
+        for name in &result_names[0..result_names.len() - 1] {
+            write!(file, "{};", name)?;
+        }
+        // Write the last metric name and add a newline to complete the header row.
+        writeln!(file, "{:?}", result_names.last().unwrap())?;
+        
+        // --- 4. Write Data Rows ---
+        // Iterates through each OptimizationResult and writes its parameters and metrics as a row in the CSV.
+        for result in results {
+            // --- 4.1: Extract Strategy Parameter Values for Current Result ---
+            // Gets the map of (name, value) for the current result's strategy parameters.
+            let params_map: std::collections::HashMap<_, _> = result
+                .get_parameters()
+                .get_strategy_params()
+                .clone()
+                .into_iter()
+                .collect();
+            
+            // Gets the values corresponding to the sorted parameter names, preserving order.
+            let strategy_params_values: Vec<serde_json::Value> = strategy_params
+                .iter()
+                .filter_map(|key| params_map.get(key))
+                .map(|value| value.clone())
+                .collect();
+
+            // --- 4.2: Write Strategy Parameter Values ---
+            // Writes each strategy parameter value, followed by a semicolon.
+            for value in &strategy_params_values{
+                write!(file, "{};", value)?;
+            }
+
+            // --- 4.3: Write Position Sizer Name and Value ---
+            // Writes the name and value of the position sizing method used for this result.
+            write!(file, "{};", result.get_parameters().get_pos_sizer_name())?;
+            write!(file, "{};", result.get_parameters().get_pos_sizer_value())?;
+            
+            // --- 4.4: Extract Position Sizer Additional Parameter Values ---
+            // Gets the map of (name, value) for the current result's position sizer additional parameters.
+            let pos_sizer_additional_params_map: std::collections::HashMap<_, _> = result
+                .get_parameters()
+                .get_pos_sizer_additional_params()
+                .clone()
+                .into_iter()
+                .collect();
+            
+            // Gets the values corresponding to the sorted additional parameter names, preserving order.
+            let pos_sizer_additional_params_values: Vec<serde_json::Value> = possizers_additional_params
+                .iter()
+                .filter_map(|key| pos_sizer_additional_params_map.get(key))
+                .map(|value| value.clone())
+                .collect();
+            
+            // --- 4.5: Write Position Sizer Additional Parameter Values ---
+            // Writes each position sizer additional parameter value, followed by a semicolon.
+            for value in pos_sizer_additional_params_values {
+                write!(file, "{};", value)?;
+            }
+
+            // --- 4.6: Write Slippage Value ---
+            // Writes the slippage value used for this result.
+            write!(file, "{};", result.get_parameters().get_slippage())?;
+
+            // --- 4.7: Extract Performance Metric Values ---
+            // Gets the map of (metric_name, metric_value_string) for the current result's performance metrics.
+            let performance_metrics_map: std::collections::HashMap<_, _> = result
+                .get_results()
+                .to_stats_list()
+                .into_iter()
+                .collect();
+
+            // Gets the values corresponding to the sorted metric names, preserving order.
+            let performance_metrics_values: Vec<String> = result_names
+                .iter()
+                .filter_map(|key| performance_metrics_map.get(key))
+                .map(|value| value.clone())
+                .collect();
+
+            // --- 4.8: Write Performance Metric Values ---
+            // Writes each performance metric value, followed by a semicolon, except the last one.
+            for value in &performance_metrics_values[0..performance_metrics_values.len() - 1] {
+                write!(file, "{};", value)?;
+            }
+            writeln!(file, "{}", performance_metrics_values.last().unwrap())?;
+        }
+
+        // --- 6. Return Success ---
+        // Indicates that the file was written successfully.
+        anyhow::Ok(())
+    }
+    
 }

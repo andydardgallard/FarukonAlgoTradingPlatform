@@ -29,11 +29,11 @@ impl DynamicStratagy {
             *const std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
             *const std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
         ) -> *mut std::ffi::c_void> = unsafe { lib.get(b"create_strategy")? };
-
+ 
         let destroy_strategy: libloading::Symbol<extern "C" fn(*mut std::ffi::c_void)> =
             unsafe { lib.get(b"destroy_strategy")? };
-
         let mode_c = std::ffi::CString::new(mode)?;
+            
         let strategy_ptr = create_strategy(
             mode_c.as_ptr(),
             strategy_settings as *const _,

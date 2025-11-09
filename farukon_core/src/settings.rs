@@ -3,6 +3,8 @@
 //! Configuration structures for the Farukon platform.
 //! Loads settings from JSON files and validates them.
 
+use std::fs;
+
 use serde::Deserialize;
 
 use crate::commission_plans;
@@ -28,16 +30,12 @@ pub enum FitnessValue {
     TotalReturnPercent,
     #[serde(rename = "APR")]
     APR,
-    #[serde(rename = "max_DD")]
+    #[serde(rename = "Max_Drawdown")]
     MaxDD,
-    #[serde(rename = "max_DD_%")]
-    MaxDDPercent,
     #[serde(rename = "APR/DD_factor")]
     AprDDFactor,
     #[serde(rename = "Recovery_Factor")]
     RecoveryFactor,
-    #[serde(rename = "Recovery_Factor_%")]
-    RecoveryFactorPercent,
     #[serde(rename = "Deals_Count")]
     DealsCount,
     #[serde(rename = "Composite")]
@@ -81,7 +79,9 @@ pub struct MarginParams {
 #[serde(deny_unknown_fields)]
 pub struct PosSizer {
     pub pos_sizer_name: String,
-    pub pos_sizer_params: std::collections::HashMap<String, serde_json::Value>,
+
+    #[serde(deserialize_with = "deserialize_strategy_params")]
+    pub pos_sizer_params: std::collections::HashMap<String, Vec<serde_json::Value>>,
 
     #[serde(deserialize_with = "deserialize_float_range")]
     pub pos_sizer_value: Vec<f64>,
@@ -128,6 +128,7 @@ pub struct StrategySettings {
     pub threads: Option<usize>,
     pub strategy_name: String,
     pub strategy_path: String,
+    pub exit_results_path: String,
     pub strategy_weight: f64,
     
     #[serde(deserialize_with = "deserialize_float_range")]
@@ -361,6 +362,23 @@ fn check_args(
                             }
                         }
                     }
+                }
+            }
+
+            // check exit path of results
+            {
+                let normalized_path = strategy_settings.exit_results_path
+                    .trim_end_matches('/');
+
+                if normalized_path.is_empty() {
+                    anyhow::bail!("Exit path cannot be empty!")
+                }
+
+                let path = std::path::Path::new(normalized_path);
+                if !path.exists() {
+                    fs::create_dir_all(path)?;
+                } else if !path.is_dir() {
+                    anyhow::bail!("Exit path is not a directory!")
                 }
             }
         }

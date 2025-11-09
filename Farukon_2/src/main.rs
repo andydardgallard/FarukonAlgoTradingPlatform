@@ -45,11 +45,15 @@ fn main() -> anyhow::Result<()>{
                     let total_combinations = optimization_runner
                         .get_grid_search_optimizer()
                         .calculate_total_combinations();
+                    
                     let combinations_to_grid_search = optimization_runner
                         .get_grid_search_optimizer()
                         .get_config()
                         .generate_all_combinations_vec();
-                    let _results = optimization_runner.run_grid_search(total_combinations, combinations_to_grid_search);
+                    
+                    let results = optimization_runner
+                        .run_grid_search(total_combinations, combinations_to_grid_search);
+                    optimization_runner.save_grid_search_optimization_results(&results)?;
                 },
                 farukon_core::settings::OptimizerType::Genetic { ga_params }=> {
                     optimization_runner.run_genetic_search(ga_params)?;

@@ -42,6 +42,15 @@ impl OptimizationResult {
         self
     }
 
+    /// --- Getters ---
+    pub fn get_parameters(&self) -> &ParameterSet {
+        &self.parameters
+    }
+
+    pub fn get_results(&self) -> &performance::PerformanceMetrics {
+        &self.results
+    }
+    
 }
 
 /// Represents a single set of strategy, position sizing, and slippage parameters.
@@ -55,7 +64,7 @@ pub struct ParameterSet {
     /// Value for the position sizing method (e.g., 1.5 for MPR).
     pos_sizer_value: f64,
     /// Additional parameters for the position sizer (currently unused for MPR).
-    pos_sizer_additional_params: std::collections::HashMap<String, serde_json::Value>,
+    pos_sizer_additional_params: Vec<(String, serde_json::Value)>,
     /// Slippage value to apply during execution (percentage of price).
     slippage: f64,
 }
@@ -67,7 +76,7 @@ impl ParameterSet {
             strategy_params: Vec::<(String, serde_json::Value)>::new(),
             pos_sizer_name: String::new(),
             pos_sizer_value: 0.0,
-            pos_sizer_additional_params: std::collections::HashMap::<String, serde_json::Value>::new(),
+            pos_sizer_additional_params: Vec::<(String, serde_json::Value)>::new(),
             slippage: 0.0,
         }
     }
@@ -91,7 +100,7 @@ impl ParameterSet {
     }
 
     /// Sets additional parameters for the position sizer.
-    pub fn with_pos_sizer_additional_params(mut self, params: std::collections::HashMap<String, serde_json::Value>) -> Self {
+    pub fn with_pos_sizer_additional_params(mut self, params: Vec<(String, serde_json::Value)>) -> Self {
         self.pos_sizer_additional_params = params;
         self
     }
@@ -102,6 +111,7 @@ impl ParameterSet {
         self
     }
 
+    /// --- Getters ---
     /// Returns a reference to the strategy parameters.
     pub fn get_strategy_params(&self) -> &Vec<(String, serde_json::Value)> {
         &self.strategy_params
@@ -110,6 +120,16 @@ impl ParameterSet {
     /// Returns a reference to the position sizer value.
     pub fn get_pos_sizer_value(&self) -> &f64 {
         &self.pos_sizer_value
+    }
+
+    /// Returns a reference to the position sizer name
+    pub fn get_pos_sizer_name(&self) -> &String {
+        &self.pos_sizer_name
+    }
+
+    /// Returns a reference to the position sizer additional parameters
+    pub fn get_pos_sizer_additional_params(&self) -> &Vec<(String, serde_json::Value)> {
+        &self.pos_sizer_additional_params
     }
 
     /// Returns a reference to the slippage value.
@@ -137,14 +157,14 @@ impl ParameterSet {
         } else {
             let params_str = self.pos_sizer_additional_params
                 .iter()
-                .map(|(k, v)| format!("'{}': {}",k , v))
+                .map(|(k, v)| format!("'{}': {}", k , v))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(", {}", params_str)
+            format!("{}", params_str)
         };
 
         let pos_sizer_str = format!(
-            "{{'pos_sizer_type': '{}', 'pos_sizer_value': {}{}}}",
+            "{{'pos_sizer_type': '{}', 'pos_sizer_value': {}, 'pos_sizer_additional_params': {}}}",
             self.pos_sizer_name,
             self.pos_sizer_value,
             additional_params_str,
@@ -167,6 +187,10 @@ pub struct OptimizationConfig {
     pos_sizer_value_range: Vec<f64>,
     /// List of possible values for slippage.
     slippage_range: Vec<f64>,
+    /// Position sizer name
+    pos_sizer_name: String,
+    /// Maps position sizer additional params
+    pos_sizer_additional_params: std::collections::HashMap<String, Vec<serde_json::Value>>,
 }
 
 impl OptimizationConfig {
@@ -175,7 +199,9 @@ impl OptimizationConfig {
         Self {
             strategy_params_ranges: std::collections::HashMap::new(),
             pos_sizer_value_range: Vec::new(),
-            slippage_range: Vec::new()
+            slippage_range: Vec::new(),
+            pos_sizer_name: String::new(),
+            pos_sizer_additional_params: std::collections::HashMap::new(),
         }
     }
 
@@ -184,7 +210,19 @@ impl OptimizationConfig {
         self.strategy_params_ranges = ranges;
         self
     }
-
+    
+    /// Sets position sizer name
+    pub fn with_pos_sizer_name(mut self, name: String) -> Self {
+        self.pos_sizer_name = name;
+        self
+    }
+    
+    /// Sets position sizer additional parameters
+    pub fn with_pos_sizer_additional_params(mut self, params: std::collections::HashMap<String,  Vec<serde_json::Value>>) -> Self {
+        self.pos_sizer_additional_params = params;
+        self
+    }
+    
     /// Sets the range of values for the position sizer.
     pub fn with_pos_sizer_value_ranges(mut self, range: Vec<f64>) -> Self {
         self.pos_sizer_value_range = range;
@@ -205,35 +243,55 @@ impl OptimizationConfig {
 
     /// Generates an iterator over all possible combinations of parameters.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
+        // println!("DEBUG {:#?}", self);
         let strategy_params_names: Vec<String> = self.strategy_params_ranges.keys().cloned().collect();
+        let pos_sizer_name = self.pos_sizer_name.clone();
+        let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = self.pos_sizer_additional_params
+            .iter()
+            .flat_map(|(key, values)| {
+                values.iter().map(|value| (key.clone(), value.clone()))
+            })
+            .collect();
+
         self.slippage_range
             .iter()
-            .flat_map(move |&slippage| {
-                self.pos_sizer_value_range
-                    .iter()
-                    .flat_map({
-                        let names = strategy_params_names.clone();
-                        move |&pos_sizer_val| {
-                        self.strategy_params_ranges
-                            .values()
-                            .multi_cartesian_product()
-                            .map({
-                                let names = names.clone();
-                                move |stratagy_values| {
-                                let strategy_params = names
-                                    .iter()
-                                    .zip(stratagy_values)
-                                    .map(|(name, value)| (name.clone(), value.clone()))
-                                    .collect();  
+            .flat_map({
+                let pos_sizer_name = pos_sizer_name.clone();
+                let pos_sizer_additional_params = pos_sizer_additional_params.clone();
+                let strategy_params_names = strategy_params_names.clone();
+                move |&slippage| {
+                    self.pos_sizer_value_range
+                        .iter()
+                        .flat_map({
+                            let pos_sizer_name = pos_sizer_name.clone();
+                            let pos_sizer_additional_params = pos_sizer_additional_params.clone();
+                            let strategy_params_names = strategy_params_names.clone();
+                            move |&pos_sizer_val| {
+                                self.strategy_params_ranges
+                                    .values()
+                                    .multi_cartesian_product()
+                                    .map({
+                                        let pos_sizer_name = pos_sizer_name.clone();
+                                        let pos_sizer_additional_params = pos_sizer_additional_params.clone();
+                                        let strategy_params_names = strategy_params_names.clone();
+                                        move |stratagy_values| {
+                                            let strategy_params = strategy_params_names
+                                                .iter()
+                                                .zip(stratagy_values)
+                                                .map(|(name, value)| (name.clone(), value.clone()))
+                                                .collect();
 
-                                ParameterSet::new()
-                                    .with_strategy_params(strategy_params)
-                                    .with_pos_sizer_value(pos_sizer_val)
-                                    .with_slippage(slippage)
-                                }
-                            })  
-                    }
-                    })
+                                            ParameterSet::new()
+                                                .with_strategy_params(strategy_params)
+                                                .with_pos_sizer_name(pos_sizer_name.clone())
+                                                .with_pos_sizer_additional_params(pos_sizer_additional_params.clone())
+                                                .with_pos_sizer_value(pos_sizer_val)
+                                                .with_slippage(slippage)  
+                                        }
+                                    })
+                            }
+                        })
+                }
             })
     }
 
@@ -268,7 +326,6 @@ impl GridSearchOptimizer {
 
     /// Calculates the total number of parameter combinations to test.
     pub fn calculate_total_combinations(&self) -> usize {
-        println!("{:?}", self.config);
         let strategy_combinations = self.config.strategy_params_ranges
             .values()
             .map(|v| v.len())

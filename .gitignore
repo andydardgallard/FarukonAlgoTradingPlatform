@@ -3,5 +3,7 @@
 .DS_Store
 start.sh
 TODO's.txt
-lib1.rs
-*Debug_Portfolio.json
+SYMI*
+/portfolios
+/opt_results
+lib.rs

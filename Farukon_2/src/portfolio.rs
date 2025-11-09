@@ -7,7 +7,6 @@
 use farukon_core::{self, portfolio::PortfolioHandler};
 
 use crate::risks;
-use std::io::Write;
 
 pub struct Portfolio {
     /// Operational mode (Debug, Optimize, Visual).
@@ -159,22 +158,6 @@ impl Portfolio {
 
             None
         }
-
-    /// Exports the equity curve to a CSV file.
-    /// # Arguments
-    /// * `filename` - The name of the output file.
-    /// # Returns
-    /// * `anyhow::Result<()>` indicating success or failure.
-    #[allow(dead_code)] // TODO: Used for export
-    pub fn export_equity_to_csv(&self, filename: &str) -> anyhow::Result<()> {
-        let mut file = std::fs::File::create(filename)?;
-        writeln!(file, "datetime,capital")?;
-        for point in &self.equity_series {
-            writeln!(file, "{},{}", point.0.format("%Y-%m-%d %H:%M:%S"), point.1)?;
-        }
-
-        anyhow::Ok(())
-    }
 
 }
 
@@ -450,56 +433,62 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
 
         // Udate equity curve data
-        if let Some(latest_holdings) = self.get_latest_holdings() {
-            self.equity_series.push((current_bar_datetime, latest_holdings.capital));
+        {
+            if let Some(latest_holdings) = self.get_latest_holdings() {
+                self.equity_series.push((current_bar_datetime, latest_holdings.capital));
+            }
         }
         
         // Update metrics incrementally if in RealTime mode
-        let start_date = self.get_all_holdings().first().unwrap().datetime;
-        let end_date = data_handler.get_latest_bar_datetime(
-            self.strategy_settings.symbols.first().unwrap()
-        ).unwrap();
-        
-        // Update deals counter
-        let mut deals_count = 0 as usize;
-        for symbol in &self.strategy_settings.symbols {
-            if let Some(position_state) = self.current_positions.get_mut(symbol) {
-                deals_count += position_state.deal_number;
-            }
-        }
+        {
+            let start_date = self.get_all_holdings().first().unwrap().datetime;
+            let end_date = data_handler.get_latest_bar_datetime(
+                self.strategy_settings.symbols.first().unwrap()
+            ).unwrap();
 
-        if let farukon_core::settings::MetricsMode::RealTime { .. } = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
-            if let Some(latest_holdings) = self.get_latest_holdings() {
-                self.performance_manager.update_incremental(latest_holdings.capital, start_date, end_date, deals_count);
-                
-                if self.mode == "Debug".to_string() {
-                    println!(
-                        "Metrics, {:?}",
-                        self.performance_manager.get_current_performance_metrics()
-                    );
+            // Update deals counter
+            let mut deals_count = 0 as usize;
+            for symbol in &self.strategy_settings.symbols {
+                if let Some(position_state) = self.current_positions.get_mut(symbol) {
+                    deals_count += position_state.deal_number;
+                }
+            }
+    
+            if let farukon_core::settings::MetricsMode::RealTime { .. } = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
+                if let Some(latest_holdings) = self.get_latest_holdings() {
+                    self.performance_manager.update_incremental(latest_holdings.capital, start_date, end_date, deals_count);
+                    
+                    if self.mode == "Debug".to_string() {
+                        println!(
+                            "Metrics, {:?}",
+                            self.performance_manager.get_current_performance_metrics()
+                        );
+                    }
                 }
             }
         }
-
+        
         // Margin call monitoring: if capital falls below min_margin, close all positions
-        let margin_call_monitoring = risks::margin_call_control_for_market(
-            self.get_latest_holdings().unwrap(),
-            self.get_current_positions(),
-            &self.strategy_settings,
-            &self.strategy_instruments_info
-        ).unwrap();
-        if !margin_call_monitoring {
-            for symbol in &self.strategy_settings.symbols {
-                println!("{:?}", margin_call_monitoring);
-                let quantity = Some(self.get_current_positions().get(symbol).unwrap().position);
-                let _ = self.event_sender.send(Box::new(farukon_core::event::SignalEvent::new(
-            current_bar_datetime,
-                    symbol.clone(),
-                    "EXIT".to_string(),
-                    "MKT".to_string(),
-                    quantity,
-                    None,
-                )));
+        {
+            let margin_call_monitoring = risks::margin_call_control_for_market(
+                self.get_latest_holdings().unwrap(),
+                self.get_current_positions(),
+                &self.strategy_settings,
+                &self.strategy_instruments_info
+            ).unwrap();
+            if !margin_call_monitoring {
+                for symbol in &self.strategy_settings.symbols {
+                    println!("{:?}", margin_call_monitoring);
+                    let quantity = Some(self.get_current_positions().get(symbol).unwrap().position);
+                    let _ = self.event_sender.send(Box::new(farukon_core::event::SignalEvent::new(
+                current_bar_datetime,
+                        symbol.clone(),
+                        "EXIT".to_string(),
+                        "MKT".to_string(),
+                        quantity,
+                        None,
+                    )));
+                }
             }
         }
 
@@ -547,6 +536,10 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
 
         // self.export_results(); TODO
+        if self.mode == "Debug" {
+            farukon_core::utils::export_equity_to_csv(&self.equity_series, &self.strategy_settings)?;
+        }
+
         let output_metrics = self.performance_manager.get_current_performance_metrics();
               
         anyhow::Ok(output_metrics)
@@ -613,7 +606,11 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
     /// Returns a vector of all capital values from the equity curve.
     fn get_equity_capital_values(&self) -> Vec<f64> {
-        self.all_holdings.iter().map(|point| point.capital).collect()
+        // self.all_holdings.iter().map(|point| point.capital).collect()
+        self.equity_series
+            .iter()
+            .map(|a| a.1)
+            .collect()
     }
 
 }

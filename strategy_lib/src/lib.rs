@@ -1,11 +1,12 @@
 // strategy_lib/src/lib.rs
+// SYMI_Ch_SMA_up
 
 use farukon_core::{self, strategy::Strategy};
 
 /// A simple moving average crossover strategy.
 /// This strategy generates buy/sell signals based on the crossing of two SMAs.
 /// It also handles position exits based on SMA crossover or contract expiration.
-pub struct MovingAverageCrossStrategy {
+pub struct SYMIChSMAUpStrategy {
     /// The operational mode (e.g., "Debug", "Optimize", "Visual").
     mode: String,
     /// The settings for this strategy, loaded from the JSON config.
@@ -14,13 +15,18 @@ pub struct MovingAverageCrossStrategy {
     strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
     /// The event sender channel used to communicate signals to other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
-    /// The window size for the short-term Simple Moving Average (SMA).
-    short_window: usize,
-    /// The window size for the long-term Simple Moving Average (SMA).
-    long_window: usize,
+
+    avg_price_period: usize,
+    channel_period: usize,
+    prct_width_channel: usize,
+    width_channel: usize,
+    sma_period: usize,
+
+    high_prices_data: std::collections::VecDeque<Option<f64>>,
+    low_prices_data: std::collections::VecDeque<Option<f64>>,
 }
 
-impl MovingAverageCrossStrategy {
+impl SYMIChSMAUpStrategy {
     /// Creates a new instance of the MovingAverageCrossStrategy.
     /// Initializes the strategy with the provided mode, settings, instrument info, and event sender.
     /// It also parses the required strategy parameters (`short_window`, `long_window`) from the settings.
@@ -39,24 +45,29 @@ impl MovingAverageCrossStrategy {
         strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
         event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
     ) -> anyhow::Result<Self> {
-        // Extract the short and long window sizes from the strategy settings.
-        let short_window = get_param_as_usize(&strategy_settings.strategy_params, "short_window")?;
-        let long_window = get_param_as_usize(&strategy_settings.strategy_params, "long_window")?;
+        let avg_price_period = get_param_as_usize(&strategy_settings.strategy_params, "avg_price_period")?;
+        let channel_period = get_param_as_usize(&strategy_settings.strategy_params, "channel_period")?;
+        let prct_width_channel = get_param_as_usize(&strategy_settings.strategy_params, "prct_width_channel")?;
+        let width_channel = get_param_as_usize(&strategy_settings.strategy_params, "width_channel")?;
+        let sma_period = get_param_as_usize(&strategy_settings.strategy_params, "sma_period")?;
 
-        // Validate that the short window is less than the long window.
-        if short_window >= long_window{
-            anyhow::bail!("'short_window' ({}) must be less than 'long_window' ({}).", short_window, long_window);
-        }
+        let high_prices_data = std::collections::VecDeque::<Option<f64>>::with_capacity(avg_price_period);
+        let low_prices_data = std::collections::VecDeque::<Option<f64>>::with_capacity(avg_price_period);
 
         // Create and return the new strategy instance.
         anyhow::Ok(
-            MovingAverageCrossStrategy {
+            SYMIChSMAUpStrategy {
                 mode,
                 strategy_settings,
                 strategy_instruments_info,
-                short_window: short_window as usize,
-                long_window: long_window as usize,
-                event_sender,                          
+                event_sender,
+                avg_price_period,
+                channel_period,
+                prct_width_channel,
+                width_channel,
+                sma_period,
+                high_prices_data,
+                low_prices_data,
             }
         )
     }
@@ -65,7 +76,7 @@ impl MovingAverageCrossStrategy {
 
 /// Implementation of the core Strategy trait for MovingAverageCrossStrategy.
 /// This defines the main logic for calculating signals based on market data and portfolio state.
-impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
+impl farukon_core::strategy::Strategy for SYMIChSMAUpStrategy {
     /// Calculates trading signals based on market data and portfolio state.
     /// This function iterates through each symbol in the symbol list, calculates SMAs,
     /// checks for crossovers, and sends appropriate signals (LONG, SHORT, EXIT) via the event channel.
@@ -88,158 +99,202 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
         // Iterate through each symbol in the list.
         for symbol in symbol_list{
 
-            // Get the current capital from the equity point.
+            // Get the current capital from latest holdings Snapshot
             let capital = Some(latest_holdings.capital);
-            // Get the current capital from the equity point.
             let strategy_instruments_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
 
             // Get the current datetime for the symbol
             let current_bar_datetime = data_handler.get_latest_bar_datetime(symbol).unwrap();
-            // Get the latest close price for the symbol.
-            let close = Some(data_handler.get_latest_bar_value(symbol, "close").unwrap());
- 
+
             // Get the expiration datetime for the symbol
             let expiration_date = &strategy_instruments_info_for_symbol.expiration_date;
             let expiration_date_dt = farukon_core::utils::string_to_date_time(expiration_date, "%Y-%m-%d %H:%M:%S")?;
-
+            
             // Get the expiration datetime for the symbol from instrument info and parse it.
             let trade_from_date = &strategy_instruments_info_for_symbol.trade_from_date;
             let trade_from_date_dt = farukon_core::utils::string_to_date_time(trade_from_date, "%Y-%m-%d %H:%M:%S")?;
-
+            
             // Get the trade_from_date for the symbol from instrument info and parse it.
             let current_position_state = current_positions.get(symbol).unwrap();
             let current_position_quantity = current_position_state.position;
+        
+            // Get the latest close price for the symbol.
+            let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
+            let high = data_handler.get_latest_bar_value(symbol, "high").unwrap();
+            let low = data_handler.get_latest_bar_value(symbol, "low").unwrap();
 
-            // Calculate signals
-            let short_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.short_window);
-            let long_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.long_window);
-
-            if let (Some(short_sma), Some(long_sma)) = (
-                farukon_core::indicators::sma(&short_sma_bars, self.short_window),
-                farukon_core::indicators::sma(&long_sma_bars, self.long_window),
-            ) {
-                // Print debug information if in Debug mode.
-                if self.mode == "Debug".to_string() {
-                    println!("Start event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Start event, Indicators + equity_point, {:?}", latest_holdings);
-                }
-                                
-                // if position exist
-                if current_position_quantity != 0.0 {
-                    let signal_name = "EXIT";
-                    // if long position
-                    if current_position_quantity > 0.0 {
-                        // EXIT LONG
-                        if short_sma < long_sma {
-                            self.close_by_market(
-                                &self.event_sender,
-                                current_bar_datetime,
-                                symbol,
-                                signal_name,
-                                Some(current_position_quantity),
-                            )?;
-                        }
-                        // EXIT by expiration
-                        else if current_bar_datetime >= expiration_date_dt {
-                            self.close_by_market(
-                                &self.event_sender,
-                                current_bar_datetime,
-                                symbol,
-                                signal_name,
-                                Some(current_position_quantity),
-                            )?;
-                        }
-                    }
-                    // if short position
-                    else {
-                        // EXIT SHORT
-                        if short_sma > long_sma {
-                            self.close_by_market(
-                                &self.event_sender,
-                                current_bar_datetime,
-                                symbol,
-                                signal_name,
-                                Some(current_position_quantity),
-                            )?;
-                        }
-                        // EXIT by expiration
-                        else if current_bar_datetime >= expiration_date_dt {
-                            self.close_by_market(
-                                &self.event_sender,
-                                current_bar_datetime,
-                                symbol,
-                                signal_name,
-                                Some(current_position_quantity),
-                            )?;
-                        } 
-                    }
-                }
-                // if no position exist
-                else {
-                    // LONG
-                    if short_sma > long_sma &&
-                    current_bar_datetime < expiration_date_dt &&
-                    current_bar_datetime >= trade_from_date_dt 
-                    {
-                        let signal_name = "LONG";
-                        let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
-                            &self.mode,
-                            capital,
-                            close,
-                            Some(long_sma),
-                            &self.strategy_settings,
-                            strategy_instruments_info_for_symbol,
-                        );
-
-                        self.open_by_limit(
-                            &self.event_sender,
-                            current_bar_datetime,
-                            symbol,
-                            signal_name,
-                            quantity,
-                            close,
-                        )?;
-
-                        if self.mode == "Debug" {
-                            println!("quantity: {:?}", quantity);
-                        }
-                    }
-                    // SHORT
-                    else if
-                    short_sma < long_sma &&
-                    current_bar_datetime < expiration_date_dt &&
-                    current_bar_datetime >= trade_from_date_dt 
-                    {
-                        let signal_name = "SHORT";
-                        let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
-                            &self.mode,
-                            capital,
-                            close,
-                            Some(long_sma),
-                            &self.strategy_settings,
-                            strategy_instruments_info_for_symbol,
-                        );
-                        
-                        self.open_by_limit(
-                            &self.event_sender,
-                            current_bar_datetime,
-                            symbol,
-                            signal_name,
-                            quantity,
-                            close,
-                        )?;
-
-                        if self.mode == "Debug" {
-                            println!("quantity: {:?}", quantity);
-                        }
-                    }
-                }
-
-                if self.mode == "Debug".to_string() {
-                    println!("Finish event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Finish event, Indicators + equity_point, {:?}", latest_holdings);
-                }
+            let high_bars = data_handler.get_latest_bars_values(symbol, "high", self.avg_price_period);
+            let low_bars = data_handler.get_latest_bars_values(symbol, "low", self.avg_price_period);
+            let sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.sma_period);
+            
+            let shift = 1;
+            if self.high_prices_data.len() < self.channel_period + shift {
+                self.high_prices_data.push_back(farukon_core::indicators::sma(&high_bars, self.avg_price_period));
+            } else {
+                self.high_prices_data.pop_front();
+                self.high_prices_data.push_back(farukon_core::indicators::sma(&high_bars, self.avg_price_period));
             }
+            
+            if self.low_prices_data.len() < self.channel_period + shift {
+                self.low_prices_data.push_back(farukon_core::indicators::sma(&low_bars, self.avg_price_period));
+            } else {
+                self.low_prices_data.pop_front();
+                self.low_prices_data.push_back(farukon_core::indicators::sma(&low_bars, self.avg_price_period));
+            }
+
+            if let (Some(high_level), Some(low_level), Some(sma)) = (
+                    farukon_core::indicators::highest(&self.high_prices_data, self.channel_period, shift),
+                    farukon_core::indicators::lowest(&self.low_prices_data, self.channel_period, shift),
+                    farukon_core::indicators::sma(&sma_bars, self.sma_period),
+                ) {
+                    // Print debug information if in Debug mode.
+                    if self.mode == "Debug".to_string() {
+                        println!(
+                            "Start event, Indicators, {}, {}, high: {}, high_level: {}, high_level_lustra: {}, low: {}, low_level: {}, low_level_lustra: {}, current_position: {}",
+                            symbol, current_bar_datetime, 
+                            high, high_level, 0, 
+                            low, low_level, 0,
+                            current_position_quantity
+                        );
+                        println!("Start event, Indicators + equity_holdings, {:?}", latest_holdings);
+                    }
+
+                    // width
+                    let width = high_level - low_level;
+
+                    // lustra
+                    let high_level_lustra = high_level - (high_level - low_level) * self.prct_width_channel as f64/ 100.0;
+                    let low_level_lustra = low_level + (high_level - low_level) * self.prct_width_channel as f64 / 100.0;
+
+                    // if position exist
+                    if current_position_quantity != 0.0 {
+                        let signal_name = "EXIT";
+                        // if long position
+                        if current_position_quantity > 0.0 {
+                            // EXIT LONG
+                            if close < high_level_lustra {
+                                self.close_by_limit(
+                                    &self.event_sender,
+                                    current_bar_datetime,
+                                    symbol,
+                                    signal_name,
+                                    Some(current_position_quantity),
+                                    Some(close),
+                                )?;
+                            }
+                            // EXIT by expiration
+                            else if current_bar_datetime >= expiration_date_dt {
+                                self.close_by_market(
+                                    &self.event_sender,
+                                    current_bar_datetime,
+                                    symbol,
+                                    signal_name,
+                                    Some(current_position_quantity),
+                                )?;
+                            }
+                        }
+                        // if short position
+                        else {
+                            // EXIT SHORT
+                            if close > low_level_lustra {
+                                self.close_by_limit(
+                                    &self.event_sender,
+                                    current_bar_datetime,
+                                    symbol,
+                                    signal_name,
+                                    Some(current_position_quantity),
+                                    Some(close),
+                                )?;
+                            }
+                            // EXIT by expiration
+                            else if current_bar_datetime >= expiration_date_dt {
+                                self.close_by_market(
+                                    &self.event_sender,
+                                    current_bar_datetime,
+                                    symbol,
+                                    signal_name,
+                                    Some(current_position_quantity),
+                                )?;
+                            } 
+                        }
+                    }
+                    // if no position exist
+                    else {
+                        // LONG
+                        if 
+                        high >= high_level &&
+                        (width as usize) < self.width_channel &&
+                        sma < low_level &&
+                        current_bar_datetime < expiration_date_dt &&
+                        current_bar_datetime >= trade_from_date_dt 
+                        {
+                            let signal_name = "LONG";
+                            let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
+                                &self.mode,
+                                capital,
+                                Some(close),
+                                Some(high_level_lustra),
+                                &self.strategy_settings,
+                                strategy_instruments_info_for_symbol,
+                            );
+
+                            self.open_by_limit(
+                                &self.event_sender,
+                                current_bar_datetime,
+                                symbol,
+                                signal_name,
+                                quantity,
+                                Some(close),
+                            )?;
+
+                            if self.mode == "Debug" {
+                                println!("quantity: {:?}", quantity);
+                            }
+                        }
+                        // SHORT
+                        else if
+                        low <= low_level &&
+                        (width as usize) < self.width_channel &&
+                        sma > high_level &&
+                        current_bar_datetime < expiration_date_dt &&
+                        current_bar_datetime >= trade_from_date_dt 
+                        {
+                            let signal_name = "SHORT";
+                            let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
+                                &self.mode,
+                                capital,
+                                Some(close),
+                                Some(low_level_lustra),
+                                &self.strategy_settings,
+                                strategy_instruments_info_for_symbol,
+                            );
+                            
+                            self.open_by_limit(
+                                &self.event_sender,
+                                current_bar_datetime,
+                                symbol,
+                                signal_name,
+                                quantity,
+                                Some(close),
+                            )?;
+
+                            if self.mode == "Debug" {
+                                println!("quantity: {:?}", quantity);
+                            }
+                        }
+                    }
+
+                    if self.mode == "Debug".to_string() {
+                        println!(
+                            "Finish event, Indicators, {}, {}, high: {}, high_level: {}, high_level_lustra: {}, low: {}, low_level: {}, low_level_lustra: {}, current_position: {}",
+                            symbol, current_bar_datetime, 
+                            high, high_level, high_level_lustra, 
+                            low, low_level, low_level_lustra,
+                            current_position_quantity
+                        );
+                        println!("Finish event, Indicators + equity_point, {:?}", latest_holdings);
+                    }
+                }
         }
 
         anyhow::Ok(())
@@ -289,7 +344,7 @@ pub extern "C" fn create_strategy(
     strategy_settings_ptr: *const farukon_core::settings::StrategySettings,
     strategy_instruments_info_ptr: *const std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
     event_sender_ptr: *const std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
-) -> *mut MovingAverageCrossStrategy {
+) -> *mut SYMIChSMAUpStrategy {
     // Check for null pointers to prevent crashes.
     if mode_cstr.is_null() || strategy_settings_ptr.is_null() || strategy_settings_ptr.is_null() || event_sender_ptr.is_null() {
         return std::ptr::null_mut();
@@ -302,7 +357,7 @@ pub extern "C" fn create_strategy(
     let event_sender_ref = unsafe { &*event_sender_ptr }.clone();
     
     // Attempt to create a new strategy instance.
-    match MovingAverageCrossStrategy::new(
+    match SYMIChSMAUpStrategy::new(
         mode,
         strategy_settings_ref,
         strategy_instruments_info_ref,
@@ -323,7 +378,7 @@ pub extern "C" fn create_strategy(
 /// # Arguments
 /// * `strategy` - A raw pointer to the MovingAverageCrossStrategy instance to be destroyed.
 #[unsafe(no_mangle)]
-pub extern "C" fn destroy_strategy(strategy: *mut MovingAverageCrossStrategy) {
+pub extern "C" fn destroy_strategy(strategy: *mut SYMIChSMAUpStrategy) {
     if !strategy.is_null() {
         // Reconstruct the Box from the raw pointer and let it go out of scope, triggering the Drop trait.
         unsafe {
@@ -361,7 +416,7 @@ pub extern "C" fn calculate_signals(
         return -1;
     }
     // Cast the void pointer to the correct type and get a mutable reference to the strategy.
-    let strategy = unsafe { &mut *(strategy_ptr as *mut MovingAverageCrossStrategy) };
+    let strategy = unsafe { &mut *(strategy_ptr as *mut SYMIChSMAUpStrategy) };
 
     // Reconstruct the DataHandler trait object from the VTable and data pointers.
     let data_handler: &dyn farukon_core::data_handler::DataHandler = unsafe {

@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "Farukon_2_0",
+    "Farukon_2",
     "farukon_core",
     "strategy_lib"
     ]

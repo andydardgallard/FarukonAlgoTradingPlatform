@@ -13,17 +13,15 @@ pub struct PerformanceMetrics {
     /// Total return as a percentage of initial capital.
     total_return_percent: f64,
     /// Annualized Percentage Return (APR) as a percentage.
-    apr_percent: f64,
-    /// Maximum drawdown in base currency.
-    max_drawdown: f64,
+    apr: f64,
+    // /// Maximum drawdown in base currency.
+    // max_drawdown: f64,
     /// Maximum drawdown as a percentage of peak equity.
-    max_drawdown_percent: f64,
+    max_drawdown: f64,
     /// Ratio of APR to Max Drawdown (higher is better).
     apr_to_drawdown_ratio: f64,
-    /// Recovery Factor (Total Return / Max Drawdown).
-    recovery_factor: f64,
     /// Recovery Factor as a percentage.
-    recovery_factor_percent: f64,
+    recovery_factor: f64,
     /// Total number of trades executed.
     deals_count: usize,
 }
@@ -34,12 +32,10 @@ impl PerformanceMetrics {
         Self {
             total_return: 0.0,
             total_return_percent: 0.0,
-            apr_percent: 0.0,
+            apr: 0.0,
             max_drawdown: 0.0,
-            max_drawdown_percent: 0.0,
             apr_to_drawdown_ratio: 0.0,
             recovery_factor: 0.0,
-            recovery_factor_percent: 0.0,
             deals_count: 0,
         }
     }
@@ -48,15 +44,13 @@ impl PerformanceMetrics {
     pub fn to_stats_list(&self) -> Vec<(String, String)> {
         let mut stats = Vec::new();
 
-        stats.push(("Total Return".to_string(), format!("{:.2}", self.total_return)));
-        stats.push(("Total Return %".to_string(), format!("{:.5}", self.total_return_percent)));
-        stats.push(("APR %".to_string(), format!("{:.5}", self.apr_percent)));
-        stats.push(("Max Drawdown".to_string(), format!("{:.2}", self.max_drawdown)));
-        stats.push(("Max Drawdown %".to_string(), format!("{:.5}", self.max_drawdown_percent)));
-        stats.push(("APR/Drawdown Factor".to_string(), format!("{:.2}", self.apr_to_drawdown_ratio)));
-        stats.push(("Recovery Factor".to_string(), format!("{:.2}", self.recovery_factor)));
-        stats.push(("Recovery Factor %".to_string(), format!("{:.2}", self.recovery_factor_percent)));
-        stats.push(("Deals Count".to_string(), self.deals_count.to_string()));
+        stats.push(("Total_Return".to_string(), format!("{:.2}", self.total_return)));
+        stats.push(("Total_Return_%".to_string(), format!("{:.5}", self.total_return_percent)));
+        stats.push(("APR".to_string(), format!("{:.5}", self.apr)));
+        stats.push(("Max_Drawdown".to_string(), format!("{:.5}", self.max_drawdown)));
+        stats.push(("APR/Drawdown_factor".to_string(), format!("{:.2}", self.apr_to_drawdown_ratio)));
+        stats.push(("Recovery_Factor".to_string(), format!("{:.2}", self.recovery_factor)));
+        stats.push(("Deals_Count".to_string(), self.deals_count.to_string()));
 
         stats
     }
@@ -79,28 +73,18 @@ impl PerformanceMetrics {
     }
 
     /// Returns a reference to the APR as a percentage.
-    pub fn get_apr_percent(&self) -> &f64 {
-        &self.apr_percent
+    pub fn get_apr(&self) -> &f64 {
+        &self.apr
     }
 
-    /// Returns a reference to the maximum drawdown.
+    /// Returns a reference to the maximum drawdown as a percentage.
     pub fn get_max_drawdown(&self) -> &f64 {
         &self.max_drawdown
     }
 
-    /// Returns a reference to the maximum drawdown as a percentage.
-    pub fn get_max_drawdown_percent(&self) -> &f64 {
-        &self.max_drawdown_percent
-    }
-
-    /// Returns a reference to the recovery factor.
+    /// Returns a reference to the recovery factor as a percentage.
     pub fn get_recovery_factor(&self) -> &f64 {
         &self.recovery_factor
-    }
-
-    /// Returns a reference to the recovery factor as a percentage.
-    pub fn get_recovery_factor_percent(&self) -> &f64 {
-        &self.recovery_factor_percent
     }
 
     /// Returns a reference to the deal count.
@@ -124,16 +108,12 @@ pub struct PerformanceManager {
     returns: Vec<f64>,
     /// Equity curve (capital over time).
     equity_curve: Vec<f64>,
-    /// Drawdowns over time.
-    drawdowns: Vec<f64>,
     /// Drawdowns as percentages over time.
-    drawdowns_percent: Vec<f64>,
+    drawdowns: Vec<f64>,
     /// Highest equity reached so far.
     peak: f64,
-    /// Maximum drawdown encountered.
-    max_drawdown: f64,
     /// Maximum drawdown as a percentage.
-    max_drawdown_percent: f64,
+    max_drawdown: f64,
 }
 
 impl PerformanceManager {
@@ -153,10 +133,8 @@ impl PerformanceManager {
             returns: vec![],
             equity_curve: vec![initial_capital_for_strategy],
             drawdowns: vec![],
-            drawdowns_percent: vec![],
             peak: initial_capital_for_strategy,
             max_drawdown: 0.0,
-            max_drawdown_percent: 0.0,
         }
     }
 
@@ -177,13 +155,9 @@ impl PerformanceManager {
         self.equity_curve.push(current_total);
         self.peak = self.peak.max(current_total);
 
-        let dd = if self.peak > 0.0 { current_total - self.peak } else { 0.0 };
-        self.drawdowns.push(dd);
-        self.max_drawdown = self.max_drawdown.min(dd);
-
         let dd_percent = if self.peak > 0.0 { (current_total / self.peak) - 1.0 } else { 0.0 };
-        self.drawdowns_percent.push(dd_percent);
-        self.max_drawdown_percent = self.max_drawdown_percent.min(dd_percent);
+        self.drawdowns.push(dd_percent);
+        self.max_drawdown = self.max_drawdown.min(dd_percent);
 
         self.update_metrics(start_date, end_date, deals_count);
     }
@@ -207,12 +181,10 @@ impl PerformanceManager {
         self.metrics = PerformanceMetrics {
             total_return: current_return,
             total_return_percent: current_return_percent,
-            apr_percent: apr,
+            apr,
             max_drawdown: self.max_drawdown,
-            max_drawdown_percent: self.max_drawdown_percent,
-            apr_to_drawdown_ratio: if self.max_drawdown_percent.abs() > 1e-8 { apr / self.max_drawdown_percent.abs() } else { 0.0 },
-            recovery_factor: current_return / self.max_drawdown.abs().max(1e-8),
-            recovery_factor_percent: current_return_percent / self.max_drawdown_percent.abs().max(1e-8),
+            apr_to_drawdown_ratio: if self.max_drawdown.abs() > 1e-8 { apr.abs() / self.max_drawdown.abs() } else { 0.0 },
+            recovery_factor: current_return_percent.abs() / self.max_drawdown.abs().max(1e-8),
             deals_count,
         }
     } 
@@ -249,13 +221,9 @@ impl PerformanceManager {
         }
 
         // Max drawdown
-        let (dd_percent, max_dd_percent) = calculate_drawdowns_simd(&series, "percent");
-        self.drawdowns_percent = dd_percent;
-        self.max_drawdown_percent = max_dd_percent;
-
-        let (dd, max_dd) = calculate_drawdowns_simd(&series, "currency");
-        self.drawdowns = dd;
-        self.max_drawdown = max_dd;
+        let (dd_percent, max_dd_percent) = calculate_drawdowns_simd(&series);
+        self.drawdowns = dd_percent;
+        self.max_drawdown = max_dd_percent;
 
         self.update_metrics(start_date, end_date, deals_count);
 
@@ -309,7 +277,7 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
     returns
 }
 
-fn calculate_drawdowns_simd(equity: &[f64], calc_type: &str) -> (Vec<f64>, f64) {
+fn calculate_drawdowns_simd(equity: &[f64]) -> (Vec<f64>, f64) {
     let n = equity.len();
     if n == 0 {
         return (Vec::new(), 0.0);
@@ -341,20 +309,10 @@ fn calculate_drawdowns_simd(equity: &[f64], calc_type: &str) -> (Vec<f64>, f64) 
         }
 
         let peak_vec = wide::f64x4::splat(peak);
-        let mut dd_vec = wide::f64x4::splat(0.0);
 
-        match calc_type {
-            "percent" => {
-                dd_vec = (values / peak_vec) - wide::f64x4::splat(1.0);
-            },
-            "currency" => {
-                dd_vec = values - peak_vec;
-            },
-            _ => {
-                eprintln!("Wrong type of calculation drawdown!");
-            }
-        }
-        
+        let mut dd_vec = wide::f64x4::splat(0.0);
+        dd_vec = (values / peak_vec) - wide::f64x4::splat(1.0);
+ 
         let dd_array: [f64; 4] = dd_vec.into();
         drawdowns[start..start+4].copy_from_slice(&dd_array);
 
@@ -374,18 +332,7 @@ fn calculate_drawdowns_simd(equity: &[f64], calc_type: &str) -> (Vec<f64>, f64) 
         }
 
         let mut dd = 0.0;
-
-        match calc_type {
-            "percent" => {
-                dd = (value / peak) - 1.0;
-            },
-            "currency" => {
-                dd = value - peak;
-            },
-            _ => {
-                eprintln!("Wrong type of calculation drawdown!");
-            }
-        }
+        dd = (value / peak) - 1.0;
 
         drawdowns[i] = dd;
 

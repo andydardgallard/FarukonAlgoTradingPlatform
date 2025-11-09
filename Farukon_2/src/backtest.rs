@@ -70,17 +70,7 @@ impl Backtest {
                                 println!();
                                 println!("Start_all position, {:?}", self.portfolio.get_all_positions());
                                 println!("Start_all holdings, {:?}", self.portfolio.get_all_holdings());
-                                // println!("All equity, {:?}", self.portfolio.get_all_equity_points())
                             }
-
-                            // // Debug: Print state after strategy and portfolio update
-                            // if self.mode == "Debug".to_string() {
-                            //     print!("Finish event, {:?}, ", event_box);
-                            //     for symbol in &self.strategy_settings.symbols {
-                            //         print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
-                            //     }
-                            //     println!()
-                            // }
                         }
                         "SIGNAL" => {
                             if self.mode == "Debug".to_string() {
@@ -201,7 +191,6 @@ impl Backtest {
                 println!();
                 println!("Finish_all position, {:?}", self.portfolio.get_all_positions());
                 println!("Finish_all holdings, {:?}", self.portfolio.get_all_holdings());
-                // println!("All equity, {:?}", self.portfolio.get_all_equity_points())
             }
 
             // Debug separator
@@ -251,7 +240,6 @@ impl Backtest {
         if self.mode == "Debug" {
             println!("all_positions: {:#?}", self.portfolio.get_all_positions());
             println!("all_holdings: {:#?}", self.portfolio.get_all_holdings());
-            // println!("all_equity: {:#?}", self.portfolio.get_all_equity_points());
         }
         
         let result = self.output_performance()
