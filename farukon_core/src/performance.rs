@@ -309,10 +309,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (Vec<f64>, f64) {
         }
 
         let peak_vec = wide::f64x4::splat(peak);
-
-        let mut dd_vec = wide::f64x4::splat(0.0);
-        dd_vec = (values / peak_vec) - wide::f64x4::splat(1.0);
- 
+        let dd_vec = (values / peak_vec) - wide::f64x4::splat(1.0);
         let dd_array: [f64; 4] = dd_vec.into();
         drawdowns[start..start+4].copy_from_slice(&dd_array);
 
@@ -331,9 +328,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (Vec<f64>, f64) {
             peak = value;
         }
 
-        let mut dd = 0.0;
-        dd = (value / peak) - 1.0;
-
+        let dd = (value / peak) - 1.0;
         drawdowns[i] = dd;
 
         if dd < max_dd {
