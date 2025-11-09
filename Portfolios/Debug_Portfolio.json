@@ -1,6 +1,6 @@
 {   
     "common": {
-        "mode": "Debug",
+        "mode": "Optimize",
         "initial_capital": 1000000.0
     },
     "portfolio": {
@@ -8,6 +8,7 @@
             "threads": 8,
             "strategy_name": "MA_cross",
             "strategy_path": "target/release/libstrategy_lib.dylib",
+            "exit_results_path": "opt_results/MA_cross",
             "strategy_weight": 1,
             "slippage": [0.005],
             "data": {
