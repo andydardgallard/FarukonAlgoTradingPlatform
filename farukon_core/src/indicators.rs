@@ -94,8 +94,9 @@ where
     if need == 0 { return None; }
     
     // Convert to Vec, filtering out None values
-    let data: Vec<f64> = dh.into_iter()
-        .filter_map(|x| *x)
+    let data: Vec<Option<f64>> = dh
+        .into_iter()
+        .copied()
         .collect();
     let total_count = data.len();
 
@@ -104,10 +105,18 @@ where
     
     let start = total_count - need;
     let end = start + n;
-    data[start..end]
+
+    let window = &data[start..end];
+    for item in window {
+        if item.is_none() {
+            return None;
+        }
+    }
+
+    window
         .iter()
-        .copied()
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .filter_map(|&x| x)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 /// Finds the **lowest value** over the last `n` bars, shifted back by `shift` bars.
@@ -145,8 +154,9 @@ where
     if need == 0 { return None; }
     
     // Convert to Vec, filtering out None values
-    let data: Vec<f64> = dh.into_iter()
-        .filter_map(|x| *x)
+    let data: Vec<Option<f64>> = dh
+        .into_iter()
+        .copied()
         .collect();
     let total_count = data.len();
 
@@ -155,8 +165,10 @@ where
     
     let start = total_count - need;
     let end = start + n;
-    data[start..end]
+    let window = &data[start..end];
+
+    window
         .iter()
-        .copied()
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .flat_map(|&x| x)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }

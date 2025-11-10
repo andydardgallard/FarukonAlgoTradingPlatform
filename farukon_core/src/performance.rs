@@ -14,8 +14,6 @@ pub struct PerformanceMetrics {
     total_return_percent: f64,
     /// Annualized Percentage Return (APR) as a percentage.
     apr: f64,
-    // /// Maximum drawdown in base currency.
-    // max_drawdown: f64,
     /// Maximum drawdown as a percentage of peak equity.
     max_drawdown: f64,
     /// Ratio of APR to Max Drawdown (higher is better).
@@ -108,8 +106,8 @@ pub struct PerformanceManager {
     returns: Vec<f64>,
     /// Equity curve (capital over time).
     equity_curve: Vec<f64>,
-    /// Drawdowns as percentages over time.
-    drawdowns: Vec<f64>,
+    // /// Drawdowns as percentages over time.
+    // drawdowns: Vec<f64>,
     /// Highest equity reached so far.
     peak: f64,
     /// Maximum drawdown as a percentage.
@@ -132,7 +130,7 @@ impl PerformanceManager {
             metrics: PerformanceMetrics::default(),
             returns: vec![],
             equity_curve: vec![initial_capital_for_strategy],
-            drawdowns: vec![],
+            // drawdowns: vec![],
             peak: initial_capital_for_strategy,
             max_drawdown: 0.0,
         }
@@ -156,7 +154,7 @@ impl PerformanceManager {
         self.peak = self.peak.max(current_total);
 
         let dd_percent = if self.peak > 0.0 { (current_total / self.peak) - 1.0 } else { 0.0 };
-        self.drawdowns.push(dd_percent);
+        // self.drawdowns.push(dd_percent);
         self.max_drawdown = self.max_drawdown.min(dd_percent);
 
         self.update_metrics(start_date, end_date, deals_count);
@@ -221,8 +219,7 @@ impl PerformanceManager {
         }
 
         // Max drawdown
-        let (dd_percent, max_dd_percent) = calculate_drawdowns_simd(&series);
-        self.drawdowns = dd_percent;
+        let max_dd_percent = calculate_drawdowns_simd(&series);
         self.max_drawdown = max_dd_percent;
 
         self.update_metrics(start_date, end_date, deals_count);
@@ -277,10 +274,10 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
     returns
 }
 
-fn calculate_drawdowns_simd(equity: &[f64]) -> (Vec<f64>, f64) {
+fn calculate_drawdowns_simd(equity: &[f64]) -> f64 {
     let n = equity.len();
     if n == 0 {
-        return (Vec::new(), 0.0);
+        return 0.0;
     }
 
     let mut drawdowns = vec![0.0; n];
@@ -336,5 +333,5 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (Vec<f64>, f64) {
         }
     }
 
-    (drawdowns, max_dd)
+    max_dd
 }

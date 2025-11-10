@@ -8,7 +8,7 @@
             "threads": 8,
             "strategy_name": "MA_cross",
             "strategy_path": "target/release/libstrategy_lib.dylib",
-            "exit_results_path": "opt_results/MA_cross",
+            "exit_results_path": "opt_results/MA_cross_Si_5min",
             "strategy_weight": 1,
             "slippage": [0.005],
             "data": {
@@ -17,16 +17,17 @@
             },
             "symbol_base_name": "Si",
             "symbols": [
-                "Si-3.24"
+                "Si-3.24",
+                "Si-12.23"
             ],
             "strategy_params": {
-                "short_window": [25],
-                "long_window": [350]
+                "short_window": [25, 50],
+                "long_window": [350, 500]
             },
             "pos_sizer_params": {
                 "pos_sizer_name": "mpr",
                 "pos_sizer_params": {},
-                "pos_sizer_value": [1]
+                "pos_sizer_value": [1, 2]
             },
             "margin_params": {
                 "min_margin": 0.5,

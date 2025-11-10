@@ -235,8 +235,8 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         let commission = fill_event.commission.unwrap();
         let signal_name = fill_event.signal_name.as_str();
         let direction = fill_event.direction.clone().unwrap();
-        let execution_price = fill_event.execution_price.unwrap();
-        let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
+        let execution_price = fill_event.execution_price.unwrap_or(0.0);
+        let close = data_handler.get_latest_bar_value(symbol, "close").unwrap_or(0.0);
         let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
 
         let strategy_instrument_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
@@ -357,8 +357,18 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         // Update unrealized PnL for open positions
         {
             for symbol in &self.strategy_settings.symbols {
-                let close = data_handler.get_latest_bar_value(symbol, "close").unwrap();
-                let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
+                let close = match data_handler.get_latest_bar_value(symbol, "close") {
+                    Some(value) if value.is_nan() => 0.0,
+                    Some(value) => value,
+                    None => 0.0,
+                };
+
+                let last_close = match data_handler.get_latest_bars_values(symbol, "close", 2).first() {
+                    Some(value) if value.is_nan() => 0.0,
+                    Some(value) => *value,
+                    None => 0.0,
+                };
+
                 let strategy_instrument_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
                 let step_price = strategy_instrument_info_for_symbol.step_price;
                 let step = strategy_instrument_info_for_symbol.step;
