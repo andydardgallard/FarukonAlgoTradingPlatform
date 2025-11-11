@@ -306,8 +306,8 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> f64 {
         }
 
         let peak_vec = wide::f64x4::splat(peak);
-        let dd_vec = (values / peak_vec) - wide::f64x4::splat(1.0);
-        let dd_array: [f64; 4] = dd_vec.into();
+        let dd_array: [f64; 4] = ((values / peak_vec) - wide::f64x4::splat(1.0)).into();
+
         drawdowns[start..start+4].copy_from_slice(&dd_array);
 
         for j in 0..4 {

@@ -8,6 +8,8 @@
 
 use anyhow::Context;
 
+use crate::settings;
+
 /// Represents the metadata for a single instrument.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct InstrumentInfo {
@@ -157,10 +159,9 @@ impl InstrumentsInfoRegistry {
     /// Loads the instrument metadata from the `instruments_info.json` file.
     /// # Returns
     /// * `anyhow::Result<InstrumentsInfoRegistry>` containing the loaded metadata.
-    pub fn load() -> anyhow::Result<Self> {
+    pub fn load(settings: &settings::Settings,) -> anyhow::Result<Self> {
         // Validate all instruments
-
-        let file_path = "instruments_info.json";
+        let file_path = settings.common.instrument_info_path.clone();
         let contents = std::fs::read_to_string(file_path)?;
         let registry: InstrumentsInfoRegistry = serde_json::from_str(&contents)?;
 

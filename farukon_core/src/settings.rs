@@ -8,7 +8,6 @@ use std::fs;
 use serde::Deserialize;
 
 use crate::commission_plans;
-use crate::instruments_info;
 
 /// Type of optimizer to use.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -155,6 +154,8 @@ pub struct StrategySettings {
 pub struct CommonSettings {
     pub mode: String,
     pub initial_capital: f64,
+    pub commission_plans_path: String,
+    pub instrument_info_path: String,
 }
 
 /// Top-level settings structure.
@@ -174,15 +175,13 @@ impl Settings {
     /// * `anyhow::Result<Settings>` containing the loaded settings.
     pub fn load<P: AsRef<std::path::Path>>(
         settings_file_path: P,
-        instruments_info: &instruments_info::InstrumentsInfoRegistry,
+        // instruments_info: &instruments_info::InstrumentsInfoRegistry,
     ) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(settings_file_path)?;
         let mut settings: Settings = serde_json::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse settings JSON: {}", e))?;
 
-        let commission_plans = commission_plans::CommissionPlans::load()?;
-
-        check_args(&mut settings, &commission_plans, &instruments_info)
+        check_args(&mut settings)
             .map_err(|e| anyhow::anyhow!("Settings validation failed:\n{}", e))?;
 
         anyhow::Ok(settings)
@@ -192,8 +191,8 @@ impl Settings {
 
 fn check_args(
     settings: &mut Settings,
-    commission_plans: &commission_plans::CommissionPlans,
-    instruments_info: &instruments_info::InstrumentsInfoRegistry,
+    // commission_plans: &commission_plans::CommissionPlans,
+    // instruments_info: &instruments_info::InstrumentsInfoRegistry,
 ) -> anyhow::Result<()> {
     // check threads
     {
@@ -381,56 +380,6 @@ fn check_args(
                     anyhow::bail!("Exit path is not a directory!")
                 }
             }
-        }
-    }
-
-    // add commission plans
-    {
-        for strategy_settings in settings.portfolio.values_mut() {
-            let mut required_combinations = std::collections::HashSet::new();
-
-            for symbol in &strategy_settings.symbols {
-                if let Some(instruments_info) = instruments_info.get_instrument_info(symbol) {
-                    required_combinations.insert((instruments_info.exchange.clone(), instruments_info.commission_type.clone()));
-                } else {
-                    anyhow::bail!("Instrument info not found for symbol '{}'", symbol);
-                }
-            }
-
-            let mut filtered_exchanges: std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>> = std::collections::HashMap::new();
-
-            for (exchange, commission_type) in required_combinations {
-                if let Some(exchange_plans) = commission_plans.exchanges.get(&exchange) {
-                    let filtered_plan_map = filtered_exchanges
-                        .entry(exchange.clone())
-                        .or_insert_with(|| std::collections::HashMap::new());
-                    
-                    for (plan_name, plan_value) in exchange_plans {
-                        if let Some(obj) = plan_value.as_object() {
-                            if let Some(amount) = obj.get(&commission_type) {
-                                if let Some(_) = amount.as_f64() {
-                                    let plan_entry = filtered_plan_map
-                                        .entry(plan_name.clone())
-                                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-
-                                    if let serde_json::Value::Object(plan_obj) = plan_entry {
-                                        plan_obj.insert(commission_type.clone(), amount.clone());
-                                    }
-                                }
-                            }
-                        }
-                        else if let Some(_amount) = plan_value.as_f64() {
-                            // TO DO
-                        }
-                    }
-                }
-            }
-
-            let filtered_commission_plans = commission_plans::CommissionPlans {
-                exchanges: filtered_exchanges,
-            };
-
-            strategy_settings.commission_plans = Some(filtered_commission_plans);
         }
     }
 

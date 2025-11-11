@@ -1,7 +1,9 @@
 {   
     "common": {
         "mode": "Optimize",
-        "initial_capital": 1000000.0
+        "initial_capital": 1000000.0,
+        "commission_plans_path": "commission_plans.json",
+        "instrument_info_path": "instruments_info.json"
     },
     "portfolio": {
         "Strategy_1": {
@@ -21,13 +23,13 @@
                 "Si-12.23"
             ],
             "strategy_params": {
-                "short_window": [25, 50],
-                "long_window": [350, 500]
+                "short_window": [25],
+                "long_window": [350]
             },
             "pos_sizer_params": {
                 "pos_sizer_name": "mpr",
                 "pos_sizer_params": {},
-                "pos_sizer_value": [1, 2]
+                "pos_sizer_value": [1]
             },
             "margin_params": {
                 "min_margin": 0.5,

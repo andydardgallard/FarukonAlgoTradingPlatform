@@ -28,15 +28,124 @@ impl CommissionPlans {
     /// Loads the commission plan from the `commission_plans.json` file.
     /// # Returns
     /// * `anyhow::Result<CommissionPlans>` containing the loaded commission structure.
-    pub fn load() -> anyhow::Result<Self> {
+    pub fn load(
+        settings: &mut settings::Settings,
+        instruments_info: &instruments_info::InstrumentsInfoRegistry,
+    ) -> anyhow::Result<Self> {
         // Loads commission structure from commission_plans.json.
-        let file_path = "commission_plans.json";
+        let file_path = &settings.common.commission_plans_path;
         let contents = std::fs::read_to_string(file_path)?;
         // Deserialize the JSON content into a CommissionPlans struct.
         let plans: Self = serde_json::from_str(&contents)?;
 
+        Self::add_commission_plans_to_settings(&plans, settings, instruments_info)?;
+
         anyhow::Ok(plans)
     }
+
+    /// Filters the global commission plans based on the exchanges and instrument types required by each strategy,
+    /// and attaches the filtered plans to the respective strategy settings.
+    /// This ensures that each strategy only carries the commission information relevant to its traded instruments,
+    /// optimizing memory usage and access speed during backtesting.
+    ///
+    /// # Arguments
+    /// * `self` - A reference to the global `CommissionPlans` loaded from `commission_plans.json`.
+    /// * `settings` - A mutable reference to the main `Settings` object, which contains the map of all strategy configurations.
+    ///                The function modifies the `commission_plans` field within each strategy's settings.
+    /// * `instruments_info` - A reference to the `InstrumentsInfoRegistry` containing metadata for all known instruments.
+    ///                       Used to determine the exchange and commission type for each symbol traded by a strategy.
+    ///
+    /// # Returns
+    /// * `anyhow::Result<()>` - `Ok(())` if the filtering and attachment process completes successfully.
+    ///                          Returns an `Err` if an instrument's info is missing for a symbol listed in a strategy's settings.
+    fn add_commission_plans_to_settings(
+        &self, // Reference to the loaded global commission plans
+        settings: &mut settings::Settings, // Mutable reference to the main settings, to be updated
+        instruments_info: &instruments_info::InstrumentsInfoRegistry, // Reference to the instrument metadata registry
+    ) -> anyhow::Result<()> {
+        // Iterate over each strategy configuration within the portfolio settings map.
+        for strategy_settings in settings.portfolio.values_mut() {
+            // --- Phase 1: Determine Required Commission Combinations ---
+            // Identify the unique (Exchange, CommissionType) pairs needed for this specific strategy.
+            // This is based on the symbols the strategy intends to trade.
+            let mut required_combinations = std::collections::HashSet::new();
+
+            for symbol in &strategy_settings.symbols {
+                // Retrieve the instrument info for the current symbol.
+                if let Some(instruments_info) = instruments_info.get_instrument_info(symbol) {
+                    // Insert the (exchange, commission_type) pair into the set to ensure uniqueness.
+                    required_combinations.insert((
+                        instruments_info.exchange.clone(), // e.g., "FORTS"
+                        instruments_info.commission_type.clone() // e.g., "currency", "index"
+                    ));
+                } else {
+                    // If instrument info is missing, it's a critical error for the backtest configuration.
+                    anyhow::bail!("Instrument info not found for symbol '{}'", symbol);
+                }
+            }
+
+            // --- Phase 2: Filter Global Plans Based on Requirements ---
+            // Construct a new, smaller `CommissionPlans` object containing only the necessary data for this strategy.
+            let mut filtered_exchanges: std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>> = std::collections::HashMap::new();
+
+            // Iterate through the unique (Exchange, CommissionType) pairs identified for this strategy.
+            for (exchange, commission_type) in required_combinations {
+                // Attempt to find the commission plans for the required exchange in the global plans.
+                if let Some(exchange_plans) = self.exchanges.get(&exchange) {
+                    // Get or create a map for this specific exchange in the filtered plans.
+                    let filtered_plan_map = filtered_exchanges
+                        .entry(exchange.clone()) // Use the exchange name as the key
+                        .or_insert_with(|| std::collections::HashMap::new()); // Initialize an empty map if the exchange wasn't present
+
+                    // Iterate through all available commission plans for this exchange in the global plans.
+                    for (plan_name, plan_value) in exchange_plans {
+                        // Check if the plan value is an object (like {"currency": 0.5, "index": 1.0})
+                        if let Some(obj) = plan_value.as_object() {
+                            // Check if this plan object contains the specific commission type required by the strategy.
+                            if let Some(amount) = obj.get(&commission_type) {
+                                // Verify that the commission amount is a floating-point number.
+                                if let Some(_) = amount.as_f64() {
+                                    // Get or create an entry for this specific plan name within the exchange's map in the filtered plans.
+                                    let plan_entry = filtered_plan_map
+                                        .entry(plan_name.clone()) // Use the plan name (e.g., "default") as the key
+                                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new())); // Initialize an empty object if the plan wasn't present
+
+                                    // If the entry is indeed an object (which it should be, due to `or_insert_with` above),
+                                    // insert the required commission type and its value into this plan's object.
+                                    if let serde_json::Value::Object(plan_obj) = plan_entry {
+                                        plan_obj.insert(commission_type.clone(), amount.clone()); // Add "currency": 0.5 or similar
+                                    }
+                                }
+                            }
+                        }
+                        // Check if the plan value is a single floating-point number (alternative format).
+                        // This branch is currently marked with a "TO DO", suggesting incomplete logic or handling.
+                        else if let Some(_amount) = plan_value.as_f64() {
+                            // TO DO: Potentially handle this plan format if applicable.
+                            // Example: If a plan is just {"default": 0.75}, meaning 0.75 for all types under this plan.
+                            // This would require a different insertion logic into filtered_plan_map.
+                        }
+                    }
+                }
+                // If the required exchange is not found in the global plans, the filtered map for this exchange will remain empty.
+                // The strategy will later handle this gracefully during commission calculation.
+            }
+
+            // --- Phase 3: Attach Filtered Plans to Strategy Settings ---
+            // Create the final `CommissionPlans` struct containing only the data relevant to this strategy.
+            let filtered_commission_plans = Self {
+                exchanges: filtered_exchanges, // The map populated in Phase 2
+            };
+
+            // Assign the filtered commission plans to the current strategy's settings.
+            // This replaces the potentially large global commission plan structure with a much smaller, strategy-specific one.
+            strategy_settings.commission_plans = Some(filtered_commission_plans);
+        }
+
+        // Indicate successful completion of the filtering and attachment process.
+        anyhow::Ok(())
+    }
+
 
     /// Retrieves the commission rate for a specific exchange, instrument type, and plan name.
     /// # Arguments

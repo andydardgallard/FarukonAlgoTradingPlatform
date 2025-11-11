@@ -19,13 +19,16 @@ fn main() -> anyhow::Result<()>{
     let start_time = std::time::Instant::now();
     
     let args = cli::Args::parse();  // Parse --config path
+
+    // Load full settings (common + portfolio)
+    let mut all_settings = farukon_core::settings::Settings::load(args.config)?;
+    let mode = &all_settings.common.mode.clone();
     
     // Load global instrument metadata
-    let instruments_info = &farukon_core::instruments_info::InstrumentsInfoRegistry::load()?;
-    
-    // Load full settings (common + portfolio)
-    let all_settings = farukon_core::settings::Settings::load(args.config, instruments_info)?;
-    let mode = &all_settings.common.mode;
+    let instruments_info = &farukon_core::instruments_info::InstrumentsInfoRegistry::load(&all_settings)?;
+
+    // Load commission plans
+    let _commission_plans = farukon_core::commission_plans::CommissionPlans::load(&mut all_settings, instruments_info)?;
 
     // For each strategy in portfolio, run optimization
     for (_strategy_id, strategy_settings) in all_settings.portfolio {
