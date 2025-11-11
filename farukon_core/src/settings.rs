@@ -134,7 +134,6 @@ pub struct StrategySettings {
     pub slippage: Vec<f64>,
 
     pub data: DataSettings,
-    pub symbol_base_name: String,
     pub symbols: Vec<String>,
 
     #[serde(deserialize_with = "deserialize_strategy_params")]

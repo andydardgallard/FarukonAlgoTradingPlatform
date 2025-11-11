@@ -17,7 +17,6 @@
                 "data_path": "Tickers/FBS/Si",
                 "timeframe": "5min"
             },
-            "symbol_base_name": "Si",
             "symbols": [
                 "Si-3.24",
                 "Si-12.23"
