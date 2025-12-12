@@ -1,4 +1,4 @@
-// farukon_core/src/lib.rs
+//! farukon_core/src/lib.rs
 
 //! Core library entry point.
 //! Re-exports all public modules for use by Farukon_2_0 and strategy_lib.
@@ -25,11 +25,12 @@ pub mod commission_plans;
 // Allows C-compatible interface to Rust DataHandler.
 #[repr(C)]
 pub struct DataHandlerVTable {
-    get_latest_bar: unsafe fn(*const (), &str) -> Option<&'static data_handler::MarketBar>,
-    get_latest_bars: unsafe fn(*const (), &str, usize) -> Vec<&'static data_handler::MarketBar>,
+    get_latest_bar: unsafe fn(*const (), &str) -> Option<data_handler::SOAData>,
+    get_latest_bars: unsafe fn(*const (), &str, usize) -> Option<data_handler::SOAData>,
     get_latest_bar_datetime: unsafe fn(*const (), &str) -> Option<chrono::DateTime<chrono::Utc>>,
     get_latest_bar_value: unsafe fn(*const (), &str, &str) -> Option<f64>,
-    get_latest_bar_values: unsafe fn(*const (), &str, &str, usize) -> Vec<f64>,
+    get_latest_bar_values: unsafe fn(*const (), &str, &str, usize) -> Option<&'static[f64]>,
+    get_latest_bar_volume_values: unsafe fn(*const (), &str, usize) -> Option<&'static[u64]>,
     update_bars: unsafe fn(*const ()) -> (),
     get_continue_backtest: unsafe fn(*const ()) -> bool,
     set_continue_backtest: unsafe fn(*const (), bool) -> (),
@@ -39,41 +40,54 @@ impl data_handler::DataHandler for DataHandlerVTable {
     // Implements DataHandler trait by calling C function pointers.
     // Used by dynamic strategy to access data without Rust type dependencies.
 
-    fn get_latest_bar(&self, symbol: &str) -> Option<&data_handler::MarketBar> {
+    fn get_latest_bar(&self, symbol: &str) -> Option<data_handler::SOAData> {
         unsafe {
             (self.get_latest_bar)(self as *const _ as *const (), symbol)
         }
     }
-    fn get_latest_bars(&self, symbol: &str, size: usize) -> Vec<&data_handler::MarketBar> {
+
+    fn get_latest_bars(&self, symbol: &str, size: usize) -> Option<data_handler::SOAData> {
         unsafe {
             (self.get_latest_bars)(self as *const _ as *const (), symbol, size)
         }
     }
+
     fn get_latest_bar_datetime(&self, symbol: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         unsafe {
             (self.get_latest_bar_datetime)(self as *const _ as *const (), symbol)
         }
     }
+
     fn get_latest_bar_value(&self, symbol: &str, val_type: &str) -> Option<f64> {
         unsafe {
             (self.get_latest_bar_value)(self as *const _ as *const (), symbol, val_type)
         }
     }
-    fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Vec<f64> {
+
+    fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Option<&[f64]> {
         unsafe {
             (self.get_latest_bar_values)(self as *const _ as *const (), symbol, val_type, n)
         }
     }
+
+    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[u64]> {
+        unsafe {
+            (self.get_latest_bar_volume_values)(self as *const _ as *const (), symbol, n)
+        }
+    }
+    
     fn update_bars(&mut self) {
         unsafe {
             (self.update_bars)(self as *const _ as *const ())
         }
     }
+
     fn get_continue_backtest(&self) -> bool {
         unsafe {
             (self.get_continue_backtest)(self as *const _ as *const ())
         }
     }
+
     fn set_continue_backtest(&mut self, value: bool) {
         unsafe {
             (self.set_continue_backtest)(self as *const _ as *const (), value)

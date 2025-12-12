@@ -1,4 +1,4 @@
-// Farukon_2_0/src/cli.rs
+//! Farukon_2_0/src/cli.rs
 
 /// Command-line argument parser using `clap`.
 /// Parses the `--config` flag to locate the strategy configuration file.

@@ -1,4 +1,4 @@
-// strategy_lib/src/lib.rs
+//! strategy_lib/src/lib.rs
 
 use farukon_core::{self, strategy::Strategy};
 
@@ -8,14 +8,19 @@ use farukon_core::{self, strategy::Strategy};
 pub struct MovingAverageCrossStrategy {
     /// The operational mode (e.g., "Debug", "Optimize", "Visual").
     mode: String,
+
     /// The settings for this strategy, loaded from the JSON config.
     strategy_settings: farukon_core::settings::StrategySettings,
+
     /// Instrument metadata for all symbols traded by this strategy.
     strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+
     /// The event sender channel used to communicate signals to other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+
     /// The window size for the short-term Simple Moving Average (SMA).
     short_window: usize,
+    
     /// The window size for the long-term Simple Moving Average (SMA).
     long_window: usize,
 }
@@ -111,12 +116,12 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             let current_position_quantity = current_position_state.position;
 
             // Calculate signals
-            let short_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.short_window);
-            let long_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.long_window);
+            let short_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.short_window).unwrap();
+            let long_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.long_window).unwrap();
 
             if let (Some(short_sma), Some(long_sma)) = (
-                farukon_core::indicators::sma(&short_sma_bars, self.short_window),
-                farukon_core::indicators::sma(&long_sma_bars, self.long_window),
+                farukon_core::indicators::sma(short_sma_bars, self.short_window),
+                farukon_core::indicators::sma(long_sma_bars, self.long_window),
             ) {
                 // Print debug information if in Debug mode.
                 if self.mode == "Debug".to_string() {

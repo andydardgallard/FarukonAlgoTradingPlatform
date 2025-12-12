@@ -1,4 +1,4 @@
-// Farukon_2_0/src/optimizers.rs
+//! Farukon_2/src/optimizers.rs
 
 //! Optimization engine for hyperparameter tuning.
 //! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
@@ -9,8 +9,8 @@ use::std::io::Write;
 use crate::backtest;
 use crate::portfolio;
 use crate::execution;
-use crate::data_handler;
-use crate::strategy_loader; // Note: Typo in module name — should be "strategy_loader"
+use crate::data_engine;
+use crate::strategy_loader;
 
 #[derive(Debug, Clone)]
 /// Orchestrates the optimization process for a single strategy.
@@ -18,12 +18,16 @@ use crate::strategy_loader; // Note: Typo in module name — should be "strategy
 pub struct OptimizationRunner {
     /// Operational mode (e.g., "Debug", "Optimize", "Visual").
     mode: String,
+
     /// Initial capital allocated to this specific strategy for optimization runs.
     initial_capital_for_strategy: f64,
+
     /// Instrument metadata (e.g., margin, step, exchange) for all symbols traded by the strategy.
     strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+
     /// Settings specific to the strategy being optimized (parameters, paths, etc.).
     strategy_settings: farukon_core::settings::StrategySettings,
+
     /// The Grid Search optimizer instance, configured based on strategy settings.
     grid_search_optimizer: farukon_core::optimization::GridSearchOptimizer,
 }
@@ -75,7 +79,12 @@ impl OptimizationRunner {
     /// * `combinations_to_grid_search` - A vector of `ParameterSet` objects to test.
     /// # Returns
     /// * A vector of `OptimizationResult` objects, one for each evaluated parameter set.
-    pub fn run_grid_search(&self, total_combinations: usize, combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>) -> Vec<farukon_core::optimization::OptimizationResult> {
+    pub fn run_grid_search(
+        &self,
+        total_combinations: usize,
+        combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>,
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
+    ) -> Vec<farukon_core::optimization::OptimizationResult> {
         // Runs Grid Search in parallel across all CPU cores.
         // Each parameter set is evaluated by running a full backtest.
         // Uses Atomic counter to track progress.
@@ -142,7 +151,8 @@ impl OptimizationRunner {
                         &mode,
                         &initial_capital,
                         &test_settings,
-                        &strategy_instruments_info
+                        &strategy_instruments_info,
+                        std::sync::Arc::clone(&global_data_store),
                     );
                     
                     println!("# {} from {} is done in {:.3} seconds ", current_count, total_combinations, start_time.elapsed().as_secs_f64());
@@ -174,6 +184,7 @@ impl OptimizationRunner {
         initial_capital_for_strategy: &f64,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
     ) -> farukon_core::performance::PerformanceMetrics {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
@@ -182,12 +193,9 @@ impl OptimizationRunner {
         let (event_sender, event_receiver) = std::sync::mpsc::channel::<Box<dyn farukon_core::event::Event>>();
 
         // Initialize the data handler (uses zero-copy FlatBuffers).
+        
         let data_handler: Box<dyn farukon_core::data_handler::DataHandler> = Box::new(
-            data_handler::HistoricFlatBuffersDataHandlerZC::new_with_sequential_load(
-                mode,
-                event_sender.clone(),
-                strategy_settings,
-            ).expect("Failed to create data handler")
+            data_engine::data_handler::SOADataHandler::new(global_data_store.clone())
         );
 
         // Load the dynamic strategy library (.so/.dylib) specified in settings.
@@ -241,7 +249,11 @@ impl OptimizationRunner {
     /// * `ga_params` - Configuration parameters for the Genetic Algorithm (population size, mutation rate, etc.).
     /// # Returns
     /// * `anyhow::Result<Vec<farukon_core::optimization::GAStatsPerGeneration>>` - Statistics for each generation or an error.
-    pub fn run_genetic_search(self, ga_params: &farukon_core::settings::GAParams) -> anyhow::Result<Vec<farukon_core::optimization::GAStatsPerGeneration>> {
+    pub fn run_genetic_search(
+        self,
+        ga_params: &farukon_core::settings::GAParams,
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
+    ) -> anyhow::Result<Vec<farukon_core::optimization::GAStatsPerGeneration>> {
         // Runs Genetic Algorithm optimization.
         // Uses fitness function to evaluate chromosomes.
         
@@ -264,6 +276,7 @@ impl OptimizationRunner {
                 &self.initial_capital_for_strategy,
                 test_settings, 
                 &self.strategy_instruments_info,
+                std::sync::Arc::clone(&global_data_store),
             );
             // Calculate the fitness score based on the backtest results.
             self.calculate_fitness_score(&backtest_result, &ga_config)  

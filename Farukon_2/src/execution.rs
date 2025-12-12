@@ -1,4 +1,4 @@
-// Farukon_2_0/src/execution.rs
+//! Farukon_2_0/src/execution.rs
 
 /// Structure responsible for simulating order execution.
 /// It mimics broker behavior by applying slippage and commission,
@@ -24,6 +24,7 @@ impl SimulatedExecutionHandler {
             }
         )
     }
+    
 }
 
 /// Implementation of the `ExecutionHandler` trait from `farukon_core` for `SimulatedExecutionHandler`.
@@ -76,10 +77,10 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         match event.direction.as_deref() {
                             // For a buy order, use the bar's High and add slippage.
                             Some("BUY") => {
-                                let market_price = (1.0 + strategy_settings.slippage[0]) * current_bar.high;
-                                if current_bar.low <= market_price {
-                                    if current_bar.high <= market_price {
-                                        current_bar.high
+                                let market_price = (1.0 + strategy_settings.slippage[0]) * current_bar.get_high(0).unwrap();
+                                if *current_bar.get_low(0).unwrap() <= market_price {
+                                    if *current_bar.get_high(0).unwrap() <= market_price {
+                                        *current_bar.get_high(0).unwrap()
                                     } else {
                                         // If yes, the order is executed at the limit price.
                                         market_price
@@ -91,10 +92,10 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                             }
                             // For a sell order, use the bar's Low and subtract slippage.
                             Some("SELL") => {
-                                let market_price = (1.0 - strategy_settings.slippage[0]) * current_bar.low;
-                                if current_bar.high >= market_price {
-                                    if current_bar.low >= market_price {
-                                        current_bar.low
+                                let market_price = (1.0 - strategy_settings.slippage[0]) * current_bar.get_low(0).unwrap();
+                                if *current_bar.get_high(0).unwrap() >= market_price {
+                                    if *current_bar.get_low(0).unwrap() >= market_price {
+                                        *current_bar.get_low(0).unwrap()
                                     } else {
                                         // If yes, the order is executed at the limit price.
                                         market_price
@@ -116,14 +117,14 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                 "LMT" => {
                     // Limit order: execution occurs only if the price was reached during the bar.
                     // Use the specified limit price, or the bar's close price if the limit price is not specified.
-                    let limit_price = event.limit_price.unwrap_or(current_bar.close);
+                    let limit_price = event.limit_price.unwrap_or(*current_bar.get_close(0).unwrap());
                     // Check the direction of the limit order.
                     match event.direction.as_deref() {
                         // For a buy order, check if the bar's Low was less than or equal to the limit price.
                         Some("BUY") => {
-                            if current_bar.low <= limit_price {
-                                if current_bar.open <= limit_price {
-                                    current_bar.open
+                            if *current_bar.get_low(0).unwrap() <= limit_price {
+                                if *current_bar.get_open(0).unwrap() <= limit_price {
+                                    *current_bar.get_open(0).unwrap()
                                 } else {
                                     // If yes, the order is executed at the limit price.
                                     limit_price
@@ -135,9 +136,9 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                         }
                         // For a sell order, check if the bar's High was greater than or equal to the limit price.
                         Some("SELL") => {
-                            if current_bar.high >= limit_price {
-                                if current_bar.open >= limit_price {
-                                    current_bar.open
+                            if *current_bar.get_high(0).unwrap() >= limit_price {
+                                if *current_bar.get_open(0).unwrap() >= limit_price {
+                                    *current_bar.get_open(0).unwrap()
                                 } else {
                                     // If yes, the order is executed at the limit price.
                                     limit_price

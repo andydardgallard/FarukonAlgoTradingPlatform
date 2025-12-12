@@ -1,4 +1,4 @@
-// Farukon_2_0/src/strategy_loader.rs
+//! Farukon_2_0/src/strategy_loader.rs
 
 //! Dynamic strategy loader: loads compiled Rust libraries (.dylib/.so/.dll) at runtime.
 //! Enables hot-swapping of trading logic without recompiling the core engine.

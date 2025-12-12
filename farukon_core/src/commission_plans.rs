@@ -1,4 +1,4 @@
-// farukon_core/src/commision_plans.rs
+//! farukon_core/src/commision_plans.rs
 
 //! Manages commission fee structure per exchange and instrument type.
 //! Loads commission_plans.json and calculates commissions for FORTS futures.

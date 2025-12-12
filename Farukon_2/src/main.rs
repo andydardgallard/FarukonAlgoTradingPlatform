@@ -11,8 +11,7 @@ mod backtest;
 mod portfolio;
 mod execution;
 mod optimizers;
-mod data_handler;
-mod ohlcv_generated;
+mod data_engine;
 mod strategy_loader;
 
 fn main() -> anyhow::Result<()>{
@@ -35,31 +34,38 @@ fn main() -> anyhow::Result<()>{
         let strategy_instruments_info = &instruments_info.get_instrument_info_for_strategy(&strategy_settings.symbols)?;
         let initial_capital_for_strategy = strategy_settings.strategy_weight * all_settings.common.initial_capital;
 
-        if mode == "Optimize" || mode == "Debug"{
-            let optimization_runner = optimizers::OptimizationRunner::new(
-                mode,
-                &initial_capital_for_strategy,
-                &strategy_settings,
-                strategy_instruments_info,
-            );
+        let global_data_store = std::sync::Arc::new(
+            data_engine::global_data_storage::GlobalDataStore::load(&strategy_settings)
+                .expect("Failed to create GlobalDataStore")
+        );
 
-            match &strategy_settings.optimizer_type {
-                farukon_core::settings::OptimizerType::GridSearch => {
-                    let total_combinations = optimization_runner
-                        .get_grid_search_optimizer()
-                        .calculate_total_combinations();
-                    
-                    let combinations_to_grid_search = optimization_runner
-                        .get_grid_search_optimizer()
-                        .get_config()
-                        .generate_all_combinations_vec();
-                    
-                    let results = optimization_runner
-                        .run_grid_search(total_combinations, combinations_to_grid_search);
-                    optimization_runner.save_grid_search_optimization_results(&results)?;
-                },
-                farukon_core::settings::OptimizerType::Genetic { ga_params }=> {
-                    optimization_runner.run_genetic_search(ga_params)?;
+        if *global_data_store.is_loaded() {
+            if mode == "Optimize" || mode == "Debug"{
+                let optimization_runner = optimizers::OptimizationRunner::new(
+                    mode,
+                    &initial_capital_for_strategy,
+                    &strategy_settings,
+                    strategy_instruments_info,
+                );
+
+                match &strategy_settings.optimizer_type {
+                    farukon_core::settings::OptimizerType::GridSearch => {
+                        let total_combinations = optimization_runner
+                            .get_grid_search_optimizer()
+                            .calculate_total_combinations();
+                        
+                        let combinations_to_grid_search = optimization_runner
+                            .get_grid_search_optimizer()
+                            .get_config()
+                            .generate_all_combinations_vec();
+                        
+                        let results = optimization_runner
+                            .run_grid_search(total_combinations, combinations_to_grid_search, global_data_store);
+                        optimization_runner.save_grid_search_optimization_results(&results)?;
+                    },
+                    farukon_core::settings::OptimizerType::Genetic { ga_params }=> {
+                        optimization_runner.run_genetic_search(ga_params, global_data_store)?;
+                    }
                 }
             }
         }
@@ -67,4 +73,5 @@ fn main() -> anyhow::Result<()>{
 
     println!("The main programm is finished in {:.3} seconds", start_time.elapsed().as_secs_f64());
     anyhow::Ok(())
+    
 }

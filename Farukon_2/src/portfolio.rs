@@ -1,4 +1,4 @@
-// Farukon_2_0/src/portfolio.rs
+//! Farukon_2_0/src/portfolio.rs
 
 //! Portfolio manager: tracks positions, holdings, equity, and risk.
 //! Implements PortfolioHandler trait for integration with Backtest.
@@ -11,23 +11,33 @@ use crate::risks;
 pub struct Portfolio {
     /// Operational mode (Debug, Optimize, Visual).
     mode: String,
+
     initial_capital_for_strategy: f64,
+
     /// Event sender for communicating with other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+
     /// Strategy settings for this portfolio.
     strategy_settings: farukon_core::settings::StrategySettings,
+
     /// Instrument metadata for all traded instruments.
     strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+
     /// Current position state for each symbol.
     current_positions: std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
+
     /// Current holding state for each symbol.
     current_holdings: std::collections::HashMap<String, farukon_core::portfolio::HoldingsState>,
+
     /// Historical snapshots of positions.
     all_positions: Vec<farukon_core::portfolio::PositionSnapshot>,
+
     /// Historical snapshots of holdings.
     all_holdings: Vec<farukon_core::portfolio::HoldingSnapshot>,
+
     /// Equity curve for plotting.
     equity_series: Vec<(chrono::DateTime<chrono::Utc>, f64)>,
+
     /// Performance manager for calculating metrics.
     performance_manager: farukon_core::performance::PerformanceManager,
 }
@@ -236,8 +246,17 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         let signal_name = fill_event.signal_name.as_str();
         let direction = fill_event.direction.clone().unwrap();
         let execution_price = fill_event.execution_price.unwrap_or(0.0);
-        let close = data_handler.get_latest_bar_value(symbol, "close").unwrap_or(0.0);
-        let last_close = data_handler.get_latest_bars_values(symbol, "close", 2)[0];
+        let close = match data_handler.get_latest_bar_value(symbol, "close") {
+            Some(value) if value.is_nan() => 0.0,
+            Some(value) => value,
+            None => 0.0,
+        };
+
+        let last_close = match data_handler.get_latest_bars_values(symbol, "close", 2).unwrap().first() {
+            Some(value) if value.is_nan() => 0.0,
+            Some(value) => *value,
+            None => 0.0,
+        };
 
         let strategy_instrument_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
         let step_price = strategy_instrument_info_for_symbol.step_price;
@@ -363,7 +382,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
                     None => 0.0,
                 };
 
-                let last_close = match data_handler.get_latest_bars_values(symbol, "close", 2).first() {
+                let last_close = match data_handler.get_latest_bars_values(symbol, "close", 2).unwrap().first() {
                     Some(value) if value.is_nan() => 0.0,
                     Some(value) => *value,
                     None => 0.0,
@@ -451,20 +470,20 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         
         // Update metrics incrementally if in RealTime mode
         {
-            let start_date = self.get_all_holdings().first().unwrap().datetime;
-            let end_date = data_handler.get_latest_bar_datetime(
-                self.strategy_settings.symbols.first().unwrap()
-            ).unwrap();
-
-            // Update deals counter
-            let mut deals_count = 0 as usize;
-            for symbol in &self.strategy_settings.symbols {
-                if let Some(position_state) = self.current_positions.get_mut(symbol) {
-                    deals_count += position_state.deal_number;
-                }
-            }
-    
             if let farukon_core::settings::MetricsMode::RealTime { .. } = self.strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode {
+                let start_date = self.get_all_holdings().first().unwrap().datetime;
+                let end_date = data_handler.get_latest_bar_datetime(
+                    self.strategy_settings.symbols.first().unwrap()
+                ).unwrap();
+
+                // Update deals counter
+                let mut deals_count = 0 as usize;
+                for symbol in &self.strategy_settings.symbols {
+                    if let Some(position_state) = self.current_positions.get_mut(symbol) {
+                        deals_count += position_state.deal_number;
+                    }
+                }
+                
                 if let Some(latest_holdings) = self.get_latest_holdings() {
                     self.performance_manager.update_incremental(latest_holdings.capital, start_date, end_date, deals_count);
                     
@@ -616,7 +635,6 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
     /// Returns a vector of all capital values from the equity curve.
     fn get_equity_capital_values(&self) -> Vec<f64> {
-        // self.all_holdings.iter().map(|point| point.capital).collect()
         self.equity_series
             .iter()
             .map(|a| a.1)
