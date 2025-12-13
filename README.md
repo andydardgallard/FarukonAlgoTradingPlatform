@@ -88,11 +88,11 @@ Place your OHLCV data in the `Tickers/` directory as FlatBuffer `soa.bin` + `soa
 > 🔗 [csv-to-flatbuffer](https://github.com/andydardgallard/csv-to-flatbuffer)
 >
 > High-performance tool to convert CSV/TXT financial tick/OHLCV data into FlatBuffer SOA binary format for ultra-fast backtesting.
-✅ Zero-copy reading via mmap
-✅ Multi-threaded conversion
-✅ Resampling to 1/2/3/4/5min, 1d
-✅ Fast random access via .idx index
-✅ Stores data in SOA format for SIMD optimization
+* ✅ Zero-copy reading via mmap
+* ✅ Multi-threaded conversion
+* ✅ Resampling to 1/2/3/4/5min, 1d
+* ✅ Fast random access via .idx index
+* ✅ Stores data in SOA format for SIMD optimization
 > 
 > Example:
 > ```bash
