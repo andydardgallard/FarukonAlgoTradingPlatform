@@ -10,6 +10,7 @@ The platform supports dynamic strategy loading via `.dylib`/`.so` libraries, gri
 
 * ✅ **Event-Driven Architecture**: Decouples data, strategy, portfolio, and execution for maximum modularity and speed.
 * ✅ **Zero-Copy Data Access**: Uses FlatBuffers + `mmap` for memory-mapped OHLCV data — no copying, no allocations.
+* ✅ **Structure-of-Arrays (SOA) Format**: Data is stored and processed in SOA format (`[open1, open2, ...], [high1, high2, ...]`), which is **optimized for SIMD operations** and cache-friendly access
 * ✅ **SIMD Optimization**: Leverages the `wide` crate for vectorized computations on indicators, returns, and drawdowns.
 * ✅ **Multi-Threading**: Full parallelization across strategies, data loading, and optimization (up to 128+ threads).
 * ✅ **Dynamic Strategy Loading**: Compile strategies as shared libraries (`cdylib`) and load them at runtime — no recompilation needed.
@@ -21,43 +22,49 @@ The platform supports dynamic strategy loading via `.dylib`/`.so` libraries, gri
 ## 📦 Project Structure
 ```
 FarukonAlgoTradingPlatform/
-├── Farukon_2_0/           # Main backtesting executable
-│   ├── src/
-│   │   ├── main.rs        # Entry point
-│   │   ├── cli.rs         # CLI parser
-│   │   ├── backtest.rs    # Core backtesting loop
-│   │   ├── data_handler.rs # Zero-copy FlatBuffers loader
-│   │   ├── execution.rs   # Simulated execution engine
-│   │   ├── optimizers.rs  # Grid Search & Genetic Algorithm
-│   │   ├── portfolio.rs   # Portfolio & risk management
-│   │   ├── risks.rs       # Margin call logic
-│   │   └── strategy_loader.rs # Dynamic .dylib loader
-│   └── Cargo.toml
-├── farukon_core/          # Shared core library
-│   ├── src/
-│   │   ├── event.rs       # Event system (MARKET, SIGNAL, ORDER, FILL)
-│   │   ├── data_handler.rs # DataHandler trait
-│   │   ├── execution.rs   # ExecutionHandler trait
-│   │   ├── portfolio.rs   # Position, Holding, Equity state
-│   │   ├── performance.rs # SIMD-backed metrics (APR, DD, Recovery)
-│   │   ├── indicators.rs  # SMA, etc.
-│   │   ├── instruments_info.rs # Instrument metadata
-│   │   ├── commission_plans.rs # Commission rules
-│   │   ├── settings.rs    # Config parsing & validation
-│   │   ├── optimization.rs # Grid + GA logic
-│   │   ├── pos_sizers.rs  # MPR, fixed_ratio, etc.
-│   │   ├── utils.rs       # Helpers
-│   │   └── lib.rs         # Public API
-│   └── Cargo.toml
-├── strategy_lib/          # Example strategy (Moving Average Cross)
-│   ├── src/
-│   │   └── lib.rs         # Compiled as cdylib → libstrategy_lib.dylib
-│   └── Cargo.toml
-├── Tickers/               # Market data directory (FlatBuffers .bin/.idx files)
-├── Portfolios/            # Strategy configuration files (.json)
-├── commission_plans.json  # Commission structure per exchange
-├── instruments_info.json  # Contract metadata (margin, step, expiration)
+├── Farukon_2_0/ # Main backtesting executable
+│ ├── src/
+│ │ ├── main.rs # Entry point
+│ │ ├── cli.rs # CLI parser
+│ │ ├── backtest.rs # Core backtesting loop
+│ │ ├── execution.rs # Simulated execution engine
+│ │ ├── optimizers.rs # Grid Search & Genetic Algorithm
+│ │ ├── portfolio.rs # Portfolio & risk management
+│ │ ├── risks.rs # Margin call logic
+│ │ ├── strategy_loader.rs # Dynamic .dylib loader
+│ │ └── data_engine/ # Data handling and storage module
+│ │ ├── mod.rs # Module declaration
+│ │ ├── data_handler.rs # Zero-copy SOA data handler (implements DataHandler trait)
+│ │ ├── global_data_storage.rs # Centralized store for pre-resampled SOA data
+│ │ ├── ohlcv_soa_generated.rs # FlatBuffer generated code (SOA format)
+│ │ └── utils.rs # Helper functions for data loading, resampling, and alignment
+│ └── Cargo.toml
+├── farukon_core/ # Shared core library
+│ ├── src/
+│ │ ├── event.rs # Event system (MARKET, SIGNAL, ORDER, FILL)
+│ │ ├── data_handler.rs # DataHandler trait definition
+│ │ ├── execution.rs # ExecutionHandler trait
+│ │ ├── portfolio.rs # Position, Holding, Equity state
+│ │ ├── performance.rs # SIMD-backed metrics (APR, DD, Recovery)
+│ │ ├── indicators.rs # SMA, etc. (can use SOA data efficiently)
+│ │ ├── instruments_info.rs # Instrument metadata
+│ │ ├── commission_plans.rs # Commission rules
+│ │ ├── settings.rs # Config parsing & validation
+│ │ ├── optimization.rs # Grid + GA logic
+│ │ ├── pos_sizers.rs # MPR, fixed_ratio, etc.
+│ │ ├── utils.rs # Helpers
+│ │ └── lib.rs # Public API
+│ └── Cargo.toml
+├── strategy_lib/ # Example strategy (Moving Average Cross)
+│ ├── src/
+│ │ └── lib.rs # Compiled as cdylib → libstrategy_lib.dylib
+│ └── Cargo.toml
+├── Tickers/ # Market data directory (FlatBuffers .soa.bin/.idx files)
+├── Portfolios/ # Strategy configuration files (.json)
+├── commission_plans.json # Commission structure per exchange
+├── instruments_info.json # Contract metadata (margin, step, expiration)
 ├── LICENSE
+├── USER_MANUAL.md
 └── README.md
 ```
 > 💡 **Note**: The [csv-to-flatbuffer](https://github.com/andydardgallard/csv-to-flatbuffer) utility (see below) generates `.bin` and `.idx` files for the `Tickers/` directory.
@@ -75,12 +82,17 @@ FarukonAlgoTradingPlatform/
    cargo build --release
    ```
 4. **Prepare Market Data**
-Place your OHLCV data in the `Tickers/` directory as FlatBuffer `.bin` + `.idx` files.
+Place your OHLCV data in the `Tickers/` directory as FlatBuffer `soa.bin` + `soa.idx` files. These files store data in the **Structure-of-Arrays (SOA) format**.
 > ✅ Generate these files using our companion tool:
 >
 > 🔗 [csv-to-flatbuffer](https://github.com/andydardgallard/csv-to-flatbuffer)
 >
-> Converts CSV/TXT files (e.g., `Si-12.23.txt`) into ultra-fast, zero-copy `.bin` + `.idx` format with resampling and indexing.
+> High-performance tool to convert CSV/TXT financial tick/OHLCV data into FlatBuffer SOA binary format for ultra-fast backtesting.
+✅ Zero-copy reading via mmap
+✅ Multi-threaded conversion
+✅ Resampling to 1/2/3/4/5min, 1d
+✅ Fast random access via .idx index
+✅ Stores data in SOA format for SIMD optimization
 > 
 > Example:
 > ```bash
@@ -204,12 +216,13 @@ Farukon is designed to be **AI-native** — a platform for automated strategy di
 > 
 > An AI agent (e.g., Optuna, BayesianOptimization, or custom RL) generates parameter sets → > Farukon runs backtest → Returns metrics → Agent updates policy → Repeat.
 
-## 📈 Why FlatBuffers + SIMD?
+## 📈 Why FlatBuffers + SOA + SIMD?
 Farukon is engineered for **ultra-low-latency**:
 | Feature | Benefit |
 |--------|-----------|
 | ✅ **FlatBuffers** `.bin` + `.idx`| Zero-copy memory mapping; no parsing overhead. Random access to any timestamp via `.idx`. |
 | ✅ `mmap` | Load 10GB of OHLCV data in < 0.1s — data stays in OS page cache. |
+| ✅ **Structure-of-Arrays (SOA) Format** | Stores data as separate arrays (e.g., `opens`, `highs`). **Optimal for SIMD** and cache-friendly access |
 | ✅ **SIMD (**`wide` **crate)** | Vectorized SMA, returns, and drawdown calculations — 4x–8x speedup. |
 | ✅ **Multi-threaded Data Loader** | Each strategy loads its own data in parallel. |
 | ✅ **Multi-threaded Optimization** | Grid search and GA run across all CPU cores — 100k+ combinations in minutes. |
@@ -222,10 +235,10 @@ Farukon is engineered for **ultra-low-latency**:
 Tickers/
 └── FBS/
     └── Si/
-        ├── Si-12.23.bin     ← FlatBuffer OHLCV data
-        ├── Si-12.23.idx     ← Index: timestamps, daily ranges, resampled bars
-        ├── Si-3.24.bin
-        └── Si-3.24.idx
+        ├── Si-12.23.soa.bin     ← FlatBuffer OHLCV data
+        ├── Si-12.23.soa.idx     ← Index: timestamps, daily ranges, resampled bars
+        ├── Si-3.24.soa.bin
+        └── Si-3.24.soa.idx
 ```
 `Portfolios/`
 ```
