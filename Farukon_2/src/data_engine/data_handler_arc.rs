@@ -40,7 +40,6 @@ impl SOADataHandlerArc {
         
         // Check if the combined timeline has any data points to determine the initial continue_backtest flag.
         let continue_backtest = global_data_store.get_combined_timeline().len() > 0;
-        println!("data_pointer_arc: {:p}", global_data_store.get_combined_timeline().as_ptr());
         Self {
             global_data_store,
             current_index: 0,
