@@ -110,6 +110,22 @@ impl GlobalDataStore {
         )
     }
 
+    pub fn deep_clone(&self) -> Self {
+        let mut new_soa_data = std::collections::HashMap::new();
+        for (symbol, soa_data_arc) in self.soa_data.iter() {
+            let cloned_soa_data = soa_data_arc.deep_clone();
+            new_soa_data.insert(symbol.clone(), std::sync::Arc::new(cloned_soa_data));
+        }
+
+        let new_combined_timeline = self.combined_timeline.as_ref().clone();
+
+        GlobalDataStore {
+            soa_data: std::sync::Arc::new(new_soa_data),
+            combined_timeline: std::sync::Arc::new(new_combined_timeline),
+            is_loaded: self.is_loaded,
+        }
+    }
+
     /// Provides access to the combined timeline.
     /// This timeline represents all unique timestamps across all symbols for the backtest period,
     /// sorted chronologically.

@@ -109,6 +109,17 @@ impl SOAData {
         }
     }
     
+    pub fn deep_clone(&self) -> Self {
+        Self {
+            timestamps: self.timestamps.clone(),
+            opens: self.opens.clone(),
+            highs: self.highs.clone(),
+            lows: self.lows.clone(),
+            closes: self.closes.clone(),
+            volumes: self.volumes.clone(),
+        }
+    }
+
     pub fn get_latest_bar(&self, current_index: usize) -> Self {
         Self {
             timestamps: vec![self.timestamps[current_index - 1]],

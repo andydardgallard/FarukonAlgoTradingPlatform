@@ -164,7 +164,7 @@ impl OptimizationRunner {
                                 &initial_capital,
                                 &test_settings,
                                 &strategy_instruments_info,
-                                (*global_data_store).clone(),
+                                std::sync::Arc::clone(&global_data_store),
                             )
                         }
                     };
@@ -261,7 +261,7 @@ impl OptimizationRunner {
         initial_capital_for_strategy: &f64,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
-        global_data_store: data_engine::global_data_storage::GlobalDataStore,
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
     ) -> farukon_core::performance::PerformanceMetrics {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
@@ -365,7 +365,7 @@ impl OptimizationRunner {
                         &self.initial_capital_for_strategy,
                         test_settings,
                         &self.strategy_instruments_info,
-                        (*global_data_store).clone(),
+                        std::sync::Arc::clone(&global_data_store),
                     )
                 }
             };

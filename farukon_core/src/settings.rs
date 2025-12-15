@@ -222,7 +222,7 @@ fn check_args(
             anyhow::bail!("Wrong mode setting! Use one of {:?}", VALID_MODES);
         }
 
-        const VALID_DATA_MODES: &[&str] = &["arc", "full"];
+        const VALID_DATA_MODES: &[&str] = &["arc", "deep"];
         if !VALID_DATA_MODES.contains(&settings.common.global_data_storage_mode.as_str()) {
             anyhow::bail!("Wrong global data mode setting! Use one of {:?}", VALID_DATA_MODES);
         }
