@@ -155,6 +155,7 @@ pub struct CommonSettings {
     pub initial_capital: f64,
     pub commission_plans_path: String,
     pub instrument_info_path: String,
+    pub global_data_storage_mode: String,
 }
 
 /// Top-level settings structure.
@@ -219,6 +220,11 @@ fn check_args(
         const VALID_MODES: &[&str] = &["Debug", "Optimize", "Visual"];
         if !VALID_MODES.contains(&settings.common.mode.as_str()) {
             anyhow::bail!("Wrong mode setting! Use one of {:?}", VALID_MODES);
+        }
+
+        const VALID_DATA_MODES: &[&str] = &["arc", "full"];
+        if !VALID_DATA_MODES.contains(&settings.common.global_data_storage_mode.as_str()) {
+            anyhow::bail!("Wrong global data mode setting! Use one of {:?}", VALID_DATA_MODES);
         }
     }
 

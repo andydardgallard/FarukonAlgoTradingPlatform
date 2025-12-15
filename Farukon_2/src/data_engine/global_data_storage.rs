@@ -144,3 +144,14 @@ impl GlobalDataStore {
     } 
 
 }
+
+impl Clone for GlobalDataStore {
+    fn clone(&self) -> Self{
+        Self {
+            soa_data: std::sync::Arc::clone(&self.soa_data),
+            combined_timeline: std::sync::Arc::clone(&self.combined_timeline),
+            is_loaded: self.is_loaded,
+        }
+    }
+    
+}

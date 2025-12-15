@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()>{
 
     // Load full settings (common + portfolio)
     let mut all_settings = farukon_core::settings::Settings::load(args.config)?;
-    let mode = &all_settings.common.mode.clone();
+    let common_settings = &all_settings.common.clone();
     
     // Load global instrument metadata
     let instruments_info = &farukon_core::instruments_info::InstrumentsInfoRegistry::load(&all_settings)?;
@@ -40,10 +40,10 @@ fn main() -> anyhow::Result<()>{
         );
 
         if *global_data_store.is_loaded() {
-            if mode == "Optimize" || mode == "Debug"{
+            if common_settings.mode == "Optimize" || common_settings.mode == "Debug"{
                 let optimization_runner = optimizers::OptimizationRunner::new(
-                    mode,
                     &initial_capital_for_strategy,
+                    &common_settings,
                     &strategy_settings,
                     strategy_instruments_info,
                 );

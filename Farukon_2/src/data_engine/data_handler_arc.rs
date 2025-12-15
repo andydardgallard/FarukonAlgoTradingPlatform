@@ -12,9 +12,10 @@ use crate::data_engine;
 /// The handler implements the `farukon_core::data_handler::DataHandler` trait, providing methods
 /// to retrieve the latest bar's data (OHLCV) for specific symbols based on the current index.
 /// This ensures that strategies only see data up to the current simulated time.
-pub struct SOADataHandler {
-    /// Copy of the global data store containing all pre-resampled SOA data for the strategy's symbols.
-    global_data_store: data_engine::global_data_storage::GlobalDataStore,
+pub struct SOADataHandlerArc {
+    /// Shared reference to the global data store containing all pre-resampled SOA data for the strategy's symbols.
+    /// This allows multiple `SOADataHandler` instances to access the same zero-copy data.
+    global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
 
     /// The current index in the combined timeline, representing the "current" bar for this specific handler instance.
     /// Each backtest thread managing its own `SOADataHandler` will increment this index independently,
@@ -26,7 +27,7 @@ pub struct SOADataHandler {
     continue_backtest: bool,
 }
 
-impl SOADataHandler {
+impl SOADataHandlerArc {
     /// Creates a new `SOADataHandler` instance.
     /// Initializes the handler with the shared `GlobalDataStore` and sets the initial state (index = 0, continue = true).
     ///
@@ -35,10 +36,9 @@ impl SOADataHandler {
     ///
     /// # Returns
     /// * `SOADataHandler` - The newly created handler instance.
-    pub fn new(global_data_store: data_engine::global_data_storage::GlobalDataStore) -> Self {
+    pub fn new(global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>) -> Self {
         // Check if the combined timeline has any data points to determine the initial continue_backtest flag.
         let continue_backtest = global_data_store.get_combined_timeline().len() > 0;
-        let global_data_store = global_data_store;
         Self {
             global_data_store,
             current_index: 0,
@@ -57,7 +57,7 @@ impl SOADataHandler {
 
 }
 
-impl farukon_core::data_handler::DataHandler for SOADataHandler {
+impl farukon_core::data_handler::DataHandler for SOADataHandlerArc {
     /// Retrieves the latest bar for the specified symbol based on the current index.
     /// This method constructs a `MarketBar` on-the-fly from the SOA data arrays at the `current_index - 1`.
     /// It is deprecated in favor of direct value access methods (`get_latest_bar_value`, `get_latest_bar_datetime`)

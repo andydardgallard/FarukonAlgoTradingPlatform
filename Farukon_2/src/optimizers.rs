@@ -16,17 +16,17 @@ use crate::strategy_loader;
 /// Orchestrates the optimization process for a single strategy.
 /// Manages configuration, runs Grid Search or Genetic Algorithm, and evaluates parameter sets.
 pub struct OptimizationRunner {
-    /// Operational mode (e.g., "Debug", "Optimize", "Visual").
-    mode: String,
-
     /// Initial capital allocated to this specific strategy for optimization runs.
     initial_capital_for_strategy: f64,
 
-    /// Instrument metadata (e.g., margin, step, exchange) for all symbols traded by the strategy.
-    strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+    /// Operational mode (e.g., "Debug", "Optimize", "Visual").
+    common_settings: farukon_core::settings::CommonSettings,
 
     /// Settings specific to the strategy being optimized (parameters, paths, etc.).
     strategy_settings: farukon_core::settings::StrategySettings,
+
+    /// Instrument metadata (e.g., margin, step, exchange) for all symbols traded by the strategy.
+    strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
 
     /// The Grid Search optimizer instance, configured based on strategy settings.
     grid_search_optimizer: farukon_core::optimization::GridSearchOptimizer,
@@ -43,8 +43,8 @@ impl OptimizationRunner {
     /// # Returns
     /// * `OptimizationRunner` - The newly created runner instance.
     pub fn new(
-        mode: &str,
         initial_capital_for_strategy: &f64,
+        common_settings: &farukon_core::settings::CommonSettings,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>
     ) -> Self {
@@ -56,10 +56,10 @@ impl OptimizationRunner {
             .with_optimization_config(config);
         
         Self {
-            mode: mode.to_string(),
             initial_capital_for_strategy: *initial_capital_for_strategy,
-            strategy_instruments_info: strategy_instruments_info.clone(),
+            common_settings: common_settings.clone(),
             strategy_settings: strategy_settings.clone(),
+            strategy_instruments_info: strategy_instruments_info.clone(),
             grid_search_optimizer,
         }
     }
@@ -92,7 +92,8 @@ impl OptimizationRunner {
         // Determine the number of threads to use for parallel execution.
         // Defaults to the number of logical CPU cores if not specified in settings.
         let threads = self.strategy_settings.threads.unwrap_or(num_cpus::get());
-        let mode = self.mode.clone();
+        let global_data_mode = self.common_settings.global_data_storage_mode.clone();
+        let mode = self.common_settings.mode.clone();
 
         if mode == "Debug" {
             println!("Starting grid search optimization:");
@@ -147,13 +148,26 @@ impl OptimizationRunner {
                     );
 
                     // Run a full backtest using the current parameter set.
-                    let results = Self::run_backtest_with_settings(
-                        &mode,
-                        &initial_capital,
-                        &test_settings,
-                        &strategy_instruments_info,
-                        std::sync::Arc::clone(&global_data_store),
-                    );
+                    let results = match global_data_mode.as_str() {
+                        "arc" => {
+                            Self::run_backtest_with_settings_arc(
+                                &mode,
+                                &initial_capital,
+                                &test_settings,
+                                &strategy_instruments_info,
+                                std::sync::Arc::clone(&global_data_store),
+                            )
+                        }
+                        _ => {
+                            Self::run_backtest_with_settings_full(
+                                &mode,
+                                &initial_capital,
+                                &test_settings,
+                                &strategy_instruments_info,
+                                (*global_data_store).clone(),
+                            )
+                        }
+                    };
                     
                     println!("# {} from {} is done in {:.3} seconds ", current_count, total_combinations, start_time.elapsed().as_secs_f64());
 
@@ -179,7 +193,7 @@ impl OptimizationRunner {
     /// * `strategy_instruments_info` - Metadata for the instruments traded.
     /// # Returns
     /// * `farukon_core::performance::PerformanceMetrics` - The performance metrics from the completed backtest.
-    fn run_backtest_with_settings(
+    fn run_backtest_with_settings_arc(
         mode: &String, 
         initial_capital_for_strategy: &f64,
         strategy_settings: &farukon_core::settings::StrategySettings,
@@ -193,9 +207,71 @@ impl OptimizationRunner {
         let (event_sender, event_receiver) = std::sync::mpsc::channel::<Box<dyn farukon_core::event::Event>>();
 
         // Initialize the data handler (uses zero-copy FlatBuffers).
-        
         let data_handler: Box<dyn farukon_core::data_handler::DataHandler> = Box::new(
-            data_engine::data_handler::SOADataHandler::new(global_data_store.clone())
+            data_engine::data_handler_arc::SOADataHandlerArc::new(global_data_store.clone())
+        );
+
+        // Load the dynamic strategy library (.so/.dylib) specified in settings.
+        let dynamic_strategy: Box<strategy_loader::DynamicStratagy> = Box::new(
+            strategy_loader::DynamicStratagy::load_from_path(
+                mode,
+                strategy_settings,
+                strategy_instruments_info,
+                &event_sender,
+            ).expect("Failed to load dynamic strategy")
+        );
+
+        // Initialize the portfolio manager.
+        let portfolio: Box<dyn farukon_core::portfolio::PortfolioHandler> = Box::new(
+            portfolio::Portfolio::new(
+                mode,
+                initial_capital_for_strategy,
+                event_sender.clone(),
+                strategy_settings,
+                strategy_instruments_info,
+            ).expect("Failed to create portfolio")
+        );
+
+        // Initialize the simulated execution handler.
+        let execution_handler: Box<dyn farukon_core::execution::ExecutionHandler> = Box::new(
+            execution::SimulatedExecutionHandler::new(
+                event_sender.clone(),
+            ).expect("Failed to create execution handler")
+        );
+
+        // Create the main backtest controller.
+        let mut backtest = backtest::Backtest::new(
+            mode,
+            strategy_settings,
+            strategy_instruments_info,
+            data_handler,
+            event_receiver,
+            dynamic_strategy,
+            portfolio,
+            execution_handler
+        );
+
+        // Run the backtest simulation and return the final performance metrics.
+        backtest.simulate_trading().expect("Backtest failed").clone()
+
+    }
+
+    fn run_backtest_with_settings_full(
+        mode: &String, 
+        initial_capital_for_strategy: &f64,
+        strategy_settings: &farukon_core::settings::StrategySettings,
+        strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+        global_data_store: data_engine::global_data_storage::GlobalDataStore,
+    ) -> farukon_core::performance::PerformanceMetrics {
+        // Creates a full backtest environment for a single parameter set.
+        // Used by Grid Search and Genetic Algorithm.
+
+        // Create the event channel used for communication between components (DataHandler, Strategy, Portfolio, Execution).
+        let (event_sender, event_receiver) = std::sync::mpsc::channel::<Box<dyn farukon_core::event::Event>>();
+
+        // Initialize the data handler (uses zero-copy FlatBuffers).
+        let data_handler: Box<dyn farukon_core::data_handler::DataHandler> = Box::new(
+            data_engine::data_handler::SOADataHandler::new(global_data_store)
         );
 
         // Load the dynamic strategy library (.so/.dylib) specified in settings.
@@ -268,18 +344,33 @@ impl OptimizationRunner {
         
         // Run the Genetic Algorithm, providing a fitness function that evaluates parameter sets.
         let stats = ga.run(&self.strategy_settings.clone(), move |params| {
+            let mode = &self.common_settings.mode;
+            let global_data_storage_mode = &self.common_settings.global_data_storage_mode;
             // Create temporary strategy settings based on the current parameter set for this generation.
             let test_settings = &farukon_core::utils::create_stratagy_settings_from_params(&self.strategy_settings, params);
             // Run a backtest with these parameters.
-            let backtest_result = Self::run_backtest_with_settings(
-                &self.mode,
-                &self.initial_capital_for_strategy,
-                test_settings, 
-                &self.strategy_instruments_info,
-                std::sync::Arc::clone(&global_data_store),
-            );
-            // Calculate the fitness score based on the backtest results.
-            self.calculate_fitness_score(&backtest_result, &ga_config)  
+            let results = match global_data_storage_mode.as_str() {
+                "arc" => {
+                    Self::run_backtest_with_settings_arc(
+                        mode, 
+                        &self.initial_capital_for_strategy,
+                        test_settings,
+                        &self.strategy_instruments_info,
+                        std::sync::Arc::clone(&global_data_store),
+                    )
+                }
+                _ => {
+                    Self::run_backtest_with_settings_full(
+                        mode,
+                        &self.initial_capital_for_strategy,
+                        test_settings,
+                        &self.strategy_instruments_info,
+                        (*global_data_store).clone(),
+                    )
+                }
+            };
+            
+            self.calculate_fitness_score(&results, &ga_config)  
         })?;
 
         anyhow::Ok(stats)
