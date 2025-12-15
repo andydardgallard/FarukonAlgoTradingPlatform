@@ -110,6 +110,12 @@ impl OptimizationRunner {
         // Shared atomic counter to track the number of completed evaluations.
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+        let lib_path = &strategy_settings.strategy_path;
+        let lib = std::sync::Arc::new(
+            unsafe { libloading::Library::new(lib_path)
+                .expect("Can't load library")}
+        );
+
         // Create a Rayon thread pool with the specified number of threads.
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -156,15 +162,17 @@ impl OptimizationRunner {
                                 &test_settings,
                                 &strategy_instruments_info,
                                 std::sync::Arc::clone(&global_data_store),
+                                lib.clone(),
                             )
                         }
                         _ => {
-                            Self::run_backtest_with_settings_full(
+                            Self::run_backtest_with_settings_deep(
                                 &mode,
                                 &initial_capital,
                                 &test_settings,
                                 &strategy_instruments_info,
                                 std::sync::Arc::clone(&global_data_store),
+                                lib.clone(),
                             )
                         }
                     };
@@ -198,7 +206,8 @@ impl OptimizationRunner {
         initial_capital_for_strategy: &f64,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
-        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
+        strategy_library: std::sync::Arc<libloading::Library>,
     ) -> farukon_core::performance::PerformanceMetrics {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
@@ -213,11 +222,12 @@ impl OptimizationRunner {
 
         // Load the dynamic strategy library (.so/.dylib) specified in settings.
         let dynamic_strategy: Box<strategy_loader::DynamicStratagy> = Box::new(
-            strategy_loader::DynamicStratagy::load_from_path(
+            strategy_loader::DynamicStratagy::new_from_library(
                 mode,
                 strategy_settings,
                 strategy_instruments_info,
                 &event_sender,
+                strategy_library.clone(),
             ).expect("Failed to load dynamic strategy")
         );
 
@@ -256,12 +266,13 @@ impl OptimizationRunner {
 
     }
 
-    fn run_backtest_with_settings_full(
+    fn run_backtest_with_settings_deep(
         mode: &String, 
         initial_capital_for_strategy: &f64,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info:  &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
-        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
+        strategy_library: std::sync::Arc<libloading::Library>,
     ) -> farukon_core::performance::PerformanceMetrics {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
@@ -276,11 +287,12 @@ impl OptimizationRunner {
 
         // Load the dynamic strategy library (.so/.dylib) specified in settings.
         let dynamic_strategy: Box<strategy_loader::DynamicStratagy> = Box::new(
-            strategy_loader::DynamicStratagy::load_from_path(
+            strategy_loader::DynamicStratagy::new_from_library(
                 mode,
                 strategy_settings,
                 strategy_instruments_info,
                 &event_sender,
+                strategy_library.clone(),
             ).expect("Failed to load dynamic strategy")
         );
 
@@ -342,6 +354,13 @@ impl OptimizationRunner {
             .with_ga_config(ga_config.clone())
             .with_optimization_config(opt_config);
         
+        let lib_path = &self.strategy_settings.strategy_path;
+        let lib = std::sync::Arc::new(
+            unsafe { libloading::Library::new(lib_path)
+                .expect("Can't load library")
+            }
+        );
+
         // Run the Genetic Algorithm, providing a fitness function that evaluates parameter sets.
         let stats = ga.run(&self.strategy_settings.clone(), move |params| {
             let mode = &self.common_settings.mode;
@@ -357,15 +376,17 @@ impl OptimizationRunner {
                         test_settings,
                         &self.strategy_instruments_info,
                         std::sync::Arc::clone(&global_data_store),
+                        lib.clone(),
                     )
                 }
                 _ => {
-                    Self::run_backtest_with_settings_full(
+                    Self::run_backtest_with_settings_deep(
                         mode,
                         &self.initial_capital_for_strategy,
                         test_settings,
                         &self.strategy_instruments_info,
                         std::sync::Arc::clone(&global_data_store),
+                        lib.clone(),
                     )
                 }
             };

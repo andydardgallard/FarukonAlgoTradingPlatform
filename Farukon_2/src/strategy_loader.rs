@@ -5,13 +5,53 @@
 //! Uses `libloading` to load symbols: create_strategy, destroy_strategy, calculate_signals.
 
 pub struct DynamicStratagy {
-    _lib: libloading::Library,  // Holds reference to loaded library
+    _lib: std::sync::Arc<libloading::Library>,  // Holds reference to loaded library
     strategy_ptr: *mut std::ffi::c_void,    // Pointer to strategy instance
     destroy_fn: libloading::Symbol<'static, extern "C" fn(*mut std::ffi::c_void)>,  // Destructor
 }
 
 impl DynamicStratagy {
-    pub fn load_from_path(
+    pub fn new_from_library(
+        mode: &str,
+        strategy_settings: &farukon_core::settings::StrategySettings,
+        strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+        event_sender: &std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        library: std::sync::Arc<libloading::Library>,
+    ) -> anyhow::Result<Self> {
+        let create_strategy: libloading::Symbol<extern "C" fn(
+            *const std::os::raw::c_char,
+            *const farukon_core::settings::StrategySettings,
+            *const std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+            *const std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        ) -> *mut std::ffi::c_void> = unsafe { library.get(b"create_strategy")? };
+
+        let destroy_strategy: libloading::Symbol<extern "C" fn(*mut std::ffi::c_void)> =
+            unsafe { library.get(b"destroy_strategy")? };
+        let mode_c = std::ffi::CString::new(mode)?;
+
+        let strategy_ptr = create_strategy(
+            mode_c.as_ptr(),
+            strategy_settings as *const _,
+            strategy_instruments_info as *const _,
+            event_sender as *const _,
+        );
+
+        if strategy_ptr.is_null() {
+            return Err(anyhow::anyhow!("Failed to create strategy"));
+        }
+
+        let destroy_fn: libloading::Symbol<'static, extern "C" fn(*mut std::ffi::c_void)> = 
+            unsafe { std::mem::transmute(destroy_strategy) };
+
+            anyhow::Ok(DynamicStratagy {
+                _lib: std::sync::Arc::clone(&library),
+                strategy_ptr,
+                destroy_fn,
+            })
+
+    }
+
+    pub fn _load_from_path(
         mode: &str,
         strategy_settings: &farukon_core::settings::StrategySettings,
         strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
@@ -49,7 +89,7 @@ impl DynamicStratagy {
             unsafe { std::mem::transmute(destroy_strategy) };
 
         anyhow::Ok(DynamicStratagy {
-            _lib: lib,
+            _lib: std::sync::Arc::new(lib),
             strategy_ptr,
             destroy_fn,
         })
