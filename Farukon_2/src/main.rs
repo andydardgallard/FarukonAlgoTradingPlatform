@@ -40,7 +40,10 @@ fn main() -> anyhow::Result<()>{
         );
 
         if *global_data_store.is_loaded() {
-            if common_settings.mode == "Optimize" || common_settings.mode == "Debug"{
+            if common_settings.mode == "Optimize" ||
+                common_settings.mode == "Debug" ||
+                common_settings.mode == "Visual"
+                {
                 let optimization_runner = optimizers::OptimizationRunner::new(
                     &initial_capital_for_strategy,
                     &common_settings,
@@ -48,23 +51,45 @@ fn main() -> anyhow::Result<()>{
                     strategy_instruments_info,
                 );
 
-                match &strategy_settings.optimizer_type {
-                    farukon_core::settings::OptimizerType::GridSearch => {
+                match common_settings.mode.as_str() {
+                    "Visual" => {
                         let total_combinations = optimization_runner
                             .get_grid_search_optimizer()
                             .calculate_total_combinations();
                         
-                        let combinations_to_grid_search = optimization_runner
+                        if total_combinations == 1 {
+                            let combinations_to_grid_search = optimization_runner
                             .get_grid_search_optimizer()
                             .get_config()
                             .generate_all_combinations_vec();
                         
-                        let results = optimization_runner
-                            .run_grid_search(total_combinations, combinations_to_grid_search, global_data_store);
-                        optimization_runner.save_grid_search_optimization_results(&results)?;
+                            let results = optimization_runner
+                                .run_grid_search(total_combinations, combinations_to_grid_search, global_data_store);
+                            optimization_runner.save_grid_search_optimization_results(&results)?;
+                        } else {
+                            anyhow::bail!("total combinations != 1. Found {}", total_combinations);
+                        }
                     },
-                    farukon_core::settings::OptimizerType::Genetic { ga_params }=> {
-                        optimization_runner.run_genetic_search(ga_params, global_data_store)?;
+                    _ => {
+                        match &strategy_settings.optimizer_type {
+                            farukon_core::settings::OptimizerType::GridSearch => {
+                                let total_combinations = optimization_runner
+                                    .get_grid_search_optimizer()
+                                    .calculate_total_combinations();
+                                
+                                let combinations_to_grid_search = optimization_runner
+                                    .get_grid_search_optimizer()
+                                    .get_config()
+                                    .generate_all_combinations_vec();
+                                
+                                let results = optimization_runner
+                                    .run_grid_search(total_combinations, combinations_to_grid_search, global_data_store);
+                                optimization_runner.save_grid_search_optimization_results(&results)?;
+                            },
+                            farukon_core::settings::OptimizerType::Genetic { ga_params }=> {
+                                optimization_runner.run_genetic_search(ga_params, global_data_store)?;
+                            }
+                        }
                     }
                 }
             }

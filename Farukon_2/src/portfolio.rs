@@ -565,7 +565,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         }
 
         // self.export_results(); TODO
-        if self.mode == "Debug" {
+        if self.mode == "Debug" || self.mode == "Visual" {
             farukon_core::utils::export_equity_to_csv(&self.equity_series, &self.strategy_settings)?;
         }
 
