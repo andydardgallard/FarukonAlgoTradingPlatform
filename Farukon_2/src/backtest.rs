@@ -257,20 +257,26 @@ impl Backtest {
     /// * `Ok(&PerformanceMetrics)` on success
     /// * `Err(anyhow::Error)` if backtest or performance calculation fails
     pub fn simulate_trading(&mut self) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
-        if self.mode == "Debug" {
+        let mode = self.mode.clone();
+        
+        if mode == "Debug" {
             println!("Starting backtest simulation...");
         }
 
         self.run_backtest()
             .context("Backtest simulation failed")?;
 
-        if self.mode == "Debug" {
+        if mode == "Debug" {
             println!("all_positions: {:#?}", self.portfolio.get_all_positions());
             println!("all_holdings: {:#?}", self.portfolio.get_all_holdings());
         }
         
         let result = self.output_performance()
             .context("Failed to output performance")?;
+
+        if mode == "Debug" {
+            println!("Performance: {:#?}", result);
+        }
 
         anyhow::Ok(result)
     }

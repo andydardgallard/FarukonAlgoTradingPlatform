@@ -1,6 +1,6 @@
 {   
     "common": {
-        "mode": "Optimize",
+        "mode": "Debug",
         "initial_capital": 1000000.0,
         "commission_plans_path": "commission_plans.json",
         "instrument_info_path": "instruments_info.json",
@@ -23,8 +23,8 @@
                 "RTS-12.24"
             ],
             "strategy_params": {
-                "short_window": [5, 6],
-                "long_window": [10, 11]
+                "short_window": [5],
+                "long_window": [10]
             },
             "pos_sizer_params": {
                 "pos_sizer_name": "mpr",
