@@ -118,6 +118,8 @@ pub struct PerformanceManager {
     /// Maximum drawdown as a percentage.
     max_drawdown: f64,
     max_drawdown_pct: f64,
+    drawdown_curve: Vec<f64>,
+    drawdown_pct_curve: Vec<f64>,
 }
 
 impl PerformanceManager {
@@ -139,6 +141,8 @@ impl PerformanceManager {
             peak: initial_capital_for_strategy,
             max_drawdown: 0.0,
             max_drawdown_pct: 0.0,
+            drawdown_curve: vec![],
+            drawdown_pct_curve: vec![],
         }
     }
 
@@ -229,11 +233,15 @@ impl PerformanceManager {
         }
 
         // Max drawdown
-        let max_dd_percent = calculate_drawdowns_simd(&series).0;
-        self.max_drawdown = max_dd_percent;
+        let drawdow_calculation_results = calculate_drawdowns_simd(&series); 
 
-        let max_dd_pnct = calculate_drawdowns_simd(&series).1;
+        let max_dd_percent = drawdow_calculation_results.0;
+        self.max_drawdown = max_dd_percent;
+        self.drawdown_curve = drawdow_calculation_results.2;
+
+        let max_dd_pnct = drawdow_calculation_results.1;
         self.max_drawdown_pct = max_dd_pnct;
+        self.drawdown_pct_curve = drawdow_calculation_results.3;
 
         self.update_metrics(start_date, end_date, deals_count);
 
@@ -244,6 +252,14 @@ impl PerformanceManager {
         &self.metrics
     }
     
+    pub fn get_drawdons(&self) -> &Vec<f64> {
+        &self.drawdown_curve
+    }
+
+    pub fn get_drawdowns_pct(&self) -> &Vec<f64> {
+        &self.drawdown_pct_curve
+    }
+
 }
 
 fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
@@ -287,10 +303,10 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
     returns
 }
 
-fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64) {
+fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     let n = equity.len();
     if n == 0 {
-        return (0.0, 0.0);
+        return (0.0, 0.0, vec![], vec![]);
     }
 
     let mut drawdowns = vec![0.0; n];
@@ -363,5 +379,5 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64) {
         }
     }
 
-    (max_dd, max_dd_pct)
+    (max_dd, max_dd_pct, drawdowns, drawdowns_pct)
 }

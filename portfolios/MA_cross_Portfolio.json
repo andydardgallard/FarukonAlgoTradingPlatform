@@ -1,6 +1,6 @@
 {   
     "common": {
-        "mode": "Debug",
+        "mode": "Visual",
         "initial_capital": 1000000.0,
         "commission_plans_path": "commission_plans.json",
         "instrument_info_path": "instruments_info.json",

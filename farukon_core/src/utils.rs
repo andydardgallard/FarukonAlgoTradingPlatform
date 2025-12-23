@@ -145,3 +145,30 @@ pub fn export_equity_to_csv(
 
     anyhow::Ok(())
 }
+
+pub fn export_equity_drawdowns_to_csv(
+    drawdowns: &Vec<f64>,
+    drawdowns_pct: &Vec<f64>,
+    equity_series: &[(chrono::DateTime<chrono::Utc>, f64)],
+    strategy_settings: &settings::StrategySettings,
+) -> anyhow::Result<()> {
+    let path = format!("{}/equity_series.csv", strategy_settings.exit_results_path);
+
+    let mut file = std::fs::File::create(path)?;
+    writeln!(file, "datetime;capital;drawdown;drawdown_pct")?;
+    for ((datetime_capital, drawdown), drawdown_pct) in 
+        equity_series.iter().zip(drawdowns.iter()).zip(drawdowns_pct.iter())
+    {
+        let (datetime, capital) = datetime_capital;
+        writeln!(
+            file,
+            "{};{};{};{}",
+            datetime.format("%Y-%m-%d %H:%M:%S"),
+            capital,
+            drawdown,
+            drawdown_pct
+        )?;
+    }
+
+    anyhow::Ok(())
+}

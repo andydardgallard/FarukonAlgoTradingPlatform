@@ -564,13 +564,19 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             println!("{:#?}", self.equity_series);
         }
 
-        // self.export_results(); TODO
-        if self.mode == "Debug" || self.mode == "Visual" {
-            farukon_core::utils::export_equity_to_csv(&self.equity_series, &self.strategy_settings)?;
+        let output_metrics = self.performance_manager.get_current_performance_metrics();
+
+        let drawdowns = self.performance_manager.get_drawdons();
+        let drawdowns_pct = self.performance_manager.get_drawdowns_pct();
+              
+        if self.mode == "Visual" || self.mode == "Debug" {
+            farukon_core::utils::export_equity_drawdowns_to_csv(
+                drawdowns,
+                drawdowns_pct,
+                &self.equity_series,
+                &self.strategy_settings)?;
         }
 
-        let output_metrics = self.performance_manager.get_current_performance_metrics();
-              
         anyhow::Ok(output_metrics)
     }
 
