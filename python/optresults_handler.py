@@ -71,7 +71,7 @@ def plot_set_get_xaxis(args) -> pd.DataFrame:
 
 def plot_set(args) -> None:
     results = plot_set_get_xaxis(args)
-    results_list = results.columns.to_list()[-7:]
+    results_list = results.columns.to_list()[-8:]
     sorted_results = results.sort_values(
         by=args.xaxis,
         ascending=True
