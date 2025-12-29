@@ -1,6 +1,6 @@
 {   
     "common": {
-        "mode": "Visual",
+        "mode": "Optimize",
         "initial_capital": 1000000.0,
         "commission_plans_path": "commission_plans.json",
         "instrument_info_path": "instruments_info.json",
@@ -29,7 +29,11 @@
             "pos_sizer_params": {
                 "pos_sizer_name": "mpr",
                 "pos_sizer_params": {},
-                "pos_sizer_value": [1]
+                "pos_sizer_value": {
+                    "start": 0.5,
+                    "end": 15.5,
+                    "step": 0.5
+                }
             },
             "margin_params": {
                 "min_margin": 0.5,
@@ -38,7 +42,20 @@
             "portfolio_settings_for_strategy": {
                 "metrics_calculation_mode": "offline"
             },
-            "optimizer_type": "Grid_Search"
+            "optimizer_type": {
+                "Genetic": {
+                    "ga_params": {
+                        "population_size": 25,
+                        "p_crossover": 0.8,
+                        "p_mutation": 0.2,
+                        "max_generations": 12,
+                        "fitness_params": {
+                            "fitness_direction": "max",
+                            "fitness_value": "APR/DD_factor"
+                        }
+                    }
+                }
+            }
         }
     }
 }
