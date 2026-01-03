@@ -261,11 +261,23 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
 ///
 /// # Returns
 /// * `anyhow::Result<usize>` - The parameter value as usize or an error.
-fn get_param_as_usize(params: &std::collections::HashMap<String, Vec<serde_json::Value>>, name: &str) -> anyhow::Result<usize> {
-    let value = params
+fn get_param_as_usize(params: &std::collections::HashMap<String, farukon_core::settings::ParamSpec>, name: &str) -> anyhow::Result<usize> {
+    let param_spec = params
         .get(name)
-        .and_then(|v| v.first())
         .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
+    
+    let value = match param_spec {
+        farukon_core::settings::ParamSpec::Discrete(values) => {
+            if let Some(v) = values.first() {
+                v
+            } else {
+                anyhow::bail!("Parameter '{}' has no values in Discrete list", name);
+            }
+        }
+        farukon_core::settings::ParamSpec::Range { .. } => {
+            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
+        }
+    };
 
     if let Some(val) = value.as_u64() {
         anyhow::Ok(val as usize)

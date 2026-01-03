@@ -82,12 +82,15 @@ impl OptimizationRunner {
     pub fn run_grid_search(
         &self,
         total_combinations: usize,
-        combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>,
+        // combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
     ) -> Vec<farukon_core::optimization::OptimizationResult> {
         // Runs Grid Search in parallel across all CPU cores.
         // Each parameter set is evaluated by running a full backtest.
         // Uses Atomic counter to track progress.
+
+        self.grid_search_optimizer.check_memory_limit(&self.grid_search_optimizer.get_config())
+            .expect("Grid search memory limit exceeded");
 
         // Determine the number of threads to use for parallel execution.
         // Defaults to the number of logical CPU cores if not specified in settings.
@@ -185,7 +188,7 @@ impl OptimizationRunner {
                         .with_results(results)
                 },
                 threads, // Number of threads to use for the optimization.
-                combinations_to_grid_search // Vector of parameter sets to evaluate.
+                &self.grid_search_optimizer.get_config(),
             )
         });
 
@@ -419,6 +422,7 @@ impl OptimizationRunner {
 
         // save results
         self.save_grid_search_optimization_results(&final_results)?;
+        ga.save_generation_stats_to_csv(&stats, &self.strategy_settings)?;
 
         anyhow::Ok(stats)
     }

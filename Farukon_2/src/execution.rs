@@ -72,46 +72,58 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
                 "MKT" => {
                     // Market order: slippage is applied.
                     // Buy at High + slippage, Sell at Low - slippage.
-                    if strategy_settings.slippage.len() == 1 {
-                        // Check the order direction (BUY/SELL).
-                        match event.direction.as_deref() {
-                            // For a buy order, use the bar's High and add slippage.
-                            Some("BUY") => {
-                                let market_price = (1.0 + strategy_settings.slippage[0]) * current_bar.get_high(0).unwrap();
-                                if *current_bar.get_low(0).unwrap() <= market_price {
-                                    if *current_bar.get_high(0).unwrap() <= market_price {
-                                        *current_bar.get_high(0).unwrap()
-                                    } else {
-                                        // If yes, the order is executed at the limit price.
-                                        market_price
-                                    }
+                    let slippage_val = match &strategy_settings.slippage {
+                        farukon_core::settings::ParamSpec::Discrete(values) => {
+                            if values.len() == 1 {
+                                if let Some(v) = values.first() {
+                                    v.as_f64().ok_or_else(|| anyhow::anyhow!("Slippage value is not a number"))?
                                 } else {
-                                    // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
-                                    return anyhow::Ok(());
+                                    anyhow::bail!("Slippage vector is empty!");
                                 }
+                            } else {
+                                // If the length of the slippage vector in the strategy settings is not 1, this is an error.
+                                // The current implementation expects only a single slippage value for a market order.
+                                anyhow::bail!("Wrong len of slippage vector!");
                             }
-                            // For a sell order, use the bar's Low and subtract slippage.
-                            Some("SELL") => {
-                                let market_price = (1.0 - strategy_settings.slippage[0]) * current_bar.get_low(0).unwrap();
-                                if *current_bar.get_high(0).unwrap() >= market_price {
-                                    if *current_bar.get_low(0).unwrap() >= market_price {
-                                        *current_bar.get_low(0).unwrap()
-                                    } else {
-                                        // If yes, the order is executed at the limit price.
-                                        market_price
-                                    }
-                                } else {
-                                    // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
-                                    return anyhow::Ok(());
-                                }
-                            }
-                            // If the direction is not specified or unknown, return a price of 0.0.
-                            _ => 0.0,
                         }
-                    } else {
-                        // If the length of the slippage vector in the strategy settings is not 1, this is an error.
-                        // The current implementation expects only a single slippage value for a market order.
-                        anyhow::bail!("Wrong len of slippage vector!!");
+                        farukon_core::settings::ParamSpec::Range { .. } => {
+                            anyhow::bail!("Slippage cannot be a range in execution!");
+                        }
+                    };
+
+                    match event.direction.as_deref() {
+                        // For a buy order, use the bar's High and add slippage.
+                        Some("BUY") => {
+                            let market_price = (1.0 + slippage_val) * current_bar.get_high(0).unwrap();
+                            if *current_bar.get_low(0).unwrap() <= market_price {
+                                if *current_bar.get_high(0).unwrap() <= market_price {
+                                    *current_bar.get_high(0).unwrap()
+                                } else {
+                                    // If yes, the order is executed at the limit price.
+                                    market_price
+                                }
+                            } else {
+                                // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
+                                return anyhow::Ok(());
+                            }
+                        }
+                        // For a sell order, use the bar's Low and subtract slippage.
+                        Some("SELL") => {
+                            let market_price = (1.0 - slippage_val) * current_bar.get_low(0).unwrap();
+                            if *current_bar.get_high(0).unwrap() >= market_price {
+                                if *current_bar.get_low(0).unwrap() >= market_price {
+                                    *current_bar.get_low(0).unwrap()
+                                } else {
+                                    // If yes, the order is executed at the limit price.
+                                    market_price
+                                }
+                            } else {
+                                // If no, the order is not executed. Return Ok(()) without sending a FillEvent.
+                                return anyhow::Ok(());
+                            }
+                        }
+                        // If the direction is not specified or unknown, return a price of 0.0.
+                        _ => 0.0,
                     }
                 },
                 "LMT" => {

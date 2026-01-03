@@ -39,7 +39,21 @@ fn mpr(
     strategy_settings: &settings::StrategySettings,
     strategy_instruments_info_for_symbol: &instruments_info::InstrumentInfo,
 ) -> Option<f64> {
-    let mpr = strategy_settings.pos_sizer_params.pos_sizer_value[0];
+    let mpr = {
+        match &strategy_settings.pos_sizer_params.pos_sizer_value {
+            settings::ParamSpec::Discrete(values) => {
+                if let Some(value) = values.first() {
+                    value.as_f64()?
+                } else {
+                    return None;
+                }
+            }
+            settings::ParamSpec::Range { .. } => {
+                return None;
+            }
+        }
+    };
+
     let full_commission = match strategy_instruments_info_for_symbol.exchange.as_str() {
             "FORTS" => {
                 let entry_commission = commission_plans::calculate_forts_comission(
@@ -123,7 +137,12 @@ pub fn get_pos_sizer_from_settings(
     strategy_settings: &settings::StrategySettings,
     strategy_instruments_info_for_symbol: &instruments_info::InstrumentInfo,
 ) -> Option<f64> {
-    if strategy_settings.pos_sizer_params.pos_sizer_value.len() == 1 {
+    let is_single_value = match &strategy_settings.pos_sizer_params.pos_sizer_value {
+        settings::ParamSpec::Discrete(values) => values.len() == 1,
+        settings::ParamSpec::Range { .. } => false,
+    };
+
+    if is_single_value {
         let quantity = match strategy_settings.pos_sizer_params.pos_sizer_name.as_str() {
             "1" => plain_pos_sizer(
                 mode,

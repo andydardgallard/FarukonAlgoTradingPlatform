@@ -80,4 +80,3 @@ if __name__ == "__main__":
             print("Provide a folder with optimization results!")
     else:
         print("Wrong argument!")
-    

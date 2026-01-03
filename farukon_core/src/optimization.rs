@@ -175,6 +175,42 @@ impl ParameterSet {
         format!("{} {} {}", strategy_str, pos_sizer_str, slippage_str)
     }
 
+    pub fn aproximate_size_in_bytes(&self) -> usize {
+        let mut total = 0;
+
+        // strategy_params: Vec<(String, serde_json::Value)>
+        for (s, v) in &self.strategy_params {
+            total += std::mem::size_of_val(s);
+            total += s.len();
+            total += std::mem::size_of::<serde_json::Value>();
+            if let serde_json::Value::String(s_val) = v {
+                total += s_val.len();
+            }
+        }
+
+        // pos_sizer_name: String
+        total += std::mem::size_of_val(&self.pos_sizer_name);
+        total += self.pos_sizer_name.len();
+
+        // pos_sizer_value: f64
+        total += std::mem::size_of_val(&self.pos_sizer_value);
+
+        // pos_sizer_additional_params: Vec<(String, serde_json::Value)>
+        for (s, v) in &self.pos_sizer_additional_params {
+            total += std::mem::size_of_val(s);
+            total += s.len();
+            total += std::mem::size_of::<serde_json::Value>();
+            if let serde_json::Value::String(s_val) = v {
+                total += s_val.len();
+            }
+        }
+
+        // slippage: f64
+        total += std::mem::size_of_val(&self.slippage);
+
+        total
+    }
+
 }
 
 /// Configuration for the optimization process.
@@ -182,15 +218,15 @@ impl ParameterSet {
 #[derive(Debug, Clone)]
 pub struct OptimizationConfig {
     /// Maps strategy parameter names to lists of possible values.
-    strategy_params_ranges: std::collections::HashMap<String, Vec<serde_json::Value>>,
+    strategy_params_ranges: std::collections::HashMap<String, settings::ParamSpec>,
     /// List of possible values for the position sizer.
-    pos_sizer_value_range: Vec<f64>,
+    pos_sizer_value_range: settings::ParamSpec,
     /// List of possible values for slippage.
-    slippage_range: Vec<f64>,
+    slippage_range: settings::ParamSpec,
     /// Position sizer name
     pos_sizer_name: String,
     /// Maps position sizer additional params
-    pos_sizer_additional_params: std::collections::HashMap<String, Vec<serde_json::Value>>,
+    pos_sizer_additional_params: std::collections::HashMap<String, settings::ParamSpec>,
 }
 
 impl OptimizationConfig {
@@ -198,15 +234,15 @@ impl OptimizationConfig {
     pub fn new() -> Self{
         Self {
             strategy_params_ranges: std::collections::HashMap::new(),
-            pos_sizer_value_range: Vec::new(),
-            slippage_range: Vec::new(),
+            pos_sizer_value_range: settings::ParamSpec::Discrete(vec![]),
+            slippage_range: settings::ParamSpec::Discrete(vec![]),
             pos_sizer_name: String::new(),
             pos_sizer_additional_params: std::collections::HashMap::new(),
         }
     }
 
     /// Sets the ranges for strategy parameters.
-    pub fn with_strategy_params_ranges(mut self, ranges: std::collections::HashMap<String,  Vec<serde_json::Value>>) -> Self {
+    pub fn with_strategy_params_ranges(mut self, ranges: std::collections::HashMap<String,  settings::ParamSpec>) -> Self {
         self.strategy_params_ranges = ranges;
         self
     }
@@ -218,19 +254,19 @@ impl OptimizationConfig {
     }
     
     /// Sets position sizer additional parameters
-    pub fn with_pos_sizer_additional_params(mut self, params: std::collections::HashMap<String,  Vec<serde_json::Value>>) -> Self {
+    pub fn with_pos_sizer_additional_params(mut self, params: std::collections::HashMap<String,  settings::ParamSpec>) -> Self {
         self.pos_sizer_additional_params = params;
         self
     }
     
     /// Sets the range of values for the position sizer.
-    pub fn with_pos_sizer_value_ranges(mut self, range: Vec<f64>) -> Self {
+    pub fn with_pos_sizer_value_ranges(mut self, range: settings::ParamSpec) -> Self {
         self.pos_sizer_value_range = range;
         self
     }
 
     /// Sets the range of values for slippage.
-    pub fn with_slippage_range(mut self, range: Vec<f64>) -> Self {
+    pub fn with_slippage_range(mut self, range: settings::ParamSpec) -> Self {
         self.slippage_range = range;
         self
     }
@@ -242,51 +278,81 @@ impl OptimizationConfig {
     }
 
     /// Generates an iterator over all possible combinations of parameters.
+    /// 
+    /// This method creates a lazy iterator that produces `ParameterSet` objects by combining:
+    /// - All strategy parameters defined in `strategy_params_ranges` (using cartesian product).
+    /// - All values from `pos_sizer_value_range`.
+    /// - All values from `slippage_range`.
+    /// - Additional position sizer parameters from `pos_sizer_additional_params`.
+    /// 
+    /// Each `ParameterSet` contains:
+    /// - Strategy parameters (e.g., `short_window`, `long_window`).
+    /// An iterator that yields `ParameterSet` objects.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
-        // println!("DEBUG {:#?}", self);
         let strategy_params_names: Vec<String> = self.strategy_params_ranges.keys().cloned().collect();
         let pos_sizer_name = self.pos_sizer_name.clone();
-        let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = self.pos_sizer_additional_params
-            .iter()
-            .flat_map(|(key, values)| {
-                values.iter().map(|value| (key.clone(), value.clone()))
-            })
+        let pos_sizer_additional_params_names: Vec<String> = self.pos_sizer_additional_params
+            .keys()
+            .cloned()
             .collect();
 
-        self.slippage_range
-            .iter()
+        let slippage_values: Vec<f64> = self.slippage_range.expand()
+            .into_iter()
+            .filter_map(|v| v.as_f64())
+            .collect();
+
+        slippage_values
+            .into_iter()
             .flat_map({
                 let pos_sizer_name = pos_sizer_name.clone();
-                let pos_sizer_additional_params = pos_sizer_additional_params.clone();
-                let strategy_params_names = strategy_params_names.clone();
-                move |&slippage| {
-                    self.pos_sizer_value_range
-                        .iter()
+                let pos_sizer_additional_params_names = pos_sizer_additional_params_names.clone();
+                move |slippage| {
+                    let pos_sizer_values: Vec<f64> = self.pos_sizer_value_range.expand()
+                        .into_iter()
+                        .filter_map(|v| v.as_f64())
+                        .collect();
+
+                    pos_sizer_values
+                        .into_iter()
                         .flat_map({
                             let pos_sizer_name = pos_sizer_name.clone();
-                            let pos_sizer_additional_params = pos_sizer_additional_params.clone();
-                            let strategy_params_names = strategy_params_names.clone();
-                            move |&pos_sizer_val| {
-                                self.strategy_params_ranges
+                            let pos_sizer_additional_params_names = pos_sizer_additional_params_names.clone();
+                            let value = strategy_params_names.clone();
+                            move |pos_sizer_val| {
+                                let strategy_ranges: Vec<Vec<serde_json::Value>> = self.strategy_params_ranges
                                     .values()
+                                    .map(|spec| spec.expand())
+                                    .collect();
+
+                                strategy_ranges
+                                    .into_iter()
                                     .multi_cartesian_product()
                                     .map({
                                         let pos_sizer_name = pos_sizer_name.clone();
-                                        let pos_sizer_additional_params = pos_sizer_additional_params.clone();
-                                        let strategy_params_names = strategy_params_names.clone();
-                                        move |stratagy_values| {
-                                            let strategy_params = strategy_params_names
+                                        let pos_sizer_additional_params_names = pos_sizer_additional_params_names.clone();
+                                        let value = value.clone();
+                                        move |strategy_values| {
+                                            let strategy_params = value.clone()
                                                 .iter()
-                                                .zip(stratagy_values)
-                                                .map(|(name, value)| (name.clone(), value.clone()))
+                                                .zip(strategy_values)
+                                                .map(|(name, value)| (name.clone(), value))
+                                                .collect();
+
+                                            let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = pos_sizer_additional_params_names
+                                                .iter()
+                                                .map(|name| {
+                                                    let spec = self.pos_sizer_additional_params.get(name).unwrap();
+                                                    let val = spec.expand().into_iter().next().unwrap_or(serde_json::Value::Null);
+                                                    (name.clone(), val)
+                                                })
                                                 .collect();
 
                                             ParameterSet::new()
                                                 .with_strategy_params(strategy_params)
                                                 .with_pos_sizer_name(pos_sizer_name.clone())
-                                                .with_pos_sizer_additional_params(pos_sizer_additional_params.clone())
+                                                .with_pos_sizer_additional_params(pos_sizer_additional_params)
                                                 .with_pos_sizer_value(pos_sizer_val)
-                                                .with_slippage(slippage)  
+                                                .with_slippage(slippage)
                                         }
                                     })
                             }
@@ -328,18 +394,74 @@ impl GridSearchOptimizer {
     pub fn calculate_total_combinations(&self) -> usize {
         let strategy_combinations = self.config.strategy_params_ranges
             .values()
-            .map(|v| v.len())
+            .map(|spec| spec.count_expanded_values())
             .product::<usize>()
             .max(1);
 
-        if self.config.pos_sizer_value_range.len() != 0 {
-            strategy_combinations *
-            self.config.slippage_range.len() *
-            self.config.pos_sizer_value_range.len()
-        } else {
-            strategy_combinations *
-            self.config.slippage_range.len()
+        let pos_sizer_additional_combinations = self.config.pos_sizer_additional_params
+            .values()
+            .map(|spec| spec.count_expanded_values())
+            .product::<usize>()
+            .max(1);
+
+        let pos_sizer_value_count = self.config.pos_sizer_value_range.count_expanded_values().max(1);
+        let slippage_count = self.config.slippage_range.count_expanded_values().max(1);
+
+        let total_combinations = strategy_combinations
+            * pos_sizer_additional_combinations
+            * pos_sizer_value_count
+            * slippage_count;
+
+        total_combinations
+    }
+
+    /// Checks if the total memory required for grid search exceeds available system memory.
+    /// 
+    /// This method estimates the total memory needed to store all parameter combinations
+    /// generated by `generate_all_combinations_iter()` and compares it against 80% of available RAM.
+    /// If the estimated memory usage exceeds the limit, it returns an error to prevent OOM (Out of Memory).
+    /// 
+    /// The estimation is based on:
+    /// - Total number of combinations calculated via `calculate_total_combinations()`.
+    /// - Approximate size in bytes of a single `ParameterSet` (obtained by generating one sample set).
+    /// - 80% of available system memory as the safe threshold.
+    /// 
+    /// # Arguments
+    /// * `config` - The optimization configuration containing parameter ranges to estimate memory for.
+    /// 
+    /// # Returns
+    /// * `Ok(())` if memory usage is within limits.
+    /// * `Err` with a descriptive message if memory usage would exceed available RAM.
+    pub fn check_memory_limit(&self, config: &OptimizationConfig) -> anyhow::Result<()> {
+        let total_combinations = self.calculate_total_combinations();
+        if total_combinations == 0 {
+            return anyhow::Ok(());
         }
+
+        let sample_set = config.generate_all_combinations_iter().next();
+        let aprox_size_per_set = if let Some(set) = sample_set {
+            set.aproximate_size_in_bytes()
+        } else {
+            ParameterSet::new().aproximate_size_in_bytes()
+        };
+        let estimated_bytes = total_combinations as u64 * aprox_size_per_set as u64;
+
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_memory();
+        let available_memory = sys.available_memory() * 1024;
+        let limit_memory = (available_memory as f64 * 0.8) as u64;
+
+        if estimated_bytes > limit_memory {
+            anyhow::bail!(
+                "Grid search would require ~{} bytes ({} combinations * ~{} bytes per set), but only ~{} bytes are available (80% of available memory).",
+                estimated_bytes,
+                total_combinations,
+                aprox_size_per_set,
+                limit_memory
+            );
+        }
+
+        anyhow::Ok(())
     }
 
     /// Runs the grid search optimization.
@@ -354,11 +476,14 @@ impl GridSearchOptimizer {
         &self,
         fitness_function: F,
         threads: usize,
-        combinations: Vec<ParameterSet>,
+        // combinations: Vec<ParameterSet>,
+        config: &OptimizationConfig,
     ) -> Vec<OptimizationResult>
     where
         F: Fn(&ParameterSet) -> OptimizationResult + Send + Sync + 'static,
     {
+        let combinations: Vec<ParameterSet> = config.generate_all_combinations_iter().collect();
+
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -484,7 +609,7 @@ impl GAConfig {
 pub struct GeneticAlgorythm {
     ga_config: GAConfig,
     optimization_config: OptimizationConfig,
-    chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, Option<f64>>>>,
+    chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
     populations: Vec<Vec<ParameterSet>>,
 }
 
@@ -535,6 +660,10 @@ impl GeneticAlgorythm {
             // Beginer population
             let current_population = self.populations[gen_idx].clone();
             let results = self.evaluate_population(threads, &current_population, evaluate.clone())?;
+            if results.is_empty() {
+                println!("No new unique individuals to evaluate in generation {}. Stopping GA.", gen_idx);
+                break;
+            }
 
             let stat = self.calculate_generation_stats(&results, gen_idx);
             stats.push(stat.clone());
@@ -579,7 +708,7 @@ impl GeneticAlgorythm {
         let results = pool.install(|| {
             population
                 .par_iter()
-                .map(|params| {
+                .filter_map(|params| {
                     let start_time = std::time::Instant::now();
                     let current_count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
@@ -594,21 +723,21 @@ impl GeneticAlgorythm {
 
                     let cached_fitness = {
                         let bank = chromosome_bank.lock().unwrap();
-                        bank.get(&hash).copied().flatten()
+                        bank.get(&hash).copied()
                     };
 
-                    let fitness = if let Some(fitness) = cached_fitness {
-                        fitness
+                    if let Some(_fitness) = cached_fitness {
+                        println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
+                        None
                     } else {
                         let fitness = evaluate(params);
                         let mut bank = chromosome_bank.lock().unwrap();
-                        bank.insert(hash, Some(fitness));
-                        fitness
-                    };
+                        bank.insert(hash, fitness);
+                        drop(bank);
 
-                    println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
-
-                    (params.clone(), fitness)
+                        println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
+                        Some((params.clone(), fitness))
+                    }
                 })
                 .collect()
         });
@@ -618,21 +747,69 @@ impl GeneticAlgorythm {
 
     /// Creates the initial population by sampling from all possible parameter combinations.
     fn create_initial_population(&mut self, target_size: usize) {
-        let all_combinations = self.optimization_config.generate_all_combinations_vec();
-        let mut unique_pool: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        let mut population = Vec::with_capacity(target_size.min(all_combinations.len()));
+        let mut population = Vec::with_capacity(target_size);
         let mut rng = rand::thread_rng();
 
-        let sample_size = target_size.min(all_combinations.len());
-        let choices: Vec<_> = all_combinations.choose_multiple(&mut rng, sample_size).collect();
+        for _ in 0..target_size {
+            // 1. Generate strategy_params
+            let strategy_params: Vec<(String, serde_json::Value)> = self.optimization_config.strategy_params_ranges
+                .iter()
+                .map(|(name, spec)| {
+                    let (min, max) = spec.range_bounds();
+                    let mut val = rng.gen_range(min..=max);
+                    if let Some(step) = spec.step() {
+                        val = (val / step).round() * step;
+                        val = val.clamp(min, max);
+                    }
+                    (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap()))
+                })
+                .collect();
 
-        for param_set in choices {
-            let hash = hash_parameter_set(&param_set);
-            // println!("{}", hash);
-            if !unique_pool.contains(&hash) {
-                population.push(param_set.clone());
-                unique_pool.insert(hash);
-            }
+            // 2. Get pos_sizer_value
+            let pos_sizer_value = {
+                let (min, max) = self.optimization_config.pos_sizer_value_range.range_bounds();
+                let mut val = rng.gen_range(min..=max);
+                if let Some(step) = self.optimization_config.pos_sizer_value_range.step() {
+                    val = (val / step).round() * step;
+                    val = val.clamp(min, max);
+                }
+                val
+            };
+
+            // 3. Get slippage
+            let slippage = {
+                let (min, max) = self.optimization_config.slippage_range.range_bounds();
+                let mut val = rng.gen_range(min..=max);
+                if let Some(step) = self.optimization_config.slippage_range.step() {
+                    val = (val / step).round() * step;
+                    val = val.clamp(min, max);
+                }
+                val
+            };
+
+            // 4. Generate pos_sizer_additional_params
+            let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = self.optimization_config.pos_sizer_additional_params
+                .iter()
+                .map(|(name, spec)| {
+                    let (min, max) = spec.range_bounds();
+                    let mut val = rng.gen_range(min..=max);
+                    if let Some(step) = spec.step() {
+                        val = (val / step).round() * step;
+                        val = val.clamp(min, max);
+                    }
+                    (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap()))
+                })
+                .collect();
+            
+            // 5. Create ParameterSet
+            let param_set = ParameterSet::new()
+                .with_strategy_params(strategy_params)
+                .with_pos_sizer_name(self.optimization_config.pos_sizer_name.clone())
+                .with_pos_sizer_additional_params(pos_sizer_additional_params)
+                .with_pos_sizer_value(pos_sizer_value)
+                .with_slippage(slippage);
+
+            population.push(param_set);
         }
         
         self.populations.push(population);
@@ -687,9 +864,7 @@ impl GeneticAlgorythm {
     /// Calculates statistics for a generation.
     fn calculate_generation_stats(&self, results: &[(ParameterSet, f64)], gen_idx: usize) -> GAStatsPerGeneration {
         let fitness_values: Vec<f64> = results.iter().map(|(_, f)| *f).collect();
-        
         let (mean, best_fitness, worst_fitness) = self.calculate_stats(&fitness_values);
-
         let (best, worst, _) = match self.ga_config.fitness_direction.as_str() {
             "max" => (best_fitness, worst_fitness, std::cmp::Ordering::Greater),
             "min" => (worst_fitness, best_fitness, std::cmp::Ordering::Less),
@@ -714,41 +889,70 @@ impl GeneticAlgorythm {
 
     /// Performs crossover and mutation on two parent chromosomes to create a child.
     fn crossover_mutation(&self, a: &ParameterSet, b: &ParameterSet) -> ParameterSet {
-        let mut new_params = Vec::new();
+        let generate_new_set = || {
+            let mut new_params = Vec::new();
 
-        for ((name_a, val_a), (_, val_b)) in a.strategy_params.iter().zip(b.strategy_params.iter()) {
-            if rand::random::<f64>() < self.ga_config.p_crossover {
-                new_params.push((name_a.clone(), val_a.clone()));
-            } else {
-                new_params.push((name_a.clone(), val_b.clone()));
+            for ((name_a, val_a), (_, val_b)) in a.strategy_params.iter().zip(b.strategy_params.iter()) {
+                if rand::random::<f64>() < self.ga_config.p_crossover {
+                    new_params.push((name_a.clone(), val_a.clone()));
+                } else {
+                    new_params.push((name_a.clone(), val_b.clone()));
+                }
             }
+
+            let pos_sizer_value = if rand::random::<f64>() < self.ga_config.p_mutation {
+                let (min, max) = self.optimization_config.pos_sizer_value_range.range_bounds();
+                let mut val = thread_rng().gen_range(min..=max);
+                if let Some(step) = self.optimization_config.pos_sizer_value_range.step() {
+                    val = (val / step).round() * step;
+                    val = val.clamp(min, max);
+                }
+                val
+            } else {
+                a.pos_sizer_value
+            };
+
+            let slippage = if rand::random::<f64>() < self.ga_config.p_mutation {
+                let (min, max) = self.optimization_config.slippage_range.range_bounds();
+                let mut val = thread_rng().gen_range(min..=max);
+                if let Some(step) = self.optimization_config.slippage_range.step() {
+                    val = (val / step).round() * step;
+                    val = val.clamp(min, max);
+                }
+                val
+            } else {
+                a.slippage
+            };
+            
+            ParameterSet::new()
+                .with_strategy_params(new_params)
+                .with_pos_sizer_name(a.pos_sizer_name.clone())
+                .with_pos_sizer_value(pos_sizer_value)
+                .with_pos_sizer_additional_params(a.pos_sizer_additional_params.clone())
+                .with_slippage(slippage)
+        };
+
+        for _ in 0..10 {
+            let new_set = generate_new_set();
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for (k, v) in &new_set.strategy_params {
+                k.hash(&mut hasher);
+                format!("{:?}", v).hash(&mut hasher);
+            }
+            new_set.pos_sizer_value.to_bits().hash(&mut hasher);
+            new_set.slippage.to_bits().hash(&mut hasher);
+            let hash = hasher.finish();
+
+            let bank = self.chromosome_bank.lock().unwrap();
+                if !bank.contains_key(&hash) {
+                    drop(bank);
+                    return new_set;
+                }
+                drop(bank);
         }
 
-        let pos_sizer_value = if rand::random::<f64>() < self.ga_config.p_mutation {
-            self.optimization_config.pos_sizer_value_range
-                .choose(&mut rand::thread_rng())
-                .copied()
-                .unwrap_or(a.pos_sizer_value)
-        } else {
-            a.pos_sizer_value
-        };
-
-        let slippage = if rand::random::<f64>() < self.ga_config.p_mutation {
-            self.optimization_config.slippage_range
-                .choose(&mut rand::thread_rng())
-                .copied()
-                .unwrap_or(a.slippage)
-        } else {
-            a.slippage
-        };
-
-        ParameterSet::new()
-            .with_strategy_params(new_params)
-            .with_pos_sizer_name(a.pos_sizer_name.clone())
-            .with_pos_sizer_value(pos_sizer_value)
-            .with_pos_sizer_additional_params(a.pos_sizer_additional_params.clone())
-            .with_slippage(slippage)
-
+        a.clone()
     }
 
     /// Selects a parent chromosome using tournament selection.
@@ -803,6 +1007,45 @@ impl GeneticAlgorythm {
         }
 
         next_gen
+    }
+
+    /// Saves Genetic Algorithm generation statistics to a CSV file for later analysis and plotting.
+    /// 
+    /// This function writes the collected generation statistics to a CSV file in a format compatible
+    /// with the Python plotting script. The output file contains columns for generation number,
+    /// best fitness value, mean fitness value, and the chromosome ID of the best individual.
+    /// 
+    /// The file is saved to `{exit_results_path}/ga_optimization_results.csv` where `exit_results_path`
+    /// is taken from the provided `strategy_settings`.
+    /// 
+    /// # Arguments
+    /// - `best_individ`: Best fitness value in that generation
+    /// - `mean`: Average fitness value in that generation
+    /// - `best_hromosome_ID`: String representation of the best individual's parameters
+    pub fn save_generation_stats_to_csv(
+        &self,
+        stats: &[GAStatsPerGeneration],
+        strategy_settings: &settings::StrategySettings
+    ) -> anyhow::Result<()> {
+        let filename = format!(
+            "{}/ga_optimization_results.csv",
+            strategy_settings.exit_results_path,
+        );
+        let path = std::path::Path::new(&filename);
+
+        let mut wtr = csv::Writer::from_path(path)?;
+        wtr.write_record(&["number_of_generation", "best_individ", "mean", "best_hromosome_ID"])?;
+        for stat in stats {
+            wtr.write_record(&[
+                stat.generation.to_string(),
+                stat.best_fitness.to_string(),
+                stat.mean_fitness.to_string(),
+                stat.best_chromosome_id.join(", "),
+            ])?;
+        }
+        wtr.flush()?;
+
+        anyhow::Ok(())
     }
 
 }

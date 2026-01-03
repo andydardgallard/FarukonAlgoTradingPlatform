@@ -71,30 +71,27 @@ pub fn calculate_max_available_quantity(
 pub fn parse_optimization_config(
     strategy_settings: &settings::StrategySettings,
 ) -> optimization::OptimizationConfig {
-    let mut strategy_params_ranges = std::collections::HashMap::new();
-
-    for (key, values) in &strategy_settings.strategy_params {
-        strategy_params_ranges.insert(key.clone(), values.clone());
-    }
-
-    let mut pos_sizer_value_range = vec![0.0];
-    if strategy_settings.pos_sizer_params.pos_sizer_name != "1" {
-        pos_sizer_value_range = strategy_settings.pos_sizer_params.pos_sizer_value.clone();   
-    }
-
+    let strategy_params_ranges: std::collections::HashMap<String, settings::ParamSpec> = strategy_settings
+        .strategy_params
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.clone()))
+        .collect();
+    
+    let pos_sizer_value_range = strategy_settings.pos_sizer_params.pos_sizer_value.clone();
     let slippage_range = strategy_settings.slippage.clone();
-    let pos_sizer_name = strategy_settings.pos_sizer_params.pos_sizer_name.clone();
 
-    let mut pos_sizer_additional_params = std::collections::HashMap::new();
-    for (key, values) in &strategy_settings.pos_sizer_params.pos_sizer_params {
-        pos_sizer_additional_params.insert(key.clone(), values.clone());
-    }
+    let pos_sizer_additional_params: std::collections::HashMap<String, settings::ParamSpec> = strategy_settings
+        .pos_sizer_params
+        .pos_sizer_params
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.clone()))
+        .collect();
 
     optimization::OptimizationConfig::new()
         .with_strategy_params_ranges(strategy_params_ranges)
+        .with_pos_sizer_name(strategy_settings.pos_sizer_params.pos_sizer_name.clone())
         .with_pos_sizer_value_ranges(pos_sizer_value_range)
         .with_slippage_range(slippage_range)
-        .with_pos_sizer_name(pos_sizer_name)
         .with_pos_sizer_additional_params(pos_sizer_additional_params)
 }
 
@@ -110,18 +107,21 @@ pub fn create_stratagy_settings_from_params(
 ) -> settings::StrategySettings {
     let mut new_strategy_settings = strategy_settings.clone();
 
-    new_strategy_settings.pos_sizer_params.pos_sizer_value = vec![*params.get_pos_sizer_value()];
-    new_strategy_settings.slippage = vec![*params.get_slippage()];
+    new_strategy_settings.pos_sizer_params.pos_sizer_value = settings::ParamSpec::Discrete(vec![serde_json::Value::Number(serde_json::Number::from_f64(*params.get_pos_sizer_value()).unwrap())]);
+    new_strategy_settings.slippage = settings::ParamSpec::Discrete(vec![serde_json::Value::Number(serde_json::Number::from_f64(*params.get_slippage()).unwrap())]);
 
     let mut map = strategy_settings.strategy_params.clone();
     for (key, selected_value) in params.get_strategy_params() {
-        if let Some(existing_values) = map.get_mut(key) {
-            *existing_values = vec![selected_value.clone()];
-        } else {
-            map.insert(key.clone(), vec![selected_value.clone()]);
-        }
+        map.insert(key.clone(), settings::ParamSpec::Discrete(vec![selected_value.clone()]));
     }
     new_strategy_settings.strategy_params = map;
+
+    let mut ps_params_map = strategy_settings.pos_sizer_params.pos_sizer_params.clone();
+    for (key, selected_value) in params.get_pos_sizer_additional_params() {
+        ps_params_map.insert(key.clone(), settings::ParamSpec::Discrete(vec![selected_value.clone()]));
+    }
+    new_strategy_settings.pos_sizer_params.pos_sizer_params = ps_params_map;
+
     new_strategy_settings
 }
 
@@ -130,7 +130,6 @@ pub fn create_stratagy_settings_from_params(
 /// * `filename` - The name of the output file.
 /// # Returns
 /// * `anyhow::Result<()>` indicating success or failure.
-// #[allow(dead_code)] // TODO: Used for export
 pub fn export_equity_to_csv(
     equity_series: &Vec<(chrono::DateTime<chrono::Utc>, f64)>,
     strategy_settings: &settings::StrategySettings,
@@ -146,6 +145,20 @@ pub fn export_equity_to_csv(
     anyhow::Ok(())
 }
 
+/// Exports equity series and drawdown data to a CSV file for analysis and plotting.
+/// 
+/// This function creates a comprehensive CSV file containing the equity curve data
+/// along with drawdown information for performance analysis. The output file includes
+/// timestamps, capital values, absolute drawdown amounts, and percentage drawdowns.
+/// 
+/// The file is saved to `{exit_results_path}/equity_series.csv` where `exit_results_path`
+/// is taken from the provided `strategy_settings`.
+/// 
+/// # Arguments
+/// let equity_series = vec![(datetime1, 10000.0), (datetime2, 9900.0), (datetime3, 9950.0)];
+/// export_equity_drawdowns_to_csv(&drawdowns, &drawdowns_pct, &equity_series, &strategy_settings)?;
+/// // Creates: {exit_results_path}/equity_series.csv
+/// ```
 pub fn export_equity_drawdowns_to_csv(
     drawdowns: &Vec<f64>,
     drawdowns_pct: &Vec<f64>,
