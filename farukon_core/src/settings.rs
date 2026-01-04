@@ -103,11 +103,26 @@ impl ParamSpec {
     /// 
     /// # Returns
     /// The count of values in the expanded parameter space.
-    pub fn count_expanded_values(&self) -> usize {
+    pub fn count_expanded_values(&self) -> anyhow::Result<u128> {
         match self {
-            ParamSpec::Discrete(values) => values.len(),
+            ParamSpec::Discrete(values) => anyhow::Ok(values.len() as u128),
             ParamSpec::Range { start, end, step } => {
-                (((end - start) / step).floor() as usize) + 1
+                if *step <= 0.0 {
+                    return anyhow::Ok(0);
+                }
+                let range = *end - *start;
+                if range < 0.0 {
+                    return anyhow::Ok(0);
+                }
+                let count_f64 = (range / *step).floor() + 1.0;
+                if count_f64 > 1_000_000_000_000.0 {
+                    anyhow::bail!("Range {} to {} with step {} would generate too many values ({}). Aborting.", start, end,step,count_f64);
+                }
+                if count_f64 > std::u128::MAX as f64 {
+                    anyhow::Ok(std::u128::MAX)
+                } else {
+                    anyhow::Ok(count_f64 as u128)
+                }
             }
         }
     }

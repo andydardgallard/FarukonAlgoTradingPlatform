@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()>{
                     "Visual" => {
                         let total_combinations = optimization_runner
                             .get_grid_search_optimizer()
-                            .calculate_total_combinations();
+                            .calculate_total_combinations()?;
                         
                         if total_combinations == 1 {                        
                             let results = optimization_runner
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()>{
                             farukon_core::settings::OptimizerType::GridSearch => {
                                 let total_combinations = optimization_runner
                                     .get_grid_search_optimizer()
-                                    .calculate_total_combinations();
+                                    .calculate_total_combinations()?;
                                                                 
                                 let results = optimization_runner
                                     .run_grid_search(total_combinations, global_data_store);

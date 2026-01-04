@@ -391,28 +391,32 @@ impl GridSearchOptimizer {
     }
 
     /// Calculates the total number of parameter combinations to test.
-    pub fn calculate_total_combinations(&self) -> usize {
+    pub fn calculate_total_combinations(&self) -> anyhow::Result<u128> {
         let strategy_combinations = self.config.strategy_params_ranges
             .values()
             .map(|spec| spec.count_expanded_values())
-            .product::<usize>()
+            .collect::<anyhow::Result<Vec<u128>>>()?
+            .into_iter()
+            .product::<u128>()
             .max(1);
 
         let pos_sizer_additional_combinations = self.config.pos_sizer_additional_params
             .values()
             .map(|spec| spec.count_expanded_values())
-            .product::<usize>()
+            .collect::<anyhow::Result<Vec<u128>>>()?
+            .into_iter()
+            .product::<u128>()
             .max(1);
 
-        let pos_sizer_value_count = self.config.pos_sizer_value_range.count_expanded_values().max(1);
-        let slippage_count = self.config.slippage_range.count_expanded_values().max(1);
+        let pos_sizer_value_count = self.config.pos_sizer_value_range.count_expanded_values()?.max(1);
+        let slippage_count = self.config.slippage_range.count_expanded_values()?.max(1);
 
         let total_combinations = strategy_combinations
             * pos_sizer_additional_combinations
             * pos_sizer_value_count
             * slippage_count;
 
-        total_combinations
+        anyhow::Ok(total_combinations)
     }
 
     /// Checks if the total memory required for grid search exceeds available system memory.
@@ -433,9 +437,17 @@ impl GridSearchOptimizer {
     /// * `Ok(())` if memory usage is within limits.
     /// * `Err` with a descriptive message if memory usage would exceed available RAM.
     pub fn check_memory_limit(&self, config: &OptimizationConfig) -> anyhow::Result<()> {
-        let total_combinations = self.calculate_total_combinations();
+        let total_combinations = self.calculate_total_combinations()?;
         if total_combinations == 0 {
             return anyhow::Ok(());
+        }
+
+        if total_combinations > std::usize::MAX as u128 {
+            anyhow::bail!(
+                "Total combinations ({}) exceed maximum possible value ({}).",
+                total_combinations,
+                std::usize::MAX
+            );
         }
 
         let sample_set = config.generate_all_combinations_iter().next();
@@ -444,7 +456,8 @@ impl GridSearchOptimizer {
         } else {
             ParameterSet::new().aproximate_size_in_bytes()
         };
-        let estimated_bytes = total_combinations as u64 * aprox_size_per_set as u64;
+        let total_combinations_u64 = total_combinations as u64;
+        let estimated_bytes = total_combinations_u64 as u64 * aprox_size_per_set as u64;
 
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();

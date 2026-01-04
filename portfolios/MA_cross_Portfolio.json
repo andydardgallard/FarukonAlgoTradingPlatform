@@ -42,20 +42,7 @@
             "portfolio_settings_for_strategy": {
                 "metrics_calculation_mode": "offline"
             },
-            "optimizer_type": {
-                "Genetic": {
-                    "ga_params": {
-                        "population_size": 25,
-                        "p_crossover": 0.8,
-                        "p_mutation": 0.2,
-                        "max_generations": 12,
-                        "fitness_params": {
-                            "fitness_direction": "max",
-                            "fitness_value": "APR/DD_factor"
-                        }
-                    }
-                }
-            }
+            "optimizer_type": "Grid_Search"
         }
     }
 }

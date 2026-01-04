@@ -81,8 +81,7 @@ impl OptimizationRunner {
     /// * A vector of `OptimizationResult` objects, one for each evaluated parameter set.
     pub fn run_grid_search(
         &self,
-        total_combinations: usize,
-        // combinations_to_grid_search: Vec<farukon_core::optimization::ParameterSet>,
+        total_combinations: u128,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>
     ) -> Vec<farukon_core::optimization::OptimizationResult> {
         // Runs Grid Search in parallel across all CPU cores.
