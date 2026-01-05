@@ -1050,7 +1050,10 @@ impl GeneticAlgorythm {
         );
         let path = std::path::Path::new(&filename);
 
-        let mut wtr = csv::Writer::from_path(path)?;
+        let mut wtr = csv::WriterBuilder::new()
+            .delimiter(b';')
+            .from_path(path)?;
+        
         wtr.write_record(&["number_of_generation", "best_individ", "mean", "best_hromosome_ID"])?;
         for stat in stats {
             wtr.write_record(&[

@@ -11,7 +11,7 @@ def plot_portfolio_genetic_results(folder) -> None:
         plot_data = pd.read_csv(
             fin,
             header= 0,
-            sep= ',',
+            sep= ';',
         )
     
     plt.figure("Genetic Algorythm Results", figsize=(14, 8))
