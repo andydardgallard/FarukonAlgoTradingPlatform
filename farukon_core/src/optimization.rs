@@ -669,21 +669,23 @@ impl GeneticAlgorythm {
         self.create_initial_population(total_population);
 
         for gen_idx in 0..self.ga_config.max_generations {
+            let start_time = std::time::Instant::now();
             println!("Generation: # {}", gen_idx);
+
             // Beginer population
             let current_population = self.populations[gen_idx].clone();
             let results = self.evaluate_population(threads, &current_population, evaluate.clone())?;
-            if results.is_empty() {
-                println!("No new unique individuals to evaluate in generation {}. Stopping GA.", gen_idx);
-                break;
-            }
-
             let stat = self.calculate_generation_stats(&results, gen_idx);
             stats.push(stat.clone());
 
             println!(
-                "Generation {}: Best Fitness= {:.3}, Mean Fitness= {:.3}, Worst Fitness= {:.3}",
-                gen_idx, stat.best_fitness, stat.mean_fitness, stat.worst_fitness
+                "Generation {}: Time elapsed: {:.3} seconds, Best Fitness= {:.3}, Mean Fitness= {:.3}, Worst Fitness= {:.3}, Chromosome ID: {:?}",
+                gen_idx,
+                start_time.elapsed().as_secs_f64(),
+                stat.best_fitness,
+                stat.mean_fitness,
+                stat.worst_fitness,
+                stat.best_chromosome_id
             );
 
             // Next Populations 
@@ -721,7 +723,7 @@ impl GeneticAlgorythm {
         let results = pool.install(|| {
             population
                 .par_iter()
-                .filter_map(|params| {
+                .map(|params| {
                     let start_time = std::time::Instant::now();
                     let current_count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
@@ -739,18 +741,20 @@ impl GeneticAlgorythm {
                         bank.get(&hash).copied()
                     };
 
-                    if let Some(_fitness) = cached_fitness {
+                    let fitness = if let Some(cahed_f) = cached_fitness {
                         println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
-                        None
+                        cahed_f
                     } else {
-                        let fitness = evaluate(params);
+                        let calculated_f = evaluate(params);
                         let mut bank = chromosome_bank.lock().unwrap();
-                        bank.insert(hash, fitness);
+                        bank.insert(hash, calculated_f);
                         drop(bank);
 
                         println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
-                        Some((params.clone(), fitness))
-                    }
+                        calculated_f
+                    };
+                    (params.clone(), fitness)
+
                 })
                 .collect()
         });

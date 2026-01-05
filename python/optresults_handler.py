@@ -91,8 +91,8 @@ def plot_set(args) -> None:
 
     for n in range(0, len(results_list)):
         ax = plt.subplot(subplots_cell, subplots_cell, n + 1)
-        y = results[results_list[n]]
-        line, = ax.plot(x, y)
+        y = sorted_results[results_list[n]]
+        ax.plot(x, y)
         ax.set_title(results_list[n], fontsize=10)
         ax.set_xlabel("")
         ax.grid(True)

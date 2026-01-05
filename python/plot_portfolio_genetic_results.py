@@ -26,8 +26,9 @@ def plot_portfolio_genetic_results(folder) -> None:
     x = plot_data["number_of_generation"]
     y1 = plot_data["best_individ"]
     y2 = plot_data["mean"]
+    
     plt.plot(x, y1, y2)
-    plt.text(x[1], y1[1], f'{plot_data["best_hromosome_ID"].iloc[-1]}')
+    plt.text(x[1], y1[1] * 0.98, f'{plot_data["best_hromosome_ID"].iloc[-1]}', fontsize= 8)
     plt.grid(True)
     plt.show()
 
