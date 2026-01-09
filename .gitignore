@@ -7,5 +7,5 @@ SYMI*
 /portfolios/Debug_Portfolio.json
 lib.rs
 out.csv
-cargo.lock
+Cargo.lock
 /SWAP

@@ -23,7 +23,6 @@ pub fn margin_call_control_for_signal(
     let signal_name = &signal_event.signal_name;
     
     if signal_name != "EXIT" {
-        let symbol = &signal_event.symbol;
         let instrument_type = &instrument_info.instrument_type;
         
         if instrument_type == "futures" {
@@ -34,7 +33,6 @@ pub fn margin_call_control_for_signal(
             if capital > initial_margin {
                 return anyhow::Ok(true);
             } else {
-                println!("Not enough initial margin {initial_margin} to entry {symbol} #{quantity} = {capital}! Order will not send!");
                 return anyhow::Ok(false);
             }
         }

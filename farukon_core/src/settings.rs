@@ -172,6 +172,7 @@ impl Default for FitnessValue {
 #[serde(deny_unknown_fields)]
 pub struct GAParams {
     pub population_size: usize,
+    pub elite_size: usize,
     pub p_crossover: f64,
     pub p_mutation: f64,
     pub max_generations: usize,
@@ -338,13 +339,11 @@ fn check_args(
 
     // check portfolio
     {
-        let strategies = settings.portfolio.keys();
-        for strategy in strategies {
-            let strategy_settings = settings.portfolio.get(strategy).unwrap();
+        for (_strategy, strategy_settings) in settings.portfolio.iter_mut() {
 
             // check optimizer type
             {
-                match &strategy_settings.optimizer_type {
+                match &mut strategy_settings.optimizer_type {
                     OptimizerType::Genetic { ga_params }=> {
                         if ga_params.population_size == 0 {
                             anyhow::bail!("GA population_size must be greater than 0");
@@ -357,6 +356,11 @@ fn check_args(
                         }
                         if ga_params.max_generations == 0 {
                             anyhow::bail!("GA max_generations must be greater than 0");
+                        }
+
+                        let max_elite_size = (ga_params.population_size as f64).sqrt() as usize;
+                        if ga_params.elite_size > max_elite_size {
+                            ga_params.elite_size = max_elite_size;
                         }
 
                         // check fitness_direction

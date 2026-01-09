@@ -10,6 +10,7 @@ use std::hash::Hasher;
 use rayon::prelude::*;
 use itertools::Itertools;
 
+use crate::utils;
 use crate::settings;
 use crate::performance;
 
@@ -55,7 +56,7 @@ impl OptimizationResult {
 
 /// Represents a single set of strategy, position sizing, and slippage parameters.
 /// Used as input to the backtest engine during optimization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParameterSet {
     /// Strategy-specific parameters (e.g., short_window, long_window).
     strategy_params: Vec<(String, serde_json::Value)>,
@@ -574,6 +575,7 @@ impl GAStatsPerGeneration {
 #[derive(Debug, Clone)]
 pub struct GAConfig {
     population_size: usize,
+    elite_size: usize,
     max_generations: usize,
     p_crossover: f64,
     p_mutation: f64,
@@ -586,6 +588,7 @@ impl GAConfig {
     pub fn new() -> Self {
         Self {
             population_size: 0,
+            elite_size: 0,
             max_generations: 0,
             p_crossover: 0.0,
             p_mutation: 0.0,
@@ -598,6 +601,7 @@ impl GAConfig {
     pub fn from_settings(ga_params: &settings::GAParams) -> Self {
         Self {
             population_size: ga_params.population_size,
+            elite_size: ga_params.elite_size,
             max_generations: ga_params.max_generations,
             p_crossover: ga_params.p_crossover,
             p_mutation: ga_params.p_mutation,
@@ -764,71 +768,16 @@ impl GeneticAlgorythm {
 
     /// Creates the initial population by sampling from all possible parameter combinations.
     fn create_initial_population(&mut self, target_size: usize) {
-        let mut population = Vec::with_capacity(target_size);
         let mut rng = rand::thread_rng();
-
-        for _ in 0..target_size {
-            // 1. Generate strategy_params
-            let strategy_params: Vec<(String, serde_json::Value)> = self.optimization_config.strategy_params_ranges
-                .iter()
-                .map(|(name, spec)| {
-                    let (min, max) = spec.range_bounds();
-                    let mut val = rng.gen_range(min..=max);
-                    if let Some(step) = spec.step() {
-                        val = (val / step).round() * step;
-                        val = val.clamp(min, max);
-                    }
-                    (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap()))
-                })
-                .collect();
-
-            // 2. Get pos_sizer_value
-            let pos_sizer_value = {
-                let (min, max) = self.optimization_config.pos_sizer_value_range.range_bounds();
-                let mut val = rng.gen_range(min..=max);
-                if let Some(step) = self.optimization_config.pos_sizer_value_range.step() {
-                    val = (val / step).round() * step;
-                    val = val.clamp(min, max);
-                }
-                val
-            };
-
-            // 3. Get slippage
-            let slippage = {
-                let (min, max) = self.optimization_config.slippage_range.range_bounds();
-                let mut val = rng.gen_range(min..=max);
-                if let Some(step) = self.optimization_config.slippage_range.step() {
-                    val = (val / step).round() * step;
-                    val = val.clamp(min, max);
-                }
-                val
-            };
-
-            // 4. Generate pos_sizer_additional_params
-            let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = self.optimization_config.pos_sizer_additional_params
-                .iter()
-                .map(|(name, spec)| {
-                    let (min, max) = spec.range_bounds();
-                    let mut val = rng.gen_range(min..=max);
-                    if let Some(step) = spec.step() {
-                        val = (val / step).round() * step;
-                        val = val.clamp(min, max);
-                    }
-                    (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap()))
-                })
-                .collect();
-            
-            // 5. Create ParameterSet
-            let param_set = ParameterSet::new()
-                .with_strategy_params(strategy_params)
-                .with_pos_sizer_name(self.optimization_config.pos_sizer_name.clone())
-                .with_pos_sizer_additional_params(pos_sizer_additional_params)
-                .with_pos_sizer_value(pos_sizer_value)
-                .with_slippage(slippage);
-
-            population.push(param_set);
-        }
-        
+        let population = utils::generate_lhs_parameter_sets(
+            &self.optimization_config.strategy_params_ranges,
+            &self.optimization_config.pos_sizer_value_range,
+            &self.optimization_config.slippage_range,
+            &self.optimization_config.pos_sizer_additional_params,
+            &self.optimization_config.pos_sizer_name,
+            target_size,
+            &mut rng
+        );
         self.populations.push(population);
     }
 
@@ -881,23 +830,40 @@ impl GeneticAlgorythm {
     /// Calculates statistics for a generation.
     fn calculate_generation_stats(&self, results: &[(ParameterSet, f64)], gen_idx: usize) -> GAStatsPerGeneration {
         let fitness_values: Vec<f64> = results.iter().map(|(_, f)| *f).collect();
-        let (mean, best_fitness, worst_fitness) = self.calculate_stats(&fitness_values);
-        let (best, worst, _) = match self.ga_config.fitness_direction.as_str() {
-            "max" => (best_fitness, worst_fitness, std::cmp::Ordering::Greater),
-            "min" => (worst_fitness, best_fitness, std::cmp::Ordering::Less),
-            _ => (best_fitness, worst_fitness, std::cmp::Ordering::Greater),
+        let (mean, _best_fitness_calc, _worst_fitness_calc) = self.calculate_stats(&fitness_values);
+
+        let best_result_entry = match self.ga_config.fitness_direction.as_str() {
+            "max" => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            "min" => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            _ => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+        };
+        let (best_params, best_fitness_actual) = if let Some((params, fitness)) = best_result_entry {
+            (params, *fitness)
+        } else {
+            return GAStatsPerGeneration::new()
+                .with_best_fitness(0.0)
+                .with_worst_fitness(0.0)
+                .with_mean_fitness(0.0)
+                .with_best_chromosome_id(vec![])
+                .with_generation(gen_idx);
         };
 
-        let best_params = results.iter()
-            .find(|(_, f)| (*f - best).abs() < 1e-8)
-            .map(|(p, _)| p)
-            .unwrap_or(&results[0].0);
+        let worst_result_entry = match self.ga_config.fitness_direction.as_str() {
+            "max" => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            "min" => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            _ => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+        };
+        let worst_fitness_actual = if let Some((_, fitness)) = worst_result_entry {
+            *fitness
+        } else {
+            0.0
+        };
 
         let best_chromosome_id = self.create_chromosome_id_for_display(best_params);
 
         GAStatsPerGeneration::new()
-            .with_best_fitness(best)
-            .with_worst_fitness(worst)
+            .with_best_fitness(best_fitness_actual)
+            .with_worst_fitness(worst_fitness_actual)
             .with_mean_fitness(mean)
             .with_best_chromosome_id(best_chromosome_id)
             .with_generation(gen_idx)
@@ -906,96 +872,251 @@ impl GeneticAlgorythm {
 
     /// Performs crossover and mutation on two parent chromosomes to create a child.
     fn crossover_mutation(&self, a: &ParameterSet, b: &ParameterSet) -> ParameterSet {
-        let generate_new_set = || {
-            let mut new_params = Vec::new();
+        let max_attempts = (self.ga_config.population_size as f64).sqrt() as usize;
+        for _ in 0..max_attempts {
+            // 1. Crossover
+            let child_after_crossover = self.perform_crossover(a, b);
 
-            for ((name_a, val_a), (_, val_b)) in a.strategy_params.iter().zip(b.strategy_params.iter()) {
-                if rand::random::<f64>() < self.ga_config.p_crossover {
-                    new_params.push((name_a.clone(), val_a.clone()));
-                } else {
-                    new_params.push((name_a.clone(), val_b.clone()));
-                }
-            }
+            // 2. Mutation
+            let new_set = self.perform_mutation(child_after_crossover);
 
-            let pos_sizer_value = if rand::random::<f64>() < self.ga_config.p_mutation {
-                let (min, max) = self.optimization_config.pos_sizer_value_range.range_bounds();
-                let mut val = thread_rng().gen_range(min..=max);
-                if let Some(step) = self.optimization_config.pos_sizer_value_range.step() {
-                    val = (val / step).round() * step;
-                    val = val.clamp(min, max);
-                }
-                val
-            } else {
-                a.pos_sizer_value
-            };
-
-            let slippage = if rand::random::<f64>() < self.ga_config.p_mutation {
-                let (min, max) = self.optimization_config.slippage_range.range_bounds();
-                let mut val = thread_rng().gen_range(min..=max);
-                if let Some(step) = self.optimization_config.slippage_range.step() {
-                    val = (val / step).round() * step;
-                    val = val.clamp(min, max);
-                }
-                val
-            } else {
-                a.slippage
-            };
-            
-            ParameterSet::new()
-                .with_strategy_params(new_params)
-                .with_pos_sizer_name(a.pos_sizer_name.clone())
-                .with_pos_sizer_value(pos_sizer_value)
-                .with_pos_sizer_additional_params(a.pos_sizer_additional_params.clone())
-                .with_slippage(slippage)
-        };
-
-        for _ in 0..10 {
-            let new_set = generate_new_set();
-
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            for (k, v) in &new_set.strategy_params {
-                k.hash(&mut hasher);
-                format!("{:?}", v).hash(&mut hasher);
-            }
-            new_set.pos_sizer_value.to_bits().hash(&mut hasher);
-            new_set.slippage.to_bits().hash(&mut hasher);
-            let hash = hasher.finish();
-
+            // 3. Check in chromosome bank
+            let hash = hash_parameter_set(&new_set);
             let bank = self.chromosome_bank.lock().unwrap();
                 if !bank.contains_key(&hash) {
                     drop(bank);
                     return new_set;
                 }
                 drop(bank);
-        }
-
+            }
         a.clone()
+
     }
 
-    /// Selects a parent chromosome using tournament selection.
-    fn choose_parent(&self, results: &[(ParameterSet, f64)], rng: &mut impl rand::Rng) -> ParameterSet {
-        let idx_a = rng.gen_range(0..results.len());
-        let idx_b = rng.gen_range(0..results.len());
-        let (params_a, fitness_a) = &results[idx_a];
-        let (params_b, fitness_b) = &results[idx_b];
-    
-        match self.ga_config.fitness_direction.as_str() {
-            "max" => {
-                if fitness_a >= fitness_b {
-                    params_a.clone()
+    /// Applies mutation to a single `ParameterSet`.
+    ///
+    /// This function iterates through each parameter (strategy, pos_sizer_value, slippage, pos_sizer_additional_params)
+    /// and applies mutation based on the configured `p_mutation` probability.
+    /// For each parameter, it retrieves the corresponding `ParamSpec` and uses it to generate a new value.
+    /// The mutated `ParameterSet` is returned.
+    ///
+    /// # Arguments
+    /// * `param_set` - The `ParameterSet` to mutate.
+    ///
+    /// # Returns
+    /// A new `ParameterSet` with potentially mutated parameters.
+    fn perform_mutation(&self, mut param_set: ParameterSet) -> ParameterSet {
+        let mut rng = thread_rng();
+
+        // 5 Mutation for strategy_params
+        param_set.strategy_params = param_set.strategy_params
+            .into_iter()
+            .map(|(name, old_val)| {
+                if rng.r#gen::<f64>() < self.ga_config.p_mutation {
+                    let new_val = self.mutate_param_value(&name, old_val.clone(), &self.optimization_config.strategy_params_ranges);
+                    (name, new_val)
                 } else {
-                    params_b.clone()
+                    (name, old_val)
                 }
-            },
-            "min" => {
-                if fitness_a <= fitness_b {
-                    params_a.clone()
+            })
+            .collect::<Vec<_>>();
+
+        // 6 Mutation for pos_sizer_value
+        if rng.r#gen::<f64>() < self.ga_config.p_mutation {
+            param_set.pos_sizer_value = self.mutate_param_f64(
+                param_set.pos_sizer_value,
+                &self.optimization_config.pos_sizer_value_range
+            );
+        }
+
+        // 7 Mutation for slippage
+        if rng.r#gen::<f64>() < self.ga_config.p_mutation {
+            param_set.slippage = self.mutate_param_f64(
+                param_set.slippage,
+                &self.optimization_config.slippage_range
+            );
+        }
+
+        // 8 Mutation for pos_sizer_additional_params
+        param_set.pos_sizer_additional_params = param_set.pos_sizer_additional_params
+            .into_iter()
+            .map(|(name, old_val)| {
+                if rng.r#gen::<f64>() < self.ga_config.p_mutation {
+                    if let Some(spec) = self.optimization_config.pos_sizer_additional_params.get(&name) {
+                        let new_val = self.mutate_param_value_json(old_val.clone(), spec);
+                        (name, new_val)
+                    } else {
+                        (name, old_val)
+                    }
                 } else {
-                    params_b.clone()
+                    (name, old_val)
+                }
+            })
+            .collect::<Vec<_>>();
+        param_set
+    }
+
+    /// Mutates an `f64` value based on its `ParamSpec`.
+    ///
+    /// Handles both `Discrete` and `Range` specifications.
+    /// For `Discrete`, selects a random value from the list.
+    /// For `Range`, generates a random value within the bounds, applying the step if defined.
+    ///
+    /// # Arguments
+    /// * `old_val` - The current `f64` value.
+    /// * `spec` - The `settings::ParamSpec` defining the valid values for this parameter.
+    ///
+    /// # Returns
+    /// A new `f64` value resulting from the mutation.
+    fn mutate_param_f64(&self, old_val: f64, spec: &settings::ParamSpec) -> f64 {
+        let mut rng = thread_rng();
+        match spec {
+            settings::ParamSpec::Discrete(values) => {
+                if !values.is_empty() {
+                    if let Some(random_json_value) = values.choose(&mut rng) {
+                        if let Some(random_f64_val) = random_json_value.as_f64() {
+                            random_f64_val
+                        } else {
+                            old_val
+                        }
+                    } else {
+                        old_val
+                    }
+                } else {
+                    old_val
                 }
             }
-            _ => params_a.clone(),
+            settings::ParamSpec::Range { start, end, .. } => {
+                let mut val = rng.gen_range(*start..=*end);
+                if let Some(step_val) = spec.step() {
+                    val = (val / step_val).round() * step_val;
+                    val = val.clamp(*start, *end);
+                }
+                val
+            }
         }
+    }
+
+    /// Delegates mutation of a `serde_json::Value` based on its name and the overall parameter map.
+    ///
+    /// Looks up the `ParamSpec` for the given parameter name and calls `mutate_param_value_json`.
+    ///
+    /// # Arguments
+    /// * `_name` - The name of the parameter (used to find its spec).
+    /// * `old_val` - The current `serde_json::Value`.
+    /// * `config_map` - A map of parameter names to their `ParamSpec`.
+    ///
+    /// # Returns
+    /// A new `serde_json::Value` resulting from the mutation.
+    fn mutate_param_value(&self, _name: &str, old_val: serde_json::Value, config_map: &std::collections::HashMap<String, settings::ParamSpec>) -> serde_json::Value {
+        if let Some(spec) = config_map.get(_name) {
+            self.mutate_param_value_json(old_val, spec)
+        } else {
+            old_val
+        }
+    }
+
+    /// Mutates a `serde_json::Value` based on its `ParamSpec`.
+    ///
+    /// Handles both `Discrete` and `Range` specifications.
+    /// For `Discrete`, selects a random `Value` from the list.
+    /// For `Range`, generates a new `f64` value and wraps it in a `Value::Number`.
+    ///
+    /// # Arguments
+    /// * `_old_val` - The current `serde_json::Value` (not directly used here, but passed in for consistency).
+    /// * `spec` - The `settings::ParamSpec` defining the valid values for this parameter.
+    ///
+    /// # Returns
+    /// A new `serde_json::Value` resulting from the mutation.
+    fn mutate_param_value_json(&self, _old_val: serde_json::Value, spec: &settings::ParamSpec) -> serde_json::Value {
+        let mut rng = thread_rng();
+        match spec {
+            settings::ParamSpec::Discrete(values) => {
+                if !values.is_empty() {
+                    let random_val = values.choose(&mut rng).unwrap();
+                    random_val.clone()
+                } else {
+                    _old_val
+                }
+            }
+            settings::ParamSpec::Range { start, end, .. } => {
+                let mut val = rng.gen_range(*start..=*end);
+                if let Some(step_val) = spec.step() {
+                    val = (val / step_val).round() * step_val;
+                    val = val.clamp(*start, *end);
+                }
+                serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap())
+            }
+        }
+    }
+
+    /// Performs crossover between two parent `ParameterSet`s.
+    ///
+    /// This function combines parameters from two parents (`a` and `b`) to create a new offspring.
+    /// Crossover is applied to `strategy_params`, `pos_sizer_value`, `slippage`, and `pos_sizer_additional_params`
+    /// based on the configured `p_crossover` probability.
+    /// Parameters are matched by name (using HashMaps for efficient lookup).
+    ///
+    /// # Arguments
+    /// * `a` - The first parent `ParameterSet`.
+    /// * `b` - The second parent `ParameterSet`.
+    ///
+    /// # Returns
+    /// A new `ParameterSet` representing the offspring.
+    fn perform_crossover(&self, a: &ParameterSet, b: &ParameterSet) -> ParameterSet {
+        let mut rng = thread_rng();
+
+        // 1. Crossover for strategy_params
+        let b_params_map: std::collections::HashMap<&String, &serde_json::Value> = b.strategy_params.iter().map(|(k, v)| (k, v)).collect();
+        let mut new_strategy_params = Vec::new();
+        for (name_a, val_a) in &a.strategy_params {
+            if let Some(val_b) = b_params_map.get(name_a) {
+                if rng.r#gen::<f64>() < self.ga_config.p_crossover {
+                    new_strategy_params.push((name_a.clone(), (*val_a).clone()));
+                } else {
+                    new_strategy_params.push((name_a.clone(), (*val_b).clone()));
+                }
+            } else {
+                new_strategy_params.push((name_a.clone(), (*val_a).clone()));
+            }
+        }
+
+        // 2. Crossover for pos_sizer_value
+        let pos_sizer_value_after_crossover = if rng.r#gen::<f64>() < self.ga_config.p_crossover {
+            a.pos_sizer_value
+        } else {
+            b.pos_sizer_value
+        };
+
+        // 3. Crossover for slippage
+        let slippage_after_crossover = if rng.r#gen::<f64>() < self.ga_config.p_crossover {
+            a.slippage
+        } else {
+            b.slippage
+        };
+
+        // 4. Crossover for pos_sizer_additional_params
+        let b_psap_map: std::collections::HashMap<&String, &serde_json::Value> = b.pos_sizer_additional_params.iter().map(|(k, v)| (k, v)).collect();
+        let mut new_pos_sizer_additional_params = Vec::new();
+        for (name_a, val_a) in &a.pos_sizer_additional_params {
+            if let Some(val_b) = b_psap_map.get(name_a) {
+                if rng.r#gen::<f64>() < self.ga_config.p_crossover {
+                    new_pos_sizer_additional_params.push((name_a.clone(), (*val_a).clone()));
+                } else {
+                    new_pos_sizer_additional_params.push((name_a.clone(), (*val_b).clone()));
+                }
+            } else {
+                new_pos_sizer_additional_params.push((name_a.clone(), (*val_a).clone()));
+            }
+        };
+
+        ParameterSet::new()
+            .with_strategy_params(new_strategy_params)
+            .with_pos_sizer_name(a.pos_sizer_name.clone())
+            .with_pos_sizer_value(pos_sizer_value_after_crossover)
+            .with_pos_sizer_additional_params(new_pos_sizer_additional_params)
+            .with_slippage(slippage_after_crossover)
+
     }
 
     /// Performs tournament selection to create the next generation.
@@ -1003,27 +1124,110 @@ impl GeneticAlgorythm {
         let mut next_gen = Vec::with_capacity(self.ga_config.population_size);
         let mut rng = rand::thread_rng();
 
-        // Save bset individ
-        let best_individ = match self.ga_config.fitness_direction.as_str() {
-            "max" => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
-            "min" => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
-            _ => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
-        };
+        // 1. Save best individs
+        let mut sorted_results = results.to_vec();
+        sorted_results.sort_by(|a, b| {
+            match self.ga_config.fitness_direction.as_str() {
+                "max" => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
+                "min" => a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal),
+                _ => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
+            }
+        });
 
-        if let Some((best_params, _)) = best_individ {
-            next_gen.push(best_params.clone());
+        let elite_count = self.ga_config.elite_size.min(self.ga_config.population_size);
+        let mut elite = Vec::with_capacity(elite_count);
+        for i in 0..elite_count {
+            let elite_individ = sorted_results[i].0.clone();
+            next_gen.push(elite_individ.clone());
+            elite.push(elite_individ);
         }
 
-        // tournament selection
-        while next_gen.len() < self.ga_config.population_size {
-            let parent_a = self.choose_parent(results, &mut rng);
-            let parent_b = self.choose_parent(results, &mut rng);
-
-            let child = self.crossover_mutation(&parent_a, &parent_b);
-            next_gen.push(child);
+        // 2. add random individs
+        let random_count = (self.ga_config.population_size as f64).sqrt() as usize;
+        let random_sets = utils::generate_lhs_parameter_sets(
+            &self.optimization_config.strategy_params_ranges,
+            &self.optimization_config.pos_sizer_value_range,
+            &self.optimization_config.slippage_range,
+            &self.optimization_config.pos_sizer_additional_params,
+            &self.optimization_config.pos_sizer_name,
+            random_count,
+            &mut rng
+        );
+        for random_set in random_sets {
+            let hash = hash_parameter_set(&random_set);
+            let bank = self.chromosome_bank.lock().unwrap();
+            if !bank.contains_key(&hash) {
+                drop(bank);
+                next_gen.push(random_set);
+            } else {
+                drop(bank);
+                let fallback = self.generate_random_individ();
+                next_gen.push(fallback);
+            }
         }
 
+        // 3. tournament selection
+        let remaining_slots = self.ga_config.population_size - next_gen.len();
+        let elite_set: std::collections::HashSet<u64> = elite
+            .iter()
+            .map(|p| hash_parameter_set(p))
+            .collect();
+        let mut seen_hashes = std::collections::HashSet::new();
+        let mut uniqe_other_results = Vec::new();
+        for (params, fitness) in &sorted_results {
+            let hash = hash_parameter_set(params);
+            if elite_set.contains(&hash) || seen_hashes.contains(&hash) {
+                continue;
+            }
+            seen_hashes.insert(hash);
+            uniqe_other_results.push((params, fitness));
+        }
+
+        for _ in 0..remaining_slots {
+            // choose parant_a randomly from elite
+            let elite_parent = elite[rng.gen_range(0..elite.len())].clone();
+            let other_results = &uniqe_other_results;
+            
+            if other_results.is_empty() {
+                let non_elite_in_next_gen: Vec<_> = next_gen.iter()
+                    .filter(|individ| !elite.iter().any(|elite_params| elite_params == *individ))
+                    .collect();
+
+                let fallback_parent = if !non_elite_in_next_gen.is_empty() {
+                    non_elite_in_next_gen[rng.gen_range(0..non_elite_in_next_gen.len())].clone()
+                } else {
+                    other_results[rng.gen_range(0..other_results.len())].0.clone()
+                };
+
+                let child = self.crossover_mutation(&elite_parent, &fallback_parent);
+                next_gen.push(child);
+                continue;
+            }
+
+            let tournament_size = 2;
+            let mut tournament_contestants = Vec::new();
+            for _ in 0..tournament_size {
+                let idx = rng.gen_range(0..other_results.len());
+                tournament_contestants.push(other_results[idx]);
+            }
+            let parent_b = match self.ga_config.fitness_direction.as_str() {
+                "max" => tournament_contestants.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+                "min" => tournament_contestants.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+                _ => tournament_contestants.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+            };
+            if let Some((params_b, _)) = parent_b {
+                let child = self.crossover_mutation(&elite_parent, params_b);
+                next_gen.push(child);
+            } else {
+                let fallback_parent = &other_results[rng.gen_range(0..other_results.len())].0;
+                let child = self.crossover_mutation(&elite_parent, fallback_parent);
+                next_gen.push(child);
+            }            
+        }
+
+        next_gen.shuffle(&mut rng);
         next_gen
+
     }
 
     /// Saves Genetic Algorithm generation statistics to a CSV file for later analysis and plotting.
@@ -1068,16 +1272,165 @@ impl GeneticAlgorythm {
         anyhow::Ok(())
     }
 
+    /// Generates a completely random `ParameterSet` by sampling values according to their `ParamSpec`.
+    ///
+    /// This function is intended as a fallback mechanism when generating unique individuals fails
+    /// or when creating initial random blood. It respects both `Discrete` lists (choosing randomly)
+    /// and `Range` definitions (generating values within bounds and steps).
+    ///
+    /// # Returns
+    /// A new `ParameterSet` with randomly sampled parameter values.
+    fn generate_random_individ(&self) -> ParameterSet {
+        let mut rng = rand::thread_rng();
+        
+        // 1. Generate strategy_params
+        let strategy_params: Vec<(String, serde_json::Value)> = self.optimization_config.strategy_params_ranges
+            .iter()
+            .map(|(name, spec)| {
+                let val_f64 = self.sample_param_value_from_spec(spec, &mut rng);
+                (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val_f64).unwrap()))
+            })
+            .collect();
+
+        // 2. Get pos_sizer_value
+        let pos_sizer_value = {
+            let spec = &self.optimization_config.pos_sizer_value_range;
+            self.sample_param_value_from_spec(spec, &mut rng)
+        };
+
+        // 3. Get slippage
+        let slippage = {
+            let spec = &self.optimization_config.slippage_range;
+            self.sample_param_value_from_spec(spec, &mut rng)
+        };
+
+        // 4. Generate pos_sizer_additional_params
+        let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = self.optimization_config.pos_sizer_additional_params
+            .iter()
+            .map(|(name, spec)| {
+                let val_f64 = self.sample_param_value_from_spec(spec, &mut rng);
+                (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(val_f64).unwrap()))
+            })
+            .collect();
+            
+        // 5. Create ParameterSet
+        ParameterSet::new()
+            .with_strategy_params(strategy_params)
+            .with_pos_sizer_name(self.optimization_config.pos_sizer_name.clone())
+            .with_pos_sizer_additional_params(pos_sizer_additional_params)
+            .with_pos_sizer_value(pos_sizer_value)
+            .with_slippage(slippage)
+
+    }
+
+    /// Samples a single `f64` value from a `ParamSpec` using the provided random number generator.
+    ///
+    /// This helper function encapsulates the logic for handling both `Discrete` and `Range` parameter
+    /// specifications, ensuring correct sampling for each type.
+    ///
+    /// # Arguments
+    /// * `spec` - A reference to the `settings::ParamSpec` defining the parameter space.
+    /// * `rng` - A mutable reference to a random number generator implementing `rand::Rng`.
+    ///
+    /// # Returns
+    /// An `f64` value sampled according to the rules defined in `spec`.
+    fn sample_param_value_from_spec(&self, spec: &settings::ParamSpec, rng: &mut impl rand::Rng) -> f64 {
+        match spec {
+            settings::ParamSpec::Discrete(values) => {
+                if ! values.is_empty() {
+                    if let Some(random_json_val) = values.choose(rng) {
+                        if let Some(random_f64_val) = random_json_val.as_f64() {
+                            random_f64_val
+                        } else {
+                            eprintln!("Warning: Discrete value {:?} is not a number, returning 0.0", random_json_val);
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    }
+                } else {
+                    eprintln!("Warning: Discrete list is empty, returning 0.0");
+                    0.0
+                }
+            }
+            settings::ParamSpec::Range { start, end, step: _ } => {
+                let mut val = rng.gen_range(*start..=*end);
+                if let Some(step_val) = spec.step() {
+                    val = (val / step_val).round() * step_val;
+                    val = val.clamp(*start, *end);
+                }
+                val
+            }
+        }
+    }
+
 }
 
 /// Hashes a ParameterSet for caching fitness scores.
 fn hash_parameter_set(params: &ParameterSet) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for (k, v) in &params.strategy_params {
-        k.hash(&mut hasher);
-        format!("{:?}", v).hash(&mut hasher);
-    }
+
+    hash_params(&params.strategy_params, &mut hasher);
     params.pos_sizer_value.to_bits().hash(&mut hasher);
     params.slippage.to_bits().hash(&mut hasher);
+    hash_params(&params.pos_sizer_additional_params, &mut hasher);
+
     hasher.finish()
+}
+
+/// Hashes a slice of key-value pairs representing parameters using a provided hasher.
+///
+/// This function ensures consistent hashing by first sorting the parameters by their keys.
+/// For numeric values (`serde_json::Value::Number`), it normalizes the string representation
+/// to mitigate potential differences caused by internal `i64`, `u64`, or `f64` storage,
+/// ensuring that logically identical numbers produce the same hash.
+///
+/// # Arguments
+/// * `params` - A slice of tuples containing parameter names (String) and their values (serde_json::Value).
+/// * `state` - A mutable reference to a hasher implementing the `Hasher` trait, used to accumulate the hash.
+fn hash_params<H: std::hash::Hasher>(params: &[(String, serde_json::Value)], state: &mut H) {
+    // Create a mutable vector from the input slice to allow sorting.
+    let mut sorted_params = params.to_vec();
+    // Sort the parameters by their string keys to ensure a consistent order for hashing,
+    // regardless of the original order in the ParameterSet.
+    sorted_params.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Iterate over the sorted parameters.
+    for (k, v) in sorted_params {
+        k.hash(state);
+
+        // Normalize the string representation of the parameter value before hashing.
+        // This is crucial for numeric values to ensure consistency.
+        let normalized_value_str = match v {
+            // Handle the case where the value is a JSON number.
+            serde_json::Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    // Check if the f64 value is effectively an integer within the i64 range.
+                    // If so, convert it to i64 and then to a string (e.g., 10.0 -> "10").
+                    // Otherwise, convert the f64 directly to a string (e.g., 10.5 -> "10.5").
+                    if f.fract() == 0.0 && f >= (i64::MIN as f64) && f <= (i64::MAX as f64) {
+                        (f as i64).to_string()
+                    }  else {
+                        f.to_string()
+                    }
+                // If it's not an f64, attempt i64.
+                } else if let Some(i) = n.as_i64() {
+                    i.to_string()
+                // If it's not an i64, attempt u64.
+                } else if let Some(u) = n.as_u64() {
+                    u.to_string()
+                // If none of the standard numeric conversions work, fall back to the
+                // internal string representation of the Number object.
+                } else {
+                    n.to_string()
+                }
+            }
+            // For non-numeric values (String, Bool, Null, Array, Object), use the standard
+            // serde_json serialization to get a consistent string representation.
+            _ => serde_json::to_string(&v).expect("Failed to serialize param value for hashing"),
+        };
+
+        // Hash the normalized string representation of the parameter value.
+        normalized_value_str.hash(state);
+    }
 }

@@ -350,11 +350,11 @@ impl OptimizationRunner {
         // Configure the Genetic Algorithm based on the provided parameters.
         let ga_config = farukon_core::optimization::GAConfig::from_settings(ga_params);
         // Get the optimization configuration (parameter ranges) for the strategy.
-        let opt_config = farukon_core::utils::parse_optimization_config(&self.strategy_settings);
+        let opt_config = self.get_grid_search_optimizer().get_config();
         // Create the Genetic Algorithm instance.
         let mut ga = farukon_core::optimization::GeneticAlgorythm::new()
             .with_ga_config(ga_config.clone())
-            .with_optimization_config(opt_config);
+            .with_optimization_config(opt_config.clone());
         
         let lib_path = &self.strategy_settings.strategy_path;
         let lib = std::sync::Arc::new(
