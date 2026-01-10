@@ -80,7 +80,6 @@ pub fn margin_call_control_for_market(
         let strategy_current_capital = latest_holdings.capital;
 
         if strategy_current_capital < min_margin_for_strategy {
-            println!("Not enough minimal margin {} with {} of cash!", min_margin_for_strategy, strategy_current_capital);
             return anyhow::Ok(false);
         } else {
             return anyhow::Ok(true);

@@ -446,8 +446,8 @@ fn check_args(
                 } else {
                     match &strategy_settings.pos_sizer_params.pos_sizer_value {
                         ParamSpec::Discrete(values) => {
-                            if !values.is_empty() {
-                                anyhow::bail!("Pos sizer value vector of plain '1' param must be empty!");
+                            if values.is_empty() {
+                                anyhow::bail!("Pos sizer value vector for '{}' param must not be empty!", strategy_settings.pos_sizer_params.pos_sizer_name);
                             }
                             for value in values {
                                 if let Some(num) = value.as_f64() {

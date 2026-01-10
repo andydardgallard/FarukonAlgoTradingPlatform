@@ -507,16 +507,17 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
             ).unwrap();
             if !margin_call_monitoring {
                 for symbol in &self.strategy_settings.symbols {
-                    println!("{:?}", margin_call_monitoring);
                     let quantity = Some(self.get_current_positions().get(symbol).unwrap().position);
-                    let _ = self.event_sender.send(Box::new(farukon_core::event::SignalEvent::new(
-                current_bar_datetime,
-                        symbol.clone(),
-                        "EXIT".to_string(),
-                        "MKT".to_string(),
-                        quantity,
-                        None,
-                    )));
+                    if quantity != Some(0.0) {
+                        let _ = self.event_sender.send(Box::new(farukon_core::event::SignalEvent::new(
+                    current_bar_datetime,
+                            symbol.clone(),
+                            "EXIT".to_string(),
+                            "MKT".to_string(),
+                            quantity,
+                            None,
+                        )));
+                    }
                 }
             }
         }

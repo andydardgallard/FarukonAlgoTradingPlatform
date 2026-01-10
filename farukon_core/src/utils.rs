@@ -160,8 +160,7 @@ pub fn export_equity_to_csv(
 /// # Arguments
 /// let equity_series = vec![(datetime1, 10000.0), (datetime2, 9900.0), (datetime3, 9950.0)];
 /// export_equity_drawdowns_to_csv(&drawdowns, &drawdowns_pct, &equity_series, &strategy_settings)?;
-/// // Creates: {exit_results_path}/equity_series.csv
-/// ```
+/// Creates: {exit_results_path}/equity_series.csv
 pub fn export_equity_drawdowns_to_csv(
     drawdowns: &Vec<f64>,
     drawdowns_pct: &Vec<f64>,
@@ -272,7 +271,7 @@ fn generate_param_values(
 
             // If the discrete list is empty, return an empty vector
             if num_discrete_vals == 0 {
-                return result;
+                return vec![0.0; size];
            }
 
            // Create a list of indices, cycling through the discrete values to fill 'size' slots
@@ -338,7 +337,12 @@ pub fn generate_lhs_parameter_sets(
         .collect();
 
     // Generate LHS/discrete values for pos_sizer_value across 'size' sets
-    let pos_sizer_values = generate_param_values(pos_sizer_value_range, size, rng);
+    let pos_sizer_values = if pos_sizer_name == "1" {
+        vec![0.0; size]
+    } else {
+        generate_param_values(pos_sizer_value_range, size, rng)
+    };
+
     // Generate LHS/discrete values for slippage across 'size' sets
     let slippage_values = generate_param_values(slippage_range, size, rng);
     // Generate LHS/discrete values for each additional pos sizer parameter across 'size' sets
