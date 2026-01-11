@@ -201,16 +201,14 @@ impl PerformanceManager {
         let apr_to_drawdown_ratio = if max_dd_abs > 1e-8 {
             apr.abs() / max_dd_abs
         } else {
-            let epsilon_dd = 1e-8;
-            apr.abs() / epsilon_dd
+            apr.abs() * 100.0
         };
 
         let max_dd_pct_abs = self.max_drawdown_pct.abs();
         let recovery_factor = if max_dd_pct_abs > 1e-8 {
             current_return.abs() / max_dd_pct_abs
         } else {
-            let epsilon_dd_currency = 1.0;
-            current_return.abs() / epsilon_dd_currency
+            current_return_percent.abs() * 100.0
         };
 
         self.metrics = PerformanceMetrics {
