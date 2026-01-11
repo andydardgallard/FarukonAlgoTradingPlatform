@@ -16,7 +16,7 @@
             "slippage": [0.005],
             "data": {
                 "data_path": "Tickers/FBS/RTS",
-                "timeframe": "4min"
+                "timeframe": "1min"
             },
             "symbols": [
                 "RTS-9.24",
@@ -45,11 +45,11 @@
             "optimizer_type": {
                 "Genetic": {
                     "ga_params": {
-                        "population_size": 10,
-                        "elite_size": 2,
+                        "population_size": 3,
+                        "elite_size": 1,
                         "p_crossover": 0.8,
                         "p_mutation": 0.2,
-                        "max_generations": 25,
+                        "max_generations": 5,
                         "fitness_params": {
                             "fitness_direction": "max",
                             "fitness_value": "APR/DD_factor"

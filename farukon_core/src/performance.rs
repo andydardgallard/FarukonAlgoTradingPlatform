@@ -187,7 +187,31 @@ impl PerformanceManager {
         let current_return = current_equity - self.initial_capital_for_strategy;
         let current_return_percent = (current_equity / self.initial_capital_for_strategy) - 1.0;
 
-        let apr = (1.0 + current_return_percent).powf(1.0 / years.max(1e-8)) - 1.0;
+        let apr = if current_equity <= 0.0 || years <= 0.0 {
+            if years <= 0.0 {
+                0.0
+            } else {
+                std::f64::NEG_INFINITY
+            }
+        } else {
+            (1.0 + current_return_percent).powf(1.0 / years.max(1e-8)) - 1.0
+        };
+
+        let max_dd_abs = self.max_drawdown.abs();
+        let apr_to_drawdown_ratio = if max_dd_abs > 1e-8 {
+            apr.abs() / max_dd_abs
+        } else {
+            let epsilon_dd = 1e-8;
+            apr.abs() / epsilon_dd
+        };
+
+        let max_dd_pct_abs = self.max_drawdown_pct.abs();
+        let recovery_factor = if max_dd_pct_abs > 1e-8 {
+            current_return.abs() / max_dd_pct_abs
+        } else {
+            let epsilon_dd_currency = 1.0;
+            current_return.abs() / epsilon_dd_currency
+        };
 
         self.metrics = PerformanceMetrics {
             total_return: current_return,
@@ -195,8 +219,8 @@ impl PerformanceManager {
             apr,
             max_drawdown: self.max_drawdown,
             max_drawdown_pct: self.max_drawdown_pct,
-            apr_to_drawdown_ratio: if self.max_drawdown.abs() > 1e-8 { apr.abs() / self.max_drawdown.abs() } else { 0.0 },
-            recovery_factor: current_return.abs() / self.max_drawdown_pct.abs(),
+            apr_to_drawdown_ratio,
+            recovery_factor,
             deals_count,
         }
     } 
@@ -315,6 +339,20 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     let mut max_dd = 0.0;
     let mut max_dd_pct = 0.0;
     
+    if peak.is_nan() || peak.is_infinite() {
+        let mut found_valid_peak = false;
+        for &val in equity.iter() {
+            if val.is_finite() {
+                peak = val;
+                found_valid_peak = true;
+                break;
+            }
+        }
+        if !found_valid_peak {
+            return (0.0, 0.0, vec![0.0; n], vec![0.0; n]);
+        }
+    }
+
     drawdowns[0] = 0.0;
     drawdowns_pct[0] = 0.0;
 
@@ -332,7 +370,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
 
         for j in 0..4 {
             let value = equity[start + j];
-            if value > peak {
+            if value.is_finite() && value > peak {
                 peak = value;
             }
         }

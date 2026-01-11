@@ -490,7 +490,6 @@ impl GridSearchOptimizer {
         &self,
         fitness_function: F,
         threads: usize,
-        // combinations: Vec<ParameterSet>,
         config: &OptimizationConfig,
     ) -> Vec<OptimizationResult>
     where
@@ -746,7 +745,7 @@ impl GeneticAlgorythm {
                     };
 
                     let fitness = if let Some(cahed_f) = cached_fitness {
-                        println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
+                        println!("# {} from {} is done in {:.3} seconds, fitnesss= {}", current_count, total_evaluations, start_time.elapsed().as_secs_f64(), cahed_f);
                         cahed_f
                     } else {
                         let calculated_f = evaluate(params);
@@ -754,7 +753,7 @@ impl GeneticAlgorythm {
                         bank.insert(hash, calculated_f);
                         drop(bank);
 
-                        println!("# {} from {} is done in {:.3} seconds ", current_count, total_evaluations, start_time.elapsed().as_secs_f64());
+                        println!("# {} from {} is done in {:.3} seconds, fitnesss= {}", current_count, total_evaluations, start_time.elapsed().as_secs_f64(), calculated_f);
                         calculated_f
                     };
                     (params.clone(), fitness)
