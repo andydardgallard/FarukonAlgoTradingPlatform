@@ -522,6 +522,7 @@ pub struct GAStatsPerGeneration {
     best_fitness: f64,
     worst_fitness: f64,
     mean_fitness: f64,
+    std_dev: f64,
     best_chromosome_id: Vec<String>,
     generation: usize, 
 }
@@ -533,6 +534,7 @@ impl GAStatsPerGeneration {
             best_fitness: 0.0,
             worst_fitness: 0.0,
             mean_fitness: 0.0,
+            std_dev: 0.0,
             best_chromosome_id: Vec::new(),
             generation: 0,
         }
@@ -553,6 +555,12 @@ impl GAStatsPerGeneration {
     /// Sets the mean fitness score for this generation.
     pub fn with_mean_fitness(mut self, value: f64) -> Self {
         self.mean_fitness = value;
+        self
+    }
+
+    /// Sets the standart_deviation fitness score for this generation.
+    pub fn with_standart_deviation(mut self, std_dev: f64) -> Self {
+        self.std_dev = std_dev;
         self
     }
 
@@ -580,6 +588,7 @@ pub struct GAConfig {
     p_mutation: f64,
     fitness_metric: settings::FitnessValue,
     fitness_direction: String,
+    std_stop: f64,
 }
 
 impl GAConfig {
@@ -593,6 +602,7 @@ impl GAConfig {
             p_mutation: 0.0,
             fitness_metric: settings::FitnessValue::default(),
             fitness_direction: String::new(),
+            std_stop: 0.0,
         }
     }
 
@@ -606,6 +616,7 @@ impl GAConfig {
             p_mutation: ga_params.p_mutation,
             fitness_metric: ga_params.fitness_params.fitness_value.clone(),
             fitness_direction: ga_params.fitness_params.fitness_direction.clone(),
+            std_stop: ga_params.std_stop,
         }
     }
 
@@ -678,18 +689,30 @@ impl GeneticAlgorythm {
             // Beginer population
             let current_population = self.populations[gen_idx].clone();
             let results = self.evaluate_population(threads, &current_population, evaluate.clone())?;
+
             let stat = self.calculate_generation_stats(&results, gen_idx);
             stats.push(stat.clone());
 
             println!(
-                "Generation {}: Time elapsed: {:.3} seconds, Best Fitness= {:.3}, Mean Fitness= {:.3}, Worst Fitness= {:.3}, Chromosome ID: {:?}",
+                "Generation {}: Time elapsed: {:.3} seconds, Best Fitness= {:.5}, Worst Fitness= {:.5}, Mean Fitness= {:.5}, std fitness= {:.5}, Chromosome ID: {:?}",
                 gen_idx,
                 start_time.elapsed().as_secs_f64(),
                 stat.best_fitness,
-                stat.mean_fitness,
                 stat.worst_fitness,
+                stat.mean_fitness,
+                stat.std_dev,
                 stat.best_chromosome_id
             );
+
+            // Check Convergence Criteria "GA parameter: std_stop"
+            if stat.std_dev < self.ga_config.std_stop {
+                println!(
+                    "Genetic Algorythm stopped due to meet of Convergence Criteria. Current std= {}, GA stop_std= {}", 
+                    stat.std_dev,
+                    self.ga_config.std_stop,
+            );
+                break;
+            }
 
             // Next Populations 
             if gen_idx + 1 < self.ga_config.max_generations {
@@ -791,79 +814,71 @@ impl GeneticAlgorythm {
         id
     }
 
-    /// Calculates statistics (mean, best, worst) for a vector of fitness scores.
-    fn calculate_stats(&self, values: &[f64]) -> (f64, f64, f64) {
+    /// Calculates statistics (mean, standart deviation) for a vector of fitness scores.
+    fn calculate_stats(&self, values: &[f64]) -> (f64, f64) {
         if values.is_empty() {
-            return (0.0, 0.0, 0.0);
+            return (0.0, 0.0);
         }
 
-        let mut sums = [0.0; 4];
-        let mut mins = [std::f64::INFINITY; 4];
-        let mut maxs = [std::f64::NEG_INFINITY; 4];
+        let mut sum = 0.0;
+        for &value in values {
+            sum += value;
+        }
+        let mean = sum / values.len() as f64;
 
         let chunks = values.chunks_exact(4);
         let remainder = chunks.remainder();
 
+        let mut sum_sq_diffs = [0.0; 4];
         for chunk in chunks {
             for i in 0..4 {
-                sums[i] += chunk[i];
-                mins[i] = mins[i].min(chunk[i]);
-                maxs[i] = maxs[i].max(chunk[i]);
+                let diff = chunk[i] - mean;
+                sum_sq_diffs[i] += diff * diff;
             }
         }
-
         for (i, &value) in remainder.iter().enumerate() {
-            sums[i] += value;
-            mins[i] = mins[i].min(value);
-            maxs[i] = maxs[i].max(value);
+            let diff = value - mean;
+            sum_sq_diffs[i] += diff * diff;
         }
 
-        let total_sum: f64 = sums.iter().sum();
-        let global_min = mins.iter().fold(std::f64::INFINITY, |a, &b| a.min(b));
-        let global_max = maxs.iter().fold(std::f64::NEG_INFINITY, |a, &b| a.max(b));
+        let total_sum_sq_diffs: f64 = sum_sq_diffs.iter().sum();
+        let variance = total_sum_sq_diffs / values.len() as f64;
+        let std_dev = variance.sqrt();
 
-        let mean = total_sum / values.len() as f64;
-        (mean, global_max, global_min)
+        (mean, std_dev)
     }
 
     /// Calculates statistics for a generation.
     fn calculate_generation_stats(&self, results: &[(ParameterSet, f64)], gen_idx: usize) -> GAStatsPerGeneration {
         let fitness_values: Vec<f64> = results.iter().map(|(_, f)| *f).collect();
-        let (mean, _best_fitness_calc, _worst_fitness_calc) = self.calculate_stats(&fitness_values);
+        let (mean, std_dev) = self.calculate_stats(&fitness_values);
+        if results.is_empty() {
+            return GAStatsPerGeneration::new()
+                .with_generation(gen_idx);
+        }
 
         let best_result_entry = match self.ga_config.fitness_direction.as_str() {
             "max" => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
             "min" => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
             _ => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
         };
-        let (best_params, best_fitness_actual) = if let Some((params, fitness)) = best_result_entry {
-            (params, *fitness)
-        } else {
-            return GAStatsPerGeneration::new()
-                .with_best_fitness(0.0)
-                .with_worst_fitness(0.0)
-                .with_mean_fitness(0.0)
-                .with_best_chromosome_id(vec![])
-                .with_generation(gen_idx);
-        };
+
+        let (best_params, best_fitness_actual) = best_result_entry .unwrap();
 
         let worst_result_entry = match self.ga_config.fitness_direction.as_str() {
             "max" => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
             "min" => results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
             _ => results.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
         };
-        let worst_fitness_actual = if let Some((_, fitness)) = worst_result_entry {
-            *fitness
-        } else {
-            0.0
-        };
+        let worst_fitness_actual = worst_result_entry.unwrap().1;
 
         let best_chromosome_id = self.create_chromosome_id_for_display(best_params);
 
         GAStatsPerGeneration::new()
-            .with_best_fitness(best_fitness_actual)
+            .with_best_fitness(*best_fitness_actual)
             .with_worst_fitness(worst_fitness_actual)
             .with_mean_fitness(mean)
+            .with_standart_deviation(std_dev)
             .with_best_chromosome_id(best_chromosome_id)
             .with_generation(gen_idx)
 

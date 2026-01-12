@@ -8,7 +8,6 @@ use anyhow::Context;
 use rand::prelude::*;
 use rand_distr::Distribution;
 
-use crate::optimization::ParameterSet;
 use crate::settings;
 use crate::optimization;
 use crate::instruments_info;
@@ -377,7 +376,7 @@ pub fn generate_lhs_parameter_sets(
         .collect();
 
         // Create the ParameterSet for index i
-        let param_set = ParameterSet::new()
+        let param_set = optimization::ParameterSet::new()
             .with_strategy_params(strategy_params)
             .with_pos_sizer_name(pos_sizer_name.clone())
             .with_pos_sizer_additional_params(pos_sizer_additional_params)
@@ -388,4 +387,76 @@ pub fn generate_lhs_parameter_sets(
     }
 
     result
+}
+
+/// Helper function to extract a parameter value as usize from the strategy settings.
+/// It checks for the parameter in the map, verifies it's a number, and converts it to usize.
+///
+/// # Arguments
+/// * `params` - The map of strategy parameters.
+/// * `name` - The name of the parameter to extract.
+///
+/// # Returns
+/// * `anyhow::Result<usize>` - The parameter value as usize or an error.
+pub fn get_param_as_usize(params: &std::collections::HashMap<String, settings::ParamSpec>, name: &str) -> anyhow::Result<usize> {
+    let param_spec = params
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
+    
+    let value = match param_spec {
+        settings::ParamSpec::Discrete(values) => {
+            if let Some(v) = values.first() {
+                v
+            } else {
+                anyhow::bail!("Parameter '{}' has no values in Discrete list", name);
+            }
+        }
+        settings::ParamSpec::Range { .. } => {
+            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
+        }
+    };
+
+    if let Some(val) = value.as_u64() {
+        anyhow::Ok(val as usize)
+    } else if let Some(val) = value.as_f64() {
+        anyhow::Ok(val as usize)
+    } else {
+        Err(anyhow::anyhow!("Parameter '{}' must be a number, got: {:?}", name, value))
+    }
+}
+
+/// Helper function to extract a parameter value as f64 from the strategy settings.
+/// It checks for the parameter in the map, verifies it's a number, and converts it to f64.
+///
+/// # Arguments
+/// * `params` - The map of strategy parameters.
+/// * `name` - The name of the parameter to extract.
+///
+/// # Returns
+/// * `anyhow::Result<f64>` - The parameter value as f64 or an error.
+pub fn get_param_as_f64(params:&std::collections::HashMap<String, settings::ParamSpec>, name: &str) -> anyhow::Result<f64> {
+    let param_spec = params
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
+
+    let value = match param_spec {
+        settings::ParamSpec::Discrete(values) => {
+            if let Some(v) = values.first() {
+                v
+            } else {
+                anyhow::bail!("Parameter '{}' has no values in Discrete list", name);
+            }
+        }
+        settings::ParamSpec::Range { .. } => {
+            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
+        }
+    };
+
+    if let Some(val) = value.as_f64() {
+        anyhow::Ok(val)
+    } else if let Some(val) = value.as_u64() {
+        anyhow::Ok(val as f64)
+    } else {
+        Err(anyhow::anyhow!("Parameter '{}' must be a number, got: {:?}", name, value))
+    }
 }

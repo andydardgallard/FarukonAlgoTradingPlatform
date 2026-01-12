@@ -50,6 +50,7 @@
                         "p_crossover": 0.8,
                         "p_mutation": 0.2,
                         "max_generations": 5,
+                        "std_stop": 0.001,
                         "fitness_params": {
                             "fitness_direction": "max",
                             "fitness_value": "APR/DD_factor"

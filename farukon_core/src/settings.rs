@@ -176,6 +176,7 @@ pub struct GAParams {
     pub p_crossover: f64,
     pub p_mutation: f64,
     pub max_generations: usize,
+    pub std_stop: f64,
     pub fitness_params: FitnessParams,
 }
 
@@ -356,6 +357,9 @@ fn check_args(
                         }
                         if ga_params.max_generations == 0 {
                             anyhow::bail!("GA max_generations must be greater than 0");
+                        }
+                        if ga_params.std_stop <= 0.0 {
+                            anyhow::bail!("GA std_stop must be greater than 0");
                         }
 
                         let max_elite_size = (ga_params.population_size as f64).sqrt() as usize;

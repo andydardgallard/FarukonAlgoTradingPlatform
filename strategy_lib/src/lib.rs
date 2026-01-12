@@ -1,6 +1,6 @@
 //! strategy_lib/src/lib.rs
 
-use farukon_core::{self, strategy::Strategy};
+use farukon_core::{self, strategy::Strategy, utils};
 
 /// A simple moving average crossover strategy.
 /// This strategy generates buy/sell signals based on the crossing of two SMAs.
@@ -45,8 +45,8 @@ impl MovingAverageCrossStrategy {
         event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
     ) -> anyhow::Result<Self> {
         // Extract the short and long window sizes from the strategy settings.
-        let short_window = get_param_as_usize(&strategy_settings.strategy_params, "short_window")?;
-        let long_window = get_param_as_usize(&strategy_settings.strategy_params, "long_window")?;
+        let short_window = utils::get_param_as_usize(&strategy_settings.strategy_params, "short_window")?;
+        let long_window = utils::get_param_as_usize(&strategy_settings.strategy_params, "long_window")?;
 
         // Validate that the short window is less than the long window.
         if short_window >= long_window{
@@ -250,42 +250,6 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
         anyhow::Ok(())
     }
 
-}
-
-/// Helper function to extract a parameter value as usize from the strategy settings.
-/// It checks for the parameter in the map, verifies it's a number, and converts it to usize.
-///
-/// # Arguments
-/// * `params` - The map of strategy parameters.
-/// * `name` - The name of the parameter to extract.
-///
-/// # Returns
-/// * `anyhow::Result<usize>` - The parameter value as usize or an error.
-fn get_param_as_usize(params: &std::collections::HashMap<String, farukon_core::settings::ParamSpec>, name: &str) -> anyhow::Result<usize> {
-    let param_spec = params
-        .get(name)
-        .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
-    
-    let value = match param_spec {
-        farukon_core::settings::ParamSpec::Discrete(values) => {
-            if let Some(v) = values.first() {
-                v
-            } else {
-                anyhow::bail!("Parameter '{}' has no values in Discrete list", name);
-            }
-        }
-        farukon_core::settings::ParamSpec::Range { .. } => {
-            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
-        }
-    };
-
-    if let Some(val) = value.as_u64() {
-        anyhow::Ok(val as usize)
-    } else if let Some(val) = value.as_f64() {
-        anyhow::Ok(val as usize)
-    } else {
-        Err(anyhow::anyhow!("Parameter '{}' must be a number, got: {:?}", name, value))
-    }
 }
 
 /// C function exported for dynamic loading.
