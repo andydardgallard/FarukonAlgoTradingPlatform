@@ -191,7 +191,7 @@ impl PerformanceManager {
             if years <= 0.0 {
                 0.0
             } else {
-                -1e-1
+                -1.0
             }
         } else {
             (1.0 + current_return_percent).powf(1.0 / years.max(1e-8)) - 1.0
