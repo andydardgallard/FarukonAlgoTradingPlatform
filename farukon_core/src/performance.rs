@@ -191,7 +191,7 @@ impl PerformanceManager {
             if years <= 0.0 {
                 0.0
             } else {
-                -1e6
+                -1e1
             }
         } else {
             (1.0 + current_return_percent).powf(1.0 / years.max(1e-8)) - 1.0
@@ -199,9 +199,9 @@ impl PerformanceManager {
 
         let max_dd_abs = self.max_drawdown.abs();
         let apr_to_drawdown_ratio = if max_dd_abs > 1e-8 {
-            apr.abs() / max_dd_abs
+            apr / max_dd_abs
         } else {
-            apr.abs() * 100.0
+            apr * 100.0
         };
 
         let max_dd_pct_abs = self.max_drawdown_pct.abs();
