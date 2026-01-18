@@ -11,14 +11,15 @@ use crate::strategy_loader;
 /// Manages the lifecycle of a single strategy backtest.
 /// Integrates all components: data handler, dynamic strategy, portfolio, and execution engine.
 pub struct Backtest {
-    mode: String,   // Operational mode: "Debug", "Optimize", "Visual"
-    strategy_settings: farukon_core::settings::StrategySettings,    // Strategy-specific config
-    strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,   // Metadata for all traded instruments
+    mode: String, // Operational mode: "Debug", "Optimize", "Visual"
+    strategy_settings: farukon_core::settings::StrategySettings, // Strategy-specific config
+    strategy_instruments_info:
+        std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>, // Metadata for all traded instruments
     data_handler: Box<dyn farukon_core::data_handler::DataHandler>, // Source of market data (FlatBuffers or CSV)
     event_receiver: std::sync::mpsc::Receiver<Box<dyn farukon_core::event::Event>>, // Channel to receive events from strategy
-    dynamic_strategy: Box<strategy_loader::DynamicStratagy>,    // Dynamically loaded strategy library
-    portfolio: Box<dyn farukon_core::portfolio::PortfolioHandler>,  // Manages positions, equity, and risk
-    execution_handler: Box<dyn farukon_core::execution::ExecutionHandler>,  // Simulates order execution with slippage/commission
+    dynamic_strategy: Box<strategy_loader::DynamicStratagy>, // Dynamically loaded strategy library
+    portfolio: Box<dyn farukon_core::portfolio::PortfolioHandler>, // Manages positions, equity, and risk
+    execution_handler: Box<dyn farukon_core::execution::ExecutionHandler>, // Simulates order execution with slippage/commission
 }
 
 impl Backtest {
@@ -36,7 +37,10 @@ impl Backtest {
     pub fn new(
         mode: &String,
         strategy_settings: &farukon_core::settings::StrategySettings,
-        strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+        strategy_instruments_info: &std::collections::HashMap<
+            String,
+            farukon_core::instruments_info::InstrumentInfo,
+        >,
         data_handler: Box<dyn farukon_core::data_handler::DataHandler>,
         event_receiver: std::sync::mpsc::Receiver<Box<dyn farukon_core::event::Event>>,
         dynamic_strategy: Box<strategy_loader::DynamicStratagy>,
@@ -78,11 +82,21 @@ impl Backtest {
                             if self.mode == "Debug".to_string() {
                                 print!("Start event, {:?}, ", event_box);
                                 for symbol in &self.strategy_settings.symbols {
-                                    print!("{}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
+                                    print!(
+                                        "{}, {:?}, ",
+                                        symbol,
+                                        self.data_handler.get_latest_bar(symbol)
+                                    )
                                 }
                                 println!();
-                                println!("Start_all position, {:?}", self.portfolio.get_all_positions());
-                                println!("Start_all holdings, {:?}", self.portfolio.get_all_holdings());
+                                println!(
+                                    "Start_all position, {:?}",
+                                    self.portfolio.get_all_positions()
+                                );
+                                println!(
+                                    "Start_all holdings, {:?}",
+                                    self.portfolio.get_all_holdings()
+                                );
                             }
                         }
                         // --- SIGNAL EVENT ---
@@ -98,7 +112,7 @@ impl Backtest {
                                 event_box.get_signal_event_params().unwrap(),
                                 &self.data_handler,
                             );
-                            
+
                             if self.mode == "Debug".to_string() {
                                 println!("Finish event, {:?}, ", event_box);
                             }
@@ -117,7 +131,7 @@ impl Backtest {
                                 event_box.get_order_event_params().unwrap(),
                                 &self.strategy_instruments_info,
                                 &self.strategy_settings,
-                                &*self.data_handler
+                                &*self.data_handler,
                             )?;
 
                             if self.mode == "Debug".to_string() {
@@ -130,7 +144,7 @@ impl Backtest {
                             if self.mode == "Debug".to_string() {
                                 println!("Start event, {:?}, ", event_box);
                             }
-                            
+
                             // Process the fill: The Portfolio receives the fill details and updates its state.
                             // This includes adjusting position size, updating PnL, and modifying blocked margin.
                             self.portfolio.update_fill(
@@ -182,7 +196,9 @@ impl Backtest {
             // Advance data: load next bar for all symbols
             if self.data_handler.get_continue_backtest() {
                 self.data_handler.update_bars();
-            } else { break; }
+            } else {
+                break;
+            }
 
             self.process_pending_events()?;
 
@@ -213,11 +229,21 @@ impl Backtest {
 
             if self.mode == "Debug".to_string() {
                 for symbol in &self.strategy_settings.symbols {
-                    print!("Finish_loop {}, {:?}, ", symbol, self.data_handler.get_latest_bar(symbol))
+                    print!(
+                        "Finish_loop {}, {:?}, ",
+                        symbol,
+                        self.data_handler.get_latest_bar(symbol)
+                    )
                 }
                 println!();
-                println!("Finish_all position, {:?}", self.portfolio.get_all_positions());
-                println!("Finish_all holdings, {:?}", self.portfolio.get_all_holdings());
+                println!(
+                    "Finish_all position, {:?}",
+                    self.portfolio.get_all_positions()
+                );
+                println!(
+                    "Finish_all holdings, {:?}",
+                    self.portfolio.get_all_holdings()
+                );
             }
 
             // Debug separator
@@ -231,20 +257,20 @@ impl Backtest {
                 std::thread::sleep(std::time::Duration::from_secs_f64(heartbeat));
             }
         }
-        
+
         anyhow::Ok(())
     }
 
     /// Calculates final performance metrics after backtest completes.
     /// Calls Portfolio::calculate_final_performance() to compute all metrics offline.
     /// Returns the final PerformanceMetrics object.
-    fn output_performance(&mut self) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
+    fn output_performance(
+        &mut self,
+    ) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
         self.portfolio.calculate_final_performance();
 
         match self.portfolio.output_summary_stats() {
-            Ok(stats) => {
-                anyhow::Ok(stats)
-            }
+            Ok(stats) => anyhow::Ok(stats),
             Err(e) => {
                 eprintln!("Error generating performance summary stats: {}", e);
                 Err(e)
@@ -256,22 +282,24 @@ impl Backtest {
     /// # Returns
     /// * `Ok(&PerformanceMetrics)` on success
     /// * `Err(anyhow::Error)` if backtest or performance calculation fails
-    pub fn simulate_trading(&mut self) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
+    pub fn simulate_trading(
+        &mut self,
+    ) -> anyhow::Result<&farukon_core::performance::PerformanceMetrics> {
         let mode = self.mode.clone();
-        
+
         if mode == "Debug" {
             println!("Starting backtest simulation...");
         }
 
-        self.run_backtest()
-            .context("Backtest simulation failed")?;
+        self.run_backtest().context("Backtest simulation failed")?;
 
         if mode == "Debug" {
             println!("all_positions: {:#?}", self.portfolio.get_all_positions());
             println!("all_holdings: {:#?}", self.portfolio.get_all_holdings());
         }
-        
-        let result = self.output_performance()
+
+        let result = self
+            .output_performance()
             .context("Failed to output performance")?;
 
         if mode == "Debug" {
@@ -280,5 +308,4 @@ impl Backtest {
 
         anyhow::Ok(result)
     }
-
 }

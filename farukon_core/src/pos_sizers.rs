@@ -17,9 +17,9 @@
 //! are modeled, using the `calculate_forts_comission` function from the `commission_plans` module.
 //! Commissions for both entry and exit are included in risk calculations for the MPR method.
 
-use crate::settings;
 use crate::commission_plans;
 use crate::instruments_info;
+use crate::settings;
 
 /// Calculates the position size using the "MPR" (Maximum Possible Risk) method.
 /// # Arguments
@@ -55,25 +55,31 @@ fn mpr(
     };
 
     let full_commission = match strategy_instruments_info_for_symbol.exchange.as_str() {
-            "FORTS" => {
-                let entry_commission = commission_plans::calculate_forts_comission(
-                    Some(entry_price),
-                    strategy_instruments_info_for_symbol,
-                    strategy_settings,
-                ).unwrap();
-                let exit_commission = commission_plans::calculate_forts_comission(
-                    Some(exit_price),
-                    strategy_instruments_info_for_symbol,
-                    strategy_settings
-                ).unwrap();
+        "FORTS" => {
+            let entry_commission = commission_plans::calculate_forts_comission(
+                Some(entry_price),
+                strategy_instruments_info_for_symbol,
+                strategy_settings,
+            )
+            .unwrap();
+            let exit_commission = commission_plans::calculate_forts_comission(
+                Some(exit_price),
+                strategy_instruments_info_for_symbol,
+                strategy_settings,
+            )
+            .unwrap();
 
-                Some(entry_commission + exit_commission)
-            } 
-            _ => None,
+            Some(entry_commission + exit_commission)
+        }
+        _ => None,
     };
 
     let risk_per_deal_in_points = (exit_price - entry_price).abs();
-    let point_value = ((strategy_instruments_info_for_symbol.step_price / strategy_instruments_info_for_symbol.step) * 100_000.0).round() / 100_000.0;
+    let point_value = ((strategy_instruments_info_for_symbol.step_price
+        / strategy_instruments_info_for_symbol.step)
+        * 100_000.0)
+        .round()
+        / 100_000.0;
     let risk_per_deal_in_value_net = risk_per_deal_in_points * point_value;
     let risk_per_deal_in_value_gross = risk_per_deal_in_value_net + full_commission?;
     let max_percent_risk = capital * (mpr / 100.0);
@@ -82,11 +88,20 @@ fn mpr(
     if mode == "Debug" {
         println!(
             "risk_per_deal_in_points: {}, point_value: {}, risk_per_deal_in_value_net: {}, risk_per_deal_in_value_gross: {}, max_percent_risk: {}, capital: {}",
-            risk_per_deal_in_points, point_value, risk_per_deal_in_value_net, risk_per_deal_in_value_gross, max_percent_risk, capital
+            risk_per_deal_in_points,
+            point_value,
+            risk_per_deal_in_value_net,
+            risk_per_deal_in_value_gross,
+            max_percent_risk,
+            capital
         );
     }
-                    
-    Some(((max_percent_risk / risk_per_deal_in_value_gross) * 10.0_f64.powi(points_from_zero)).floor() / 10.0_f64.powi(points_from_zero))
+
+    Some(
+        ((max_percent_risk / risk_per_deal_in_value_gross) * 10.0_f64.powi(points_from_zero))
+            .floor()
+            / 10.0_f64.powi(points_from_zero),
+    )
 }
 
 /// Returns a fixed position size of 1.0 contract.
@@ -100,17 +115,22 @@ fn plain_pos_sizer(
     strategy_instruments_info_for_symbol: &instruments_info::InstrumentInfo,
 ) -> Option<f64> {
     if mode == "Debug" {
-        let point_value = ((strategy_instruments_info_for_symbol.step_price / strategy_instruments_info_for_symbol.step) * 100_000.0).round() / 100_000.0;
+        let point_value = ((strategy_instruments_info_for_symbol.step_price
+            / strategy_instruments_info_for_symbol.step)
+            * 100_000.0)
+            .round()
+            / 100_000.0;
         let commission = match strategy_instruments_info_for_symbol.exchange.as_str() {
             "FORTS" => {
                 let entry_commission = commission_plans::calculate_forts_comission(
                     Some(entry_price),
                     strategy_instruments_info_for_symbol,
                     strategy_settings,
-                ).unwrap();
+                )
+                .unwrap();
 
                 Some(entry_commission)
-            } 
+            }
             _ => None,
         };
 
@@ -148,7 +168,7 @@ pub fn get_pos_sizer_from_settings(
                 mode,
                 entry_price?,
                 strategy_settings,
-                strategy_instruments_info_for_symbol
+                strategy_instruments_info_for_symbol,
             ),
             "mpr" => mpr(
                 mode,
@@ -161,7 +181,9 @@ pub fn get_pos_sizer_from_settings(
             "poe" => None, // TODO
             _ => None,
         };
-        
+
         quantity
-    } else { None }
+    } else {
+        None
+    }
 }

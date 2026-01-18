@@ -3,7 +3,7 @@
 //! Performance metrics calculation engine.
 //! Uses SIMD for ultra-fast return and drawdown calculations.
 
-use crate:: settings;
+use crate::settings;
 
 /// Structure holding all calculated performance metrics for a strategy.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -44,13 +44,31 @@ impl PerformanceMetrics {
     pub fn to_stats_list(&self) -> Vec<(String, String)> {
         let mut stats = Vec::new();
 
-        stats.push(("Total_Return".to_string(), format!("{:.2}", self.total_return)));
-        stats.push(("Total_Return_%".to_string(), format!("{:.5}", self.total_return_percent)));
+        stats.push((
+            "Total_Return".to_string(),
+            format!("{:.2}", self.total_return),
+        ));
+        stats.push((
+            "Total_Return_%".to_string(),
+            format!("{:.5}", self.total_return_percent),
+        ));
         stats.push(("APR".to_string(), format!("{:.5}", self.apr)));
-        stats.push(("Max_Drawdown".to_string(), format!("{:.5}", self.max_drawdown)));
-        stats.push(("Max_Drawdown_pct".to_string(), format!("{:.5}", self.max_drawdown_pct)));
-        stats.push(("APR/Drawdown_factor".to_string(), format!("{:.2}", self.apr_to_drawdown_ratio)));
-        stats.push(("Recovery_Factor".to_string(), format!("{:.2}", self.recovery_factor)));
+        stats.push((
+            "Max_Drawdown".to_string(),
+            format!("{:.5}", self.max_drawdown),
+        ));
+        stats.push((
+            "Max_Drawdown_pct".to_string(),
+            format!("{:.5}", self.max_drawdown_pct),
+        ));
+        stats.push((
+            "APR/Drawdown_factor".to_string(),
+            format!("{:.2}", self.apr_to_drawdown_ratio),
+        ));
+        stats.push((
+            "Recovery_Factor".to_string(),
+            format!("{:.2}", self.recovery_factor),
+        ));
         stats.push(("Deals_Count".to_string(), self.deals_count.to_string()));
 
         stats
@@ -96,7 +114,6 @@ impl PerformanceMetrics {
     pub fn get_deals_count(&self) -> &usize {
         &self.deals_count
     }
-
 }
 
 /// Manager for calculating performance metrics.
@@ -129,9 +146,12 @@ impl PerformanceManager {
     /// * `strategy_settings` - The strategy settings, which include the metrics calculation mode.
     pub fn new(
         initial_capital_for_strategy: f64,
-        strategy_settings: &settings::StrategySettings
+        strategy_settings: &settings::StrategySettings,
     ) -> Self {
-        let mode = strategy_settings.portfolio_settings_for_strategy.metrics_calculation_mode.clone();
+        let mode = strategy_settings
+            .portfolio_settings_for_strategy
+            .metrics_calculation_mode
+            .clone();
         Self {
             initial_capital_for_strategy,
             metrics_calculation_mode: mode,
@@ -163,11 +183,19 @@ impl PerformanceManager {
         self.equity_curve.push(current_total);
         self.peak = self.peak.max(current_total);
 
-        let dd_percent = if self.peak > 0.0 { (current_total / self.peak) - 1.0 } else { 0.0 };
+        let dd_percent = if self.peak > 0.0 {
+            (current_total / self.peak) - 1.0
+        } else {
+            0.0
+        };
         // self.drawdowns.push(dd_percent);
         self.max_drawdown = self.max_drawdown.min(dd_percent);
 
-        let dd = if self.peak > 0.0 { current_total - self.peak } else { 0.0 };
+        let dd = if self.peak > 0.0 {
+            current_total - self.peak
+        } else {
+            0.0
+        };
         self.max_drawdown_pct = self.max_drawdown_pct.min(dd);
 
         self.update_metrics(start_date, end_date, deals_count);
@@ -188,11 +216,7 @@ impl PerformanceManager {
         let current_return_percent = (current_equity / self.initial_capital_for_strategy) - 1.0;
 
         let apr = if current_equity <= 0.0 || years <= 0.0 {
-            if years <= 0.0 {
-                0.0
-            } else {
-                -1.0
-            }
+            if years <= 0.0 { 0.0 } else { -1.0 }
         } else {
             (1.0 + current_return_percent).powf(1.0 / years.max(1e-8)) - 1.0
         };
@@ -221,7 +245,7 @@ impl PerformanceManager {
             recovery_factor,
             deals_count,
         }
-    } 
+    }
 
     /// Calculates final performance metrics after the backtest is complete.
     /// This is used when `metrics_calculation_mode` is `Offline`.
@@ -240,7 +264,9 @@ impl PerformanceManager {
         let series = Vec::from(equity_series);
         let n = series.len();
 
-        if n < 2 { return; }
+        if n < 2 {
+            return;
+        }
 
         // SIMD: returns
         self.returns = calculate_returns_simd(&series);
@@ -250,12 +276,16 @@ impl PerformanceManager {
         self.equity_curve.push(self.initial_capital_for_strategy);
         for i in 1..n {
             let r = self.returns[i];
-            let last_eq = self.equity_curve.last().copied().unwrap_or(self.initial_capital_for_strategy);
+            let last_eq = self
+                .equity_curve
+                .last()
+                .copied()
+                .unwrap_or(self.initial_capital_for_strategy);
             self.equity_curve.push(last_eq * (1.0 + r));
         }
 
         // Max drawdown
-        let drawdow_calculation_results = calculate_drawdowns_simd(&series); 
+        let drawdow_calculation_results = calculate_drawdowns_simd(&series);
 
         let max_dd_percent = drawdow_calculation_results.0;
         self.max_drawdown = max_dd_percent;
@@ -266,14 +296,13 @@ impl PerformanceManager {
         self.drawdown_pct_curve = drawdow_calculation_results.3;
 
         self.update_metrics(start_date, end_date, deals_count);
-
     }
 
     /// Returns a reference to the current performance metrics.
     pub fn get_current_performance_metrics(&self) -> &PerformanceMetrics {
         &self.metrics
     }
-    
+
     pub fn get_drawdons(&self) -> &Vec<f64> {
         &self.drawdown_curve
     }
@@ -281,45 +310,52 @@ impl PerformanceManager {
     pub fn get_drawdowns_pct(&self) -> &Vec<f64> {
         &self.drawdown_pct_curve
     }
-
 }
 
 fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
     let n = equity.len();
-    if n < 2 { return vec![0.0; n]; }
+    if n < 2 {
+        return vec![0.0; n];
+    }
 
     let mut returns = vec![0.0; n];
 
     let chunks = (n - 1) / 4;
     for i in 0..chunks {
         let start = i * 4 + 1;
-        if start + 3 >= n { break; }
+        if start + 3 >= n {
+            break;
+        }
 
         let prev_values = wide::f64x4::from([
             equity[start - 1],
             equity[start],
             equity[start + 1],
-            equity[start + 2]
+            equity[start + 2],
         ]);
 
         let curr_values = wide::f64x4::from([
             equity[start],
             equity[start + 1],
             equity[start + 2],
-            equity[start + 3]
+            equity[start + 3],
         ]);
 
         let ret_values = (curr_values / prev_values) - wide::f64x4::splat(1.0);
 
         let result_array: [f64; 4] = ret_values.into();
-        returns[start..start+4].copy_from_slice(&result_array);
+        returns[start..start + 4].copy_from_slice(&result_array);
     }
 
     let processed_elements = chunks * 4 + 1;
     for i in processed_elements..n {
         let prev = equity[i - 1];
         let curr = equity[i];
-        returns[i] = if prev != 0.0 { (curr / prev) - 1.0 } else { 0.0 };
+        returns[i] = if prev != 0.0 {
+            (curr / prev) - 1.0
+        } else {
+            0.0
+        };
     }
 
     returns
@@ -336,7 +372,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     let mut peak = equity[0];
     let mut max_dd = 0.0;
     let mut max_dd_pct = 0.0;
-    
+
     if peak.is_nan() || peak.is_infinite() {
         let mut found_valid_peak = false;
         for &val in equity.iter() {
@@ -357,13 +393,15 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     let chunks = (n - 1) / 4;
     for i in 0..chunks {
         let start = i * 4 + 1;
-        if start + 3 >= n { break; }
+        if start + 3 >= n {
+            break;
+        }
 
         let values = wide::f64x4::from([
             equity[start],
             equity[start + 1],
             equity[start + 2],
-            equity[start + 3]
+            equity[start + 3],
         ]);
 
         for j in 0..4 {
@@ -377,8 +415,8 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
         let dd_array: [f64; 4] = ((values / peak_vec) - wide::f64x4::splat(1.0)).into();
         let dd_pct_array: [f64; 4] = (values - peak_vec).into();
 
-        drawdowns[start..start+4].copy_from_slice(&dd_array);
-        drawdowns_pct[start..start+4].copy_from_slice(&dd_pct_array);
+        drawdowns[start..start + 4].copy_from_slice(&dd_array);
+        drawdowns_pct[start..start + 4].copy_from_slice(&dd_pct_array);
 
         for j in 0..4 {
             let dd: f64 = dd_array[j];

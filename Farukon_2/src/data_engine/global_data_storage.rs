@@ -19,7 +19,9 @@ pub struct GlobalDataStore {
     /// Each `SOAData` vector's length corresponds to the length of `combined_timeline`.
     /// This allows multiple threads (e.g., different optimization runs) to access the same data
     /// without copying the underlying arrays.
-    soa_data: std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>>,
+    soa_data: std::sync::Arc<
+        std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
+    >,
 
     /// Shared reference (Arc) to the unified, sorted, and deduplicated timeline
     /// encompassing all timestamps across all symbols after resampling and alignment.
@@ -53,12 +55,18 @@ impl GlobalDataStore {
     ///
     /// * `anyhow::Result<Self>` - On success, returns the initialized `GlobalDataStore`.
     ///   On failure (e.g., file not found, parsing error), returns an `anyhow::Error`.
-    pub fn load(strategy_settings: &farukon_core::settings::StrategySettings) -> anyhow::Result<Self> {
+    pub fn load(
+        strategy_settings: &farukon_core::settings::StrategySettings,
+    ) -> anyhow::Result<Self> {
         let start = std::time::Instant::now();
-        println!("Starting to load and process FlatBuffer SOA files from {}...", &strategy_settings.data.data_path);
+        println!(
+            "Starting to load and process FlatBuffer SOA files from {}...",
+            &strategy_settings.data.data_path
+        );
 
         let resample_timeframe_str = &strategy_settings.data.timeframe;
-        let resample_timeframe_sec = data_engine::utils::resample_timeframe_sec(resample_timeframe_str);
+        let resample_timeframe_sec =
+            data_engine::utils::resample_timeframe_sec(resample_timeframe_str);
         let fbs_dir = &strategy_settings.data.data_path;
         let symbol_list = &strategy_settings.symbols;
 
@@ -66,7 +74,9 @@ impl GlobalDataStore {
         // Creates a Rayon thread pool to handle loading and resampling of data for multiple symbols concurrently.
         // This significantly speeds up the initial data preparation phase.
         let threads = strategy_settings.threads.unwrap_or(num_cpus::get());
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
 
         // Delegates the heavy lifting of loading and resampling to a utility function.
         // This function uses the created thread pool.
@@ -75,16 +85,14 @@ impl GlobalDataStore {
             &pool,
             symbol_list,
             fbs_dir,
-            resample_timeframe_sec
+            resample_timeframe_sec,
         )?;
-        
+
         // --- PHASE 2: CREATE COMBINED TIMELINE ---
         // Delegates the creation of the unified timeline to a utility function.
         // This function merges and sorts all partial timelines from Phase 1.
-        let combined_timeline_arc = data_engine::utils::create_combined_timeline(
-            &pool,
-            &partial_timelines
-        );
+        let combined_timeline_arc =
+            data_engine::utils::create_combined_timeline(&pool, &partial_timelines);
         let combined_timeline = combined_timeline_arc.as_ref().clone();
 
         // --- PHASE 3: FINAL PADDING AND ALIGNMENT ---
@@ -92,22 +100,20 @@ impl GlobalDataStore {
         // This function takes the resampled data and the unified timeline,
         // and creates the final `HashMap<String, Arc<SOAData>>` where each `SOAData` is aligned
         // to the `combined_timeline`.
-        let soa_data = data_engine::utils::align_and_pad(
-            &pool,
-            resampled_data,
-            &combined_timeline
-        )?;
+        let soa_data =
+            data_engine::utils::align_and_pad(&pool, resampled_data, &combined_timeline)?;
 
-        println!("GlobalDataStore loaded and processed in {:.3} seconds", start.elapsed().as_secs_f64());
+        println!(
+            "GlobalDataStore loaded and processed in {:.3} seconds",
+            start.elapsed().as_secs_f64()
+        );
         println!("Symbols loaded: {}", soa_data.len());
 
-        anyhow::Ok(
-            GlobalDataStore {
-                soa_data,
-                combined_timeline: combined_timeline_arc,
-                is_loaded: true,
-            }
-        )
+        anyhow::Ok(GlobalDataStore {
+            soa_data,
+            combined_timeline: combined_timeline_arc,
+            is_loaded: true,
+        })
     }
 
     pub fn deep_clone(&self) -> Self {
@@ -155,19 +161,20 @@ impl GlobalDataStore {
     /// # Returns
     ///
     /// * `Some(&Arc<SOAData>)` if data for the symbol exists, `None` otherwise.
-    pub fn get_soa_data_for_symbol(&self, symbol: &str) -> Option<&std::sync::Arc<farukon_core::data_handler::SOAData>> {
+    pub fn get_soa_data_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Option<&std::sync::Arc<farukon_core::data_handler::SOAData>> {
         self.soa_data.get(symbol)
-    } 
-
+    }
 }
 
 impl Clone for GlobalDataStore {
-    fn clone(&self) -> Self{
+    fn clone(&self) -> Self {
         Self {
             soa_data: std::sync::Arc::clone(&self.soa_data),
             combined_timeline: std::sync::Arc::clone(&self.combined_timeline),
             is_loaded: self.is_loaded,
         }
     }
-    
 }

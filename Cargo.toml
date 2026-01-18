@@ -6,3 +6,4 @@ members = [
     ]
 
 resolver = "3"
+authors = ["Andy Dar"]

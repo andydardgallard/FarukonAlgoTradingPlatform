@@ -6,10 +6,10 @@
 //! The ExecutionHandler trait defines the contract for executing orders.
 //! The SimulatedExecutionHandler implements this trait for backtesting.
 
-use crate::event;
-use crate::settings;
 use crate::data_handler;
+use crate::event;
 use crate::instruments_info;
+use crate::settings;
 
 /// Defines the interface for an execution handler.
 /// All execution handlers must implement this trait.
@@ -25,9 +25,11 @@ pub trait ExecutionHandler {
     fn execute_order(
         &self,
         event: &event::OrderEvent,
-        strategy_instruments_info: &std::collections::HashMap<String, instruments_info::InstrumentInfo>,
+        strategy_instruments_info: &std::collections::HashMap<
+            String,
+            instruments_info::InstrumentInfo,
+        >,
         strategy_settings: &settings::StrategySettings,
         data_handler: &dyn data_handler::DataHandler,
     ) -> anyhow::Result<()>;
-        
 }

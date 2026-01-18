@@ -3,14 +3,14 @@
 //! Utility functions for the Farukon platform.
 //! Includes helper functions for parsing settings, calculating quantities, and validating data.
 
-use std::io::Write;
 use anyhow::Context;
 use rand::prelude::*;
 use rand_distr::Distribution;
+use std::io::Write;
 
-use crate::settings;
-use crate::optimization;
 use crate::instruments_info;
+use crate::optimization;
+use crate::settings;
 
 /// Converts a string representation of a date and time into a `chrono::DateTime<chrono::Utc>`.
 /// This function uses `chrono::NaiveDateTime::parse_from_str` to parse the input string according to the provided format,
@@ -22,20 +22,15 @@ use crate::instruments_info;
 ///
 /// # Returns
 /// * `anyhow::Result<chrono::DateTime<chrono::Utc>>` - The parsed UTC date-time on success, or an error if parsing fails.
-pub fn string_to_date_time(string: &String, format: &str) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+pub fn string_to_date_time(
+    string: &String,
+    format: &str,
+) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
     // Format "%Y-%m-%d %H:%M:%S"
-    let dt = chrono::NaiveDateTime::parse_from_str(
-        string,
-        format,
-    ).with_context(|| format!(
-        "Invalid format '{}'",
-        format
-    ))?;
+    let dt = chrono::NaiveDateTime::parse_from_str(string, format)
+        .with_context(|| format!("Invalid format '{}'", format))?;
 
-    let dt_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-        dt,
-        chrono::Utc
-    );
+    let dt_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
 
     anyhow::Ok(dt_utc)
 }
@@ -54,7 +49,8 @@ pub fn calculate_max_available_quantity(
 ) -> f64 {
     let margin = strategy_instruments_info.margin;
     let precision = strategy_instruments_info.contract_precision as i32;
-    let max_quantity = ((cash / margin) * 10.0_f64.powi(precision)).floor() / 10.0_f64.powi(precision);
+    let max_quantity =
+        ((cash / margin) * 10.0_f64.powi(precision)).floor() / 10.0_f64.powi(precision);
 
     current_quantity = current_quantity.min(max_quantity.abs());
 
@@ -73,21 +69,23 @@ pub fn calculate_max_available_quantity(
 pub fn parse_optimization_config(
     strategy_settings: &settings::StrategySettings,
 ) -> optimization::OptimizationConfig {
-    let strategy_params_ranges: std::collections::HashMap<String, settings::ParamSpec> = strategy_settings
-        .strategy_params
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.clone()))
-        .collect();
-    
+    let strategy_params_ranges: std::collections::HashMap<String, settings::ParamSpec> =
+        strategy_settings
+            .strategy_params
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec.clone()))
+            .collect();
+
     let pos_sizer_value_range = strategy_settings.pos_sizer_params.pos_sizer_value.clone();
     let slippage_range = strategy_settings.slippage.clone();
 
-    let pos_sizer_additional_params: std::collections::HashMap<String, settings::ParamSpec> = strategy_settings
-        .pos_sizer_params
-        .pos_sizer_params
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.clone()))
-        .collect();
+    let pos_sizer_additional_params: std::collections::HashMap<String, settings::ParamSpec> =
+        strategy_settings
+            .pos_sizer_params
+            .pos_sizer_params
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec.clone()))
+            .collect();
 
     optimization::OptimizationConfig::new()
         .with_strategy_params_ranges(strategy_params_ranges)
@@ -109,18 +107,30 @@ pub fn create_stratagy_settings_from_params(
 ) -> settings::StrategySettings {
     let mut new_strategy_settings = strategy_settings.clone();
 
-    new_strategy_settings.pos_sizer_params.pos_sizer_value = settings::ParamSpec::Discrete(vec![serde_json::Value::Number(serde_json::Number::from_f64(*params.get_pos_sizer_value()).unwrap())]);
-    new_strategy_settings.slippage = settings::ParamSpec::Discrete(vec![serde_json::Value::Number(serde_json::Number::from_f64(*params.get_slippage()).unwrap())]);
+    new_strategy_settings.pos_sizer_params.pos_sizer_value =
+        settings::ParamSpec::Discrete(vec![serde_json::Value::Number(
+            serde_json::Number::from_f64(*params.get_pos_sizer_value()).unwrap(),
+        )]);
+    new_strategy_settings.slippage =
+        settings::ParamSpec::Discrete(vec![serde_json::Value::Number(
+            serde_json::Number::from_f64(*params.get_slippage()).unwrap(),
+        )]);
 
     let mut map = strategy_settings.strategy_params.clone();
     for (key, selected_value) in params.get_strategy_params() {
-        map.insert(key.clone(), settings::ParamSpec::Discrete(vec![selected_value.clone()]));
+        map.insert(
+            key.clone(),
+            settings::ParamSpec::Discrete(vec![selected_value.clone()]),
+        );
     }
     new_strategy_settings.strategy_params = map;
 
     let mut ps_params_map = strategy_settings.pos_sizer_params.pos_sizer_params.clone();
     for (key, selected_value) in params.get_pos_sizer_additional_params() {
-        ps_params_map.insert(key.clone(), settings::ParamSpec::Discrete(vec![selected_value.clone()]));
+        ps_params_map.insert(
+            key.clone(),
+            settings::ParamSpec::Discrete(vec![selected_value.clone()]),
+        );
     }
     new_strategy_settings.pos_sizer_params.pos_sizer_params = ps_params_map;
 
@@ -148,14 +158,14 @@ pub fn export_equity_to_csv(
 }
 
 /// Exports equity series and drawdown data to a CSV file for analysis and plotting.
-/// 
+///
 /// This function creates a comprehensive CSV file containing the equity curve data
 /// along with drawdown information for performance analysis. The output file includes
 /// timestamps, capital values, absolute drawdown amounts, and percentage drawdowns.
-/// 
+///
 /// The file is saved to `{exit_results_path}/equity_series.csv` where `exit_results_path`
 /// is taken from the provided `strategy_settings`.
-/// 
+///
 /// # Arguments
 /// let equity_series = vec![(datetime1, 10000.0), (datetime2, 9900.0), (datetime3, 9950.0)];
 /// export_equity_drawdowns_to_csv(&drawdowns, &drawdowns_pct, &equity_series, &strategy_settings)?;
@@ -170,8 +180,10 @@ pub fn export_equity_drawdowns_to_csv(
 
     let mut file = std::fs::File::create(path)?;
     writeln!(file, "datetime;capital;drawdown;drawdown_pct")?;
-    for ((datetime_capital, drawdown), drawdown_pct) in 
-        equity_series.iter().zip(drawdowns.iter()).zip(drawdowns_pct.iter())
+    for ((datetime_capital, drawdown), drawdown_pct) in equity_series
+        .iter()
+        .zip(drawdowns.iter())
+        .zip(drawdowns_pct.iter())
     {
         let (datetime, capital) = datetime_capital;
         writeln!(
@@ -208,7 +220,7 @@ fn generate_lhs_values_f64(
     max: f64,
     step: Option<f64>,
     size: usize,
-    mut rng: &mut impl rand::Rng
+    mut rng: &mut impl rand::Rng,
 ) -> Vec<f64> {
     let mut values = Vec::with_capacity(size);
     // Calculate the width of each interval for LHS
@@ -256,7 +268,7 @@ fn generate_lhs_values_f64(
 fn generate_param_values(
     spec: &settings::ParamSpec,
     size: usize,
-    rng: &mut impl rand::Rng
+    rng: &mut impl rand::Rng,
 ) -> Vec<f64> {
     match spec {
         // If the spec defines a continuous range, use LHS
@@ -271,9 +283,9 @@ fn generate_param_values(
             // If the discrete list is empty, return an empty vector
             if num_discrete_vals == 0 {
                 return vec![0.0; size];
-           }
+            }
 
-           // Create a list of indices, cycling through the discrete values to fill 'size' slots
+            // Create a list of indices, cycling through the discrete values to fill 'size' slots
             let indices: Vec<usize> = (0..size).map(|i| i % num_discrete_vals).collect();
             let mut shuffled_indices = indices;
             // Shuffle the indices to randomize which discrete value goes where
@@ -287,8 +299,11 @@ fn generate_param_values(
                         result.push(f64_val);
                     } else {
                         // Log a warning if the value isn't a number and push a default (0.0)
-                        eprintln!("Warning: Discrete value {:?} is not a number, skipping.", json_val);
-                        result.push(0.0);   // Consider returning Result or handling error differently
+                        eprintln!(
+                            "Warning: Discrete value {:?} is not a number, skipping.",
+                            json_val
+                        );
+                        result.push(0.0); // Consider returning Result or handling error differently
                     }
                 }
             }
@@ -322,7 +337,7 @@ pub fn generate_lhs_parameter_sets(
     pos_sizer_additional_params: &std::collections::HashMap<String, settings::ParamSpec>,
     pos_sizer_name: &String,
     size: usize,
-    rng: &mut impl rand::Rng
+    rng: &mut impl rand::Rng,
 ) -> Vec<optimization::ParameterSet> {
     let mut result = Vec::with_capacity(size);
 
@@ -345,13 +360,14 @@ pub fn generate_lhs_parameter_sets(
     // Generate LHS/discrete values for slippage across 'size' sets
     let slippage_values = generate_param_values(slippage_range, size, rng);
     // Generate LHS/discrete values for each additional pos sizer parameter across 'size' sets
-    let pos_sizer_additional_values: std::collections::HashMap<String, Vec<f64>> = pos_sizer_additional_params
-        .iter()
-        .map(|(name, spec)| {
-            let values = generate_param_values(spec, size, rng);
-            (name.clone(), values)
-        })
-        .collect();
+    let pos_sizer_additional_values: std::collections::HashMap<String, Vec<f64>> =
+        pos_sizer_additional_params
+            .iter()
+            .map(|(name, spec)| {
+                let values = generate_param_values(spec, size, rng);
+                (name.clone(), values)
+            })
+            .collect();
 
     // Construct 'size' ParameterSet objects by combining values from each parameter map
     for i in 0..size {
@@ -361,19 +377,26 @@ pub fn generate_lhs_parameter_sets(
             .map(|(name, values)| {
                 // Get the i-th value for this parameter, defaulting to 0.0 if index is somehow out of bounds
                 let value = values.get(i).copied().unwrap_or(0.0);
-                (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(value).unwrap()))
+                (
+                    name.clone(),
+                    serde_json::Value::Number(serde_json::Number::from_f64(value).unwrap()),
+                )
             })
             .collect();
 
         // Build the pos_sizer_additional_params vector for the i-th ParameterSet
-        let pos_sizer_additional_params: Vec<(String, serde_json::Value)> = pos_sizer_additional_values
-        .iter()
-        .map(|(name, values)| {
-            // Get the i-th value for this parameter, defaulting to 0.0 if index is out of bounds
-            let value = values.get(i).copied().unwrap_or(0.0);
-            (name.clone(), serde_json::Value::Number(serde_json::Number::from_f64(value).unwrap()))
-        })
-        .collect();
+        let pos_sizer_additional_params: Vec<(String, serde_json::Value)> =
+            pos_sizer_additional_values
+                .iter()
+                .map(|(name, values)| {
+                    // Get the i-th value for this parameter, defaulting to 0.0 if index is out of bounds
+                    let value = values.get(i).copied().unwrap_or(0.0);
+                    (
+                        name.clone(),
+                        serde_json::Value::Number(serde_json::Number::from_f64(value).unwrap()),
+                    )
+                })
+                .collect();
 
         // Create the ParameterSet for index i
         let param_set = optimization::ParameterSet::new()
@@ -398,11 +421,14 @@ pub fn generate_lhs_parameter_sets(
 ///
 /// # Returns
 /// * `anyhow::Result<usize>` - The parameter value as usize or an error.
-pub fn get_param_as_usize(params: &std::collections::HashMap<String, settings::ParamSpec>, name: &str) -> anyhow::Result<usize> {
+pub fn get_param_as_usize(
+    params: &std::collections::HashMap<String, settings::ParamSpec>,
+    name: &str,
+) -> anyhow::Result<usize> {
     let param_spec = params
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
-    
+
     let value = match param_spec {
         settings::ParamSpec::Discrete(values) => {
             if let Some(v) = values.first() {
@@ -412,7 +438,10 @@ pub fn get_param_as_usize(params: &std::collections::HashMap<String, settings::P
             }
         }
         settings::ParamSpec::Range { .. } => {
-            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
+            anyhow::bail!(
+                "Parameter '{}' is a Range, but a single value is expected",
+                name
+            );
         }
     };
 
@@ -421,7 +450,11 @@ pub fn get_param_as_usize(params: &std::collections::HashMap<String, settings::P
     } else if let Some(val) = value.as_f64() {
         anyhow::Ok(val as usize)
     } else {
-        Err(anyhow::anyhow!("Parameter '{}' must be a number, got: {:?}", name, value))
+        Err(anyhow::anyhow!(
+            "Parameter '{}' must be a number, got: {:?}",
+            name,
+            value
+        ))
     }
 }
 
@@ -434,7 +467,10 @@ pub fn get_param_as_usize(params: &std::collections::HashMap<String, settings::P
 ///
 /// # Returns
 /// * `anyhow::Result<f64>` - The parameter value as f64 or an error.
-pub fn get_param_as_f64(params:&std::collections::HashMap<String, settings::ParamSpec>, name: &str) -> anyhow::Result<f64> {
+pub fn get_param_as_f64(
+    params: &std::collections::HashMap<String, settings::ParamSpec>,
+    name: &str,
+) -> anyhow::Result<f64> {
     let param_spec = params
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("Missing parameter '{}'", name))?;
@@ -448,7 +484,10 @@ pub fn get_param_as_f64(params:&std::collections::HashMap<String, settings::Para
             }
         }
         settings::ParamSpec::Range { .. } => {
-            anyhow::bail!("Parameter '{}' is a Range, but a single value is expected", name);
+            anyhow::bail!(
+                "Parameter '{}' is a Range, but a single value is expected",
+                name
+            );
         }
     };
 
@@ -457,6 +496,10 @@ pub fn get_param_as_f64(params:&std::collections::HashMap<String, settings::Para
     } else if let Some(val) = value.as_u64() {
         anyhow::Ok(val as f64)
     } else {
-        Err(anyhow::anyhow!("Parameter '{}' must be a number, got: {:?}", name, value))
+        Err(anyhow::anyhow!(
+            "Parameter '{}' must be a number, got: {:?}",
+            name,
+            value
+        ))
     }
 }

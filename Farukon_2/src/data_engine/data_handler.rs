@@ -20,7 +20,7 @@ pub struct SOADataHandler {
     /// Each backtest thread managing its own `SOADataHandler` will increment this index independently,
     /// ensuring that it only accesses data up to its current time step.
     current_index: usize,
-    
+
     /// Flag indicating whether the backtest should continue.
     /// Set to `false` when `current_index` reaches the end of the combined timeline.
     continue_backtest: bool,
@@ -35,7 +35,9 @@ impl SOADataHandler {
     ///
     /// # Returns
     /// * `SOADataHandler` - The newly created handler instance.
-    pub fn new(global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>) -> Self {
+    pub fn new(
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
+    ) -> Self {
         // Check if the combined timeline has any data points to determine the initial continue_backtest flag.
         let continue_backtest = global_data_store.get_combined_timeline().len() > 0;
         let global_data_store = global_data_store.deep_clone();
@@ -54,7 +56,6 @@ impl SOADataHandler {
     pub fn get_current_index(&self) -> usize {
         self.current_index
     }
-
 }
 
 impl farukon_core::data_handler::DataHandler for SOADataHandler {
@@ -74,7 +75,7 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
             // Calculate the index of the *previous* bar (the one we just processed).
             let idx = self.current_index - 1;
             // Get the SOA data for the specified symbol from the global store.
-            if let Some(soa_data)  = self. global_data_store.get_soa_data_for_symbol(symbol) {
+            if let Some(soa_data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
                 // Check if the calculated index is within the bounds of the symbol's data.
                 if idx < soa_data.len() {
                     let soa_bar = soa_data.get_latest_bar(self.current_index);
@@ -103,15 +104,23 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
     ///
     /// # Returns
     /// * `Option<farukon_core::data_handler::SOAData>` - A `SOAData` struct containing the last `n` bars or `None` if symbol not found.
-    fn get_latest_bars(&self, symbol: &str, n: usize) -> Option<farukon_core::data_handler::SOAData> {
+    fn get_latest_bars(
+        &self,
+        symbol: &str,
+        n: usize,
+    ) -> Option<farukon_core::data_handler::SOAData> {
         let soa_data = if let Some(data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
             data
         } else {
             return None;
         };
 
-        let start_index = if self.current_index as i64 - n as i64 <= 0 { 0 } else { self.current_index - n };
-        
+        let start_index = if self.current_index as i64 - n as i64 <= 0 {
+            0
+        } else {
+            self.current_index - n
+        };
+
         Some(soa_data.set_latest_bars(start_index, self.get_current_index()))
     }
 
@@ -129,7 +138,7 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
             if let Some(soa_data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
                 if idx < soa_data.len() {
                     let datetime = self.global_data_store.get_combined_timeline()[idx];
-                    Some(datetime) 
+                    Some(datetime)
                 } else {
                     // Index is out of bounds for the symbol's data.
                     None
@@ -165,7 +174,10 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
                         "close" => Some(*soa_data.get_close(idx).unwrap()),
                         "volume" => Some(*soa_data.get_volume(idx).unwrap() as f64),
                         _ => {
-                            eprintln!("Warning: Unknown value type '{}' for symbol '{}'", val_type, symbol);
+                            eprintln!(
+                                "Warning: Unknown value type '{}' for symbol '{}'",
+                                val_type, symbol
+                            );
                             None
                         }
                     }
@@ -195,17 +207,32 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
             let idx = self.current_index - 1;
             if let Some(soa_data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
                 if idx < soa_data.len() {
-                    let start_index = if self.current_index as i64 - n as i64 <= 0 { 0 } else { self.current_index - n };
+                    let start_index = if self.current_index as i64 - n as i64 <= 0 {
+                        0
+                    } else {
+                        self.current_index - n
+                    };
 
                     match val_type {
-                        "open" => Some(&soa_data.get_opens().unwrap()[start_index..self.current_index]),
-                        "high" => Some(&soa_data.get_highs().unwrap()[start_index..self.current_index]),
-                        "low" => Some(&soa_data.get_lows().unwrap()[start_index..self.current_index]),
-                        "close" => Some(&soa_data.get_closes().unwrap()[start_index..self.current_index]),
+                        "open" => {
+                            Some(&soa_data.get_opens().unwrap()[start_index..self.current_index])
+                        }
+                        "high" => {
+                            Some(&soa_data.get_highs().unwrap()[start_index..self.current_index])
+                        }
+                        "low" => {
+                            Some(&soa_data.get_lows().unwrap()[start_index..self.current_index])
+                        }
+                        "close" => {
+                            Some(&soa_data.get_closes().unwrap()[start_index..self.current_index])
+                        }
                         // Note: This method returns &[f64], so it cannot directly return &[u64] for volume.
                         // A separate method like get_latest_bars_volume_values would be needed for volume.
                         _ => {
-                            eprintln!("Warning: Unknown value type '{}' for symbol '{}'", val_type, symbol);
+                            eprintln!(
+                                "Warning: Unknown value type '{}' for symbol '{}'",
+                                val_type, symbol
+                            );
                             None
                         }
                     }
@@ -234,7 +261,11 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
             let idx = self.current_index - 1;
             if let Some(soa_data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
                 if idx < soa_data.len() {
-                    let start_index = if self.current_index as i64 - n as i64 <= 0 { 0 } else { self.current_index - n };
+                    let start_index = if self.current_index as i64 - n as i64 <= 0 {
+                        0
+                    } else {
+                        self.current_index - n
+                    };
                     Some(&soa_data.get_volumes().unwrap()[start_index..self.current_index])
                 } else {
                     None
@@ -282,5 +313,4 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
     fn set_continue_backtest(&mut self, value: bool) {
         self.continue_backtest = value;
     }
-
 }

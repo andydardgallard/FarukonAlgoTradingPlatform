@@ -20,11 +20,11 @@ impl Args {
             .about("Event-driven Backtester")
             .arg(
                 clap::Arg::new("config")
-                .short('c')
-                .long("config")
-                .help("Path to the settings.json configuration file")
-                .required(true)
-                .num_args(1),
+                    .short('c')
+                    .long("config")
+                    .help("Path to the settings.json configuration file")
+                    .required(true)
+                    .num_args(1),
             )
             .get_matches();
 
@@ -32,5 +32,4 @@ impl Args {
             config: matches.get_one::<String>("config").unwrap().clone().into(),
         }
     }
-
 }

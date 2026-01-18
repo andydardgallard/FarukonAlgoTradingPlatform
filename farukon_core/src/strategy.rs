@@ -3,9 +3,9 @@
 //! Trait definition for trading strategies.
 //! Allows dynamic loading of strategies via shared libraries (.dylib/.so/.dll).
 
+use crate::data_handler;
 use crate::event;
 use crate::portfolio;
-use crate::data_handler;
 
 /// Main strategy trait.
 /// All trading strategies must implement this trait.
@@ -149,5 +149,4 @@ pub trait Strategy {
 
         anyhow::Ok(())
     }
-
 }

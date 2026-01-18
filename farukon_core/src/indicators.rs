@@ -30,31 +30,30 @@
 /// # Returns
 /// * `Some(f64)` — The computed SMA value.
 /// * `None` — If `n == 0` or fewer than `n` data points are available.
-pub fn sma<'a, I>(
-    dh: I,
-    n: usize,
-) -> Option<f64>
+pub fn sma<'a, I>(dh: I, n: usize) -> Option<f64>
 where
     I: IntoIterator<Item = &'a f64>,
     I::IntoIter: Clone,
 {
     // Simple Moving Average.
     // Returns average of last n bars.
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
 
     // Convert to Vec
     let data: Vec<f64> = dh.into_iter().copied().collect();
     let total_count = data.len();
 
     // If insufficient data is available, return None.
-    if total_count < n { return None; }
+    if total_count < n {
+        return None;
+    }
 
     // Calculate the sum of the last `n` bars, starting from `shift` bars ago.
     let start = total_count - n;
     let end = start + n;
-    let sum: f64 = data[start..end]
-        .iter()
-        .sum();
+    let sum: f64 = data[start..end].iter().sum();
     // Return the average.
     Some(sum / (n as f64))
 }
@@ -79,30 +78,29 @@ where
 /// # Note
 /// The effective required data length is `n + shift`. For example, to get the highest
 /// high of the last 5 bars as of 2 bars ago, use `n=5, shift=2` (requires 7 bars total).
-pub fn highest<'a, I>(
-    dh: I,
-    n: usize,
-    shift: usize,
-) -> Option<f64> 
+pub fn highest<'a, I>(dh: I, n: usize, shift: usize) -> Option<f64>
 where
     I: IntoIterator<Item = &'a Option<f64>>,
     I::IntoIter: Clone,
 {
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
 
     let need = n + shift;
-    if need == 0 { return None; }
-    
+    if need == 0 {
+        return None;
+    }
+
     // Convert to Vec, filtering out None values
-    let data: Vec<Option<f64>> = dh
-        .into_iter()
-        .copied()
-        .collect();
+    let data: Vec<Option<f64>> = dh.into_iter().copied().collect();
     let total_count = data.len();
 
     // If insufficient data is available, return None.
-    if total_count < need { return None; }
-    
+    if total_count < need {
+        return None;
+    }
+
     let start = total_count - need;
     let end = start + n;
 
@@ -139,30 +137,29 @@ where
 /// # Note
 /// The effective required data length is `n + shift`. For example, to get the lowest
 /// low of the last 5 bars as of 2 bars ago, use `n=5, shift=2` (requires 7 bars total).
-pub fn lowest<'a,I>(
-    dh: I,
-    n: usize,
-    shift: usize,
-) -> Option<f64> 
+pub fn lowest<'a, I>(dh: I, n: usize, shift: usize) -> Option<f64>
 where
     I: IntoIterator<Item = &'a Option<f64>>,
     I::IntoIter: Clone,
 {
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
 
     let need = n + shift;
-    if need == 0 { return None; }
-    
+    if need == 0 {
+        return None;
+    }
+
     // Convert to Vec, filtering out None values
-    let data: Vec<Option<f64>> = dh
-        .into_iter()
-        .copied()
-        .collect();
+    let data: Vec<Option<f64>> = dh.into_iter().copied().collect();
     let total_count = data.len();
 
     // If insufficient data is available, return None.
-    if total_count < need { return None; }
-    
+    if total_count < need {
+        return None;
+    }
+
     let start = total_count - need;
     let end = start + n;
     let window = &data[start..end];

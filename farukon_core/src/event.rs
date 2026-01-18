@@ -14,7 +14,7 @@ pub trait Event: std::fmt::Debug + Send + Sync {
     fn get_signal_event_params(&self) -> Option<&SignalEvent>;
     /// Returns a reference to the OrderEvent parameters, if this is an OrderEvent.
     fn get_order_event_params(&self) -> Option<&OrderEvent>;
-        /// Returns a reference to the FillEvent parameters, if this is a FillEvent.
+    /// Returns a reference to the FillEvent parameters, if this is a FillEvent.
     fn get_fill_event_params(&self) -> Option<&FillEvent>;
 }
 
@@ -30,11 +30,10 @@ impl MarketEvent {
     pub fn new() -> Self {
         Self
     }
-    
 }
 
 impl Event for MarketEvent {
-    fn event_type (&self) -> &'static str {
+    fn event_type(&self) -> &'static str {
         "MARKET"
     }
 
@@ -49,7 +48,6 @@ impl Event for MarketEvent {
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         None
     }
-
 }
 
 // --- SIGNAL EVENT ---
@@ -90,7 +88,6 @@ impl SignalEvent {
             limit_price,
         }
     }
-
 }
 
 impl Event for SignalEvent {
@@ -102,7 +99,7 @@ impl Event for SignalEvent {
     /// * `order_type` - The type of order to place.
     /// * `quantity` - The quantity to trade.
     /// * `limit_price` - The limit price.
-    fn event_type (&self) -> &'static str {
+    fn event_type(&self) -> &'static str {
         "SIGNAL"
     }
 
@@ -117,7 +114,6 @@ impl Event for SignalEvent {
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         None
     }
-
 }
 
 // --- ORDER EVENT ---
@@ -162,7 +158,6 @@ impl OrderEvent {
             limit_price,
         }
     }
-
 }
 
 impl Event for OrderEvent {
@@ -175,7 +170,7 @@ impl Event for OrderEvent {
     /// * `direction` - The direction of the order.
     /// * `signal_name` - The name of the signal.
     /// * `limit_price` - The limit price.
-    fn event_type (&self) -> &'static str {
+    fn event_type(&self) -> &'static str {
         "ORDER"
     }
 
@@ -190,7 +185,6 @@ impl Event for OrderEvent {
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         None
     }
-
 }
 
 // --- FILL EVENT ---
@@ -209,7 +203,7 @@ pub struct FillEvent {
     pub quantity: f64,
     /// The direction of the trade (optional, "BUY" or "SELL").
     pub direction: Option<String>,
-     /// The execution price of the trade.
+    /// The execution price of the trade.
     pub execution_price: Option<f64>,
     /// The commission charged for the trade.
     pub commission: Option<f64>,
@@ -249,11 +243,10 @@ impl FillEvent {
             signal_name,
         }
     }
-    
 }
 
-impl Event for FillEvent {  
-    fn event_type (&self) -> &'static str {
+impl Event for FillEvent {
+    fn event_type(&self) -> &'static str {
         "FILL"
     }
 
@@ -268,5 +261,4 @@ impl Event for FillEvent {
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         Some(self)
     }
-
 }

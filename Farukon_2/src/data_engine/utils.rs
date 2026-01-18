@@ -29,16 +29,17 @@ fn find_window_indices_direct(
 
     // Find the index of the first entry whose timestamp is >= start_timestamp.
     // This is the start of our aggregation window in the raw data vector.
-    let start_idx = match time_entries.binary_search_by_key(&start_timestamp, |entry| entry.timestamp) {
-        Ok(idx) => Some(time_entries[idx].index as usize),
-        Err(idx) => {
-            if idx < time_entries.len() {
-                Some(time_entries[idx].index as usize)
-            } else {
-                None
+    let start_idx =
+        match time_entries.binary_search_by_key(&start_timestamp, |entry| entry.timestamp) {
+            Ok(idx) => Some(time_entries[idx].index as usize),
+            Err(idx) => {
+                if idx < time_entries.len() {
+                    Some(time_entries[idx].index as usize)
+                } else {
+                    None
+                }
             }
-        }
-    };
+        };
 
     // Find the index of the first entry whose timestamp is > end_timestamp.
     // The end of our aggregation window is the index from the entry *before* this one.
@@ -98,8 +99,11 @@ fn create_symbol_timeline(
     for time_entry in &full_index.time_index {
         let raw_ts = time_entry.timestamp;
         let aggregated_window_start = raw_ts - (raw_ts % resample_timeframe_sec);
-        let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(aggregated_window_start as i64, 0)
-            .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {} in index", aggregated_window_start))?;
+        let datetime =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(aggregated_window_start as i64, 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Invalid timestamp {} in index", aggregated_window_start)
+                })?;
         symbol_timeline.insert(datetime);
     }
 
@@ -152,7 +156,8 @@ fn resample_data(
 ) -> anyhow::Result<farukon_core::data_handler::SOAData> {
     let mut resampled_soa_data = farukon_core::data_handler::SOAData::new();
     // Get the nested `OHLCVSOA` object from the list.
-    let data_soa = ohlcv_list_soa.data()
+    let data_soa = ohlcv_list_soa
+        .data()
         .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing"))?;
 
     // Get raw byte slices from the FlatBuffer vectors.
@@ -172,19 +177,32 @@ fn resample_data(
     // Map the resample timeframe (in seconds) to the key used in `FullIndex.timeframe_index`.
     let timeframe_key = match resample_timeframe_sec {
         120 => "2m",
-        180 => "3m", 
+        180 => "3m",
         240 => "4m",
         300 => "5m",
         86400 => "1d",
         _ => {
-            eprintln!("ERROR: Unsupported timeframe: {} sec", resample_timeframe_sec);
-            return Err(anyhow::anyhow!("Unsupported timeframe: {} sec", resample_timeframe_sec));
+            eprintln!(
+                "ERROR: Unsupported timeframe: {} sec",
+                resample_timeframe_sec
+            );
+            return Err(anyhow::anyhow!(
+                "Unsupported timeframe: {} sec",
+                resample_timeframe_sec
+            ));
         }
     };
 
     // Get the pre-computed list of timestamps for the target timeframe from the index.
-    let resampled_timestamps = full_index.timeframe_index.get(timeframe_key)
-        .ok_or_else(|| anyhow::anyhow!("No precomputed index found for timeframe: {}", timeframe_key))?;
+    let resampled_timestamps = full_index
+        .timeframe_index
+        .get(timeframe_key)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No precomputed index found for timeframe: {}",
+                timeframe_key
+            )
+        })?;
 
     // If there are no resampled timestamps, return an empty SOAData.
     if resampled_timestamps.is_empty() {
@@ -195,13 +213,10 @@ fn resample_data(
     for (_window_idx, &resampled_timestamp) in resampled_timestamps.iter().enumerate() {
         let window_start_timestamp = resampled_timestamp;
         let window_end_timestamp = resampled_timestamp + resample_timeframe_sec - 1;
-        
+
         // Find the start and end indices in the *raw* data vector for this specific window.
-        let (start_idx, end_idx) = find_window_indices_direct(
-            full_index,
-            window_start_timestamp,
-            window_end_timestamp,
-        );
+        let (start_idx, end_idx) =
+            find_window_indices_direct(full_index, window_start_timestamp, window_end_timestamp);
 
         // If valid indices were found for this window, perform aggregation.
         if let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) {
@@ -223,21 +238,21 @@ fn resample_data(
             let mut i = start_idx;
             // Ensure we don't go out of bounds of the raw slices.
             let end_safe = std::cmp::min(end_idx + 1, highs_slice.len());
-            
+
             // Ensure we don't go out of bounds of the raw slices.
             while i + 3 < end_safe {
                 let high_chunk = wide::f64x4::new([
                     highs_slice[i],
                     highs_slice[i + 1],
                     highs_slice[i + 2],
-                    highs_slice[i + 3]
+                    highs_slice[i + 3],
                 ]);
-                
+
                 let low_chunk = wide::f64x4::new([
                     lows_slice[i],
-                    lows_slice[i + 1], 
+                    lows_slice[i + 1],
                     lows_slice[i + 2],
-                    lows_slice[i + 3]
+                    lows_slice[i + 3],
                 ]);
 
                 simd_max = simd_max.max(high_chunk);
@@ -257,7 +272,7 @@ fn resample_data(
                         has_data = true;
                     }
                 }
-                
+
                 i += 4;
             }
 
@@ -275,10 +290,10 @@ fn resample_data(
                     agg_volume += volume;
                     has_data = true;
                 }
-                
+
                 simd_max = simd_max.max(wide::f64x4::splat(high));
                 simd_min = simd_min.min(wide::f64x4::splat(low));
-                
+
                 i += 1;
             }
 
@@ -291,7 +306,7 @@ fn resample_data(
                     agg_high = val;
                 }
             }
-            
+
             for &val in &min_values {
                 if val.is_finite() && val < agg_low {
                     agg_low = val;
@@ -304,10 +319,13 @@ fn resample_data(
                 let high = if agg_high.is_finite() { agg_high } else { open };
                 let low = if agg_low.is_finite() { agg_low } else { open };
                 let close = agg_close.unwrap_or(open);
-                
-                let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(resampled_timestamp as i64, 0)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {}", resampled_timestamp))?;
-                    
+
+                let datetime =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(resampled_timestamp as i64, 0)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Invalid timestamp {}", resampled_timestamp)
+                        })?;
+
                 let final_bar = farukon_core::data_handler::MarketBar::new()
                     .with_datetime(datetime)
                     .with_open(open)
@@ -336,31 +354,39 @@ fn copy_raw_data_without_resampling(
     ohlcv_list_soa: &data_engine::ohlcv_soa_generated::OHLCVListSOA<'_>,
 ) -> anyhow::Result<farukon_core::data_handler::SOAData> {
     // Get the nested `OHLCVSOA` object from the list.
-    let data_soa = ohlcv_list_soa.data()
+    let data_soa = ohlcv_list_soa
+        .data()
         .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing"))?;
 
     // Get raw byte slices and convert them to typed slices.
-    let raw_timestamps = data_soa.timestamps()
+    let raw_timestamps = data_soa
+        .timestamps()
         .map(|v| bytes_to_slice::<u64>(v.bytes()))
         .unwrap_or(&[]);
-    let raw_opens = data_soa.opens()
+    let raw_opens = data_soa
+        .opens()
         .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
-    let raw_highs = data_soa.highs()
+    let raw_highs = data_soa
+        .highs()
         .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
-    let raw_lows = data_soa.lows()
+    let raw_lows = data_soa
+        .lows()
         .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
-    let raw_closes = data_soa.closes()
+    let raw_closes = data_soa
+        .closes()
         .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
-    let raw_volumes = data_soa.volumes()
+    let raw_volumes = data_soa
+        .volumes()
         .map(|v| bytes_to_slice::<u64>(v.bytes()))
         .unwrap_or(&[]);
 
     // Find the minimum length among all vectors to ensure they are aligned.
-    let min_len = raw_timestamps.len()
+    let min_len = raw_timestamps
+        .len()
         .min(raw_opens.len())
         .min(raw_highs.len())
         .min(raw_lows.len())
@@ -387,7 +413,6 @@ fn copy_raw_data_without_resampling(
     );
 
     anyhow::Ok(soa_data)
-
 }
 
 /// Processes a single symbol: loads its raw FlatBuffer data, resamples it (or copies if timeframe is 1min), and returns the result along with its timeline.
@@ -404,7 +429,11 @@ fn process_symbol(
     symbol: &str,
     fbs_dir: &str,
     resample_timeframe_sec: u64,
-) -> anyhow::Result<(String, farukon_core::data_handler::SOAData, Vec<chrono::DateTime<chrono::Utc>>)> {
+) -> anyhow::Result<(
+    String,
+    farukon_core::data_handler::SOAData,
+    Vec<chrono::DateTime<chrono::Utc>>,
+)> {
     let bin_file_path = format!("{}/{}.soa.bin", fbs_dir, symbol);
     let idx_file_path = format!("{}/{}.soa.idx", fbs_dir, symbol);
 
@@ -430,16 +459,16 @@ fn process_symbol(
             &ohlcv_list_soa,
             &full_index,
             &symbol_timeline,
-            resample_timeframe_sec
+            resample_timeframe_sec,
         )?
     };
 
     // Sort the symbol's timeline for consistency (though index creation might already sort it).
-    let mut sorted_timeline: Vec<chrono::DateTime<chrono::Utc>> = symbol_timeline.into_iter().collect();
+    let mut sorted_timeline: Vec<chrono::DateTime<chrono::Utc>> =
+        symbol_timeline.into_iter().collect();
     sorted_timeline.sort_unstable();
 
     anyhow::Ok((symbol.to_string(), resampled_soa_data, sorted_timeline))
-
 }
 
 /// Loads raw SOA FlatBuffer data for all symbols and performs resampling in parallel.
@@ -458,18 +487,15 @@ pub fn load_and_resample(
     pool: &rayon::ThreadPool,
     symbol_list: &[String],
     fbs_dir: &str,
-    resample_timeframe_sec: u64
-) -> anyhow::Result<(std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>, Vec<Vec<chrono::DateTime<chrono::Utc>>>)> {
+    resample_timeframe_sec: u64,
+) -> anyhow::Result<(
+    std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
+    Vec<Vec<chrono::DateTime<chrono::Utc>>>,
+)> {
     pool.install(|| {
         let results: anyhow::Result<Vec<_>> = symbol_list
             .par_iter()
-            .map(|symbol| {
-                process_symbol(
-                    symbol,
-                    fbs_dir,
-                    resample_timeframe_sec
-                )
-            })
+            .map(|symbol| process_symbol(symbol, fbs_dir, resample_timeframe_sec))
             .collect();
 
         let results_vec = results?;
@@ -502,24 +528,26 @@ pub fn create_combined_timeline(
     partial_timelines: &[Vec<chrono::DateTime<chrono::Utc>>],
 ) -> std::sync::Arc<Vec<chrono::DateTime<chrono::Utc>>> {
     pool.install(|| {
-        let all_datetimes: std::collections::HashSet<chrono::DateTime<chrono::Utc>> = partial_timelines
-            .par_iter()
-            .fold(
-                || std::collections::HashSet::new(),
-                |mut acc, timeline| {
-                    acc.extend(timeline.iter().copied());
-                    acc
-                }
-            )
-            .reduce(
-                || std::collections::HashSet::new(),
-                |mut set1, set2| {
-                    set1.extend(set2);
-                    set1
-                }
-            );
+        let all_datetimes: std::collections::HashSet<chrono::DateTime<chrono::Utc>> =
+            partial_timelines
+                .par_iter()
+                .fold(
+                    || std::collections::HashSet::new(),
+                    |mut acc, timeline| {
+                        acc.extend(timeline.iter().copied());
+                        acc
+                    },
+                )
+                .reduce(
+                    || std::collections::HashSet::new(),
+                    |mut set1, set2| {
+                        set1.extend(set2);
+                        set1
+                    },
+                );
 
-        let mut combined_timeline: Vec<chrono::DateTime<chrono::Utc>> = all_datetimes.into_iter().collect();
+        let mut combined_timeline: Vec<chrono::DateTime<chrono::Utc>> =
+            all_datetimes.into_iter().collect();
         combined_timeline.sort_unstable();
         std::sync::Arc::new(combined_timeline)
     })
@@ -556,7 +584,7 @@ fn create_bar_from_source(
 /// # Returns
 /// * `farukon_core::data_handler::MarketBar` - The constructed NaN bar.
 fn create_nan_bar(
-    datetime: chrono::DateTime<chrono::Utc>
+    datetime: chrono::DateTime<chrono::Utc>,
 ) -> farukon_core::data_handler::MarketBar {
     farukon_core::data_handler::MarketBar::new()
         .with_datetime(datetime)
@@ -594,7 +622,7 @@ fn align_symbol_data(
     let trade_days: Vec<_> = source_map.keys().copied().collect();
     let first_trade_date = trade_days.iter().min().copied();
 
-    let mut last_valid_index: Option<usize> = None; 
+    let mut last_valid_index: Option<usize> = None;
 
     for &target_datetime in combined_timeline {
         let is_trading_started = first_trade_date.map_or(false, |first| target_datetime >= first);
@@ -632,17 +660,21 @@ fn align_symbol_data(
 /// * `anyhow::Result<std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>>>` - A map of symbol names to their final, aligned SOA data (Arc-ed), wrapped in another Arc for sharing.
 pub fn align_and_pad(
     pool: &rayon::ThreadPool,
-    resampled_data: std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
+    resampled_data: std::collections::HashMap<
+        String,
+        std::sync::Arc<farukon_core::data_handler::SOAData>,
+    >,
     combined_timeline: &[chrono::DateTime<chrono::Utc>],
-) -> anyhow::Result<std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>>> {
+) -> anyhow::Result<
+    std::sync::Arc<
+        std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
+    >,
+> {
     let final_soa_data = pool.install(|| {
         resampled_data
             .par_iter()
             .map(|(symbol, soa_data_arc)| {
-                let aligned_soa_data = align_symbol_data(
-                    soa_data_arc.as_ref(),
-                    combined_timeline
-                );
+                let aligned_soa_data = align_symbol_data(soa_data_arc.as_ref(), combined_timeline);
                 (symbol.clone(), std::sync::Arc::new(aligned_soa_data))
             })
             .collect::<std::collections::HashMap<_, _>>()

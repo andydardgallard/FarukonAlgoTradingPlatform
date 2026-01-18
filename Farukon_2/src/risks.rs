@@ -21,10 +21,10 @@ pub fn margin_call_control_for_signal(
     // Used during SIGNAL → ORDER conversion.
 
     let signal_name = &signal_event.signal_name;
-    
+
     if signal_name != "EXIT" {
         let instrument_type = &instrument_info.instrument_type;
-        
+
         if instrument_type == "futures" {
             let margin = instrument_info.margin;
             let initial_margin = quantity * margin;
@@ -37,7 +37,7 @@ pub fn margin_call_control_for_signal(
             }
         }
     } else {
-        return anyhow::Ok(true);    // EXIT always allowed
+        return anyhow::Ok(true); // EXIT always allowed
     }
 
     anyhow::Ok(true)
@@ -56,7 +56,10 @@ pub fn margin_call_control_for_market(
     latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
     current_positions: &std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
     strategy_settings: &farukon_core::settings::StrategySettings,
-    strategy_instruments_info: &std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+    strategy_instruments_info: &std::collections::HashMap<
+        String,
+        farukon_core::instruments_info::InstrumentInfo,
+    >,
 ) -> anyhow::Result<bool> {
     // Checks if current portfolio has sufficient equity to maintain open positions.
     // Triggers margin call if capital < min_margin * total_position_value.
@@ -64,13 +67,14 @@ pub fn margin_call_control_for_market(
     let cash = latest_holdings.cash;
     if cash < 0.0 {
         let mut capital = 0.0;
-        
+
         for symbol in &strategy_settings.symbols {
             let instrument_info = strategy_instruments_info.get(symbol).unwrap();
             if instrument_info.instrument_type == "futures" {
                 let current_position_for_symbol = current_positions.get(symbol).unwrap().position;
                 if current_position_for_symbol != 0.0 {
-                    let entry_capital_for_symbol = current_positions.get(symbol).unwrap().entry_capital;
+                    let entry_capital_for_symbol =
+                        current_positions.get(symbol).unwrap().entry_capital;
                     capital += entry_capital_for_symbol;
                 }
             }

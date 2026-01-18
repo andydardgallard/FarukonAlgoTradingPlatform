@@ -13,14 +13,15 @@ pub struct MovingAverageCrossStrategy {
     strategy_settings: farukon_core::settings::StrategySettings,
 
     /// Instrument metadata for all symbols traded by this strategy.
-    strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+    strategy_instruments_info:
+        std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
 
     /// The event sender channel used to communicate signals to other components.
     event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
 
     /// The window size for the short-term Simple Moving Average (SMA).
     short_window: usize,
-    
+
     /// The window size for the long-term Simple Moving Average (SMA).
     long_window: usize,
 }
@@ -41,31 +42,37 @@ impl MovingAverageCrossStrategy {
     pub fn new(
         mode: String,
         strategy_settings: farukon_core::settings::StrategySettings,
-        strategy_instruments_info: std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+        strategy_instruments_info: std::collections::HashMap<
+            String,
+            farukon_core::instruments_info::InstrumentInfo,
+        >,
         event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
     ) -> anyhow::Result<Self> {
         // Extract the short and long window sizes from the strategy settings.
-        let short_window = utils::get_param_as_usize(&strategy_settings.strategy_params, "short_window")?;
-        let long_window = utils::get_param_as_usize(&strategy_settings.strategy_params, "long_window")?;
+        let short_window =
+            utils::get_param_as_usize(&strategy_settings.strategy_params, "short_window")?;
+        let long_window =
+            utils::get_param_as_usize(&strategy_settings.strategy_params, "long_window")?;
 
         // Validate that the short window is less than the long window.
-        if short_window >= long_window{
-            anyhow::bail!("'short_window' ({}) must be less than 'long_window' ({}).", short_window, long_window);
+        if short_window >= long_window {
+            anyhow::bail!(
+                "'short_window' ({}) must be less than 'long_window' ({}).",
+                short_window,
+                long_window
+            );
         }
 
         // Create and return the new strategy instance.
-        anyhow::Ok(
-            MovingAverageCrossStrategy {
-                mode,
-                strategy_settings,
-                strategy_instruments_info,
-                short_window: short_window as usize,
-                long_window: long_window as usize,
-                event_sender,                          
-            }
-        )
+        anyhow::Ok(MovingAverageCrossStrategy {
+            mode,
+            strategy_settings,
+            strategy_instruments_info,
+            short_window: short_window as usize,
+            long_window: long_window as usize,
+            event_sender,
+        })
     }
-
 }
 
 /// Implementation of the core Strategy trait for MovingAverageCrossStrategy.
@@ -84,40 +91,49 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
     /// # Returns
     /// * `anyhow::Result<()>` - Indicates success or failure of the signal calculation.
     fn calculate_signals(
-            &mut self,
-            data_handler: &dyn farukon_core::data_handler::DataHandler,
-            current_positions: &std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
-            latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
-            symbol_list: &[String],
+        &mut self,
+        data_handler: &dyn farukon_core::data_handler::DataHandler,
+        current_positions: &std::collections::HashMap<
+            String,
+            farukon_core::portfolio::PositionState,
+        >,
+        latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
+        symbol_list: &[String],
     ) -> anyhow::Result<()> {
         // Iterate through each symbol in the list.
-        for symbol in symbol_list{
-
+        for symbol in symbol_list {
             // Get the current capital from the equity point.
             let capital = Some(latest_holdings.capital);
             // Get the current capital from the equity point.
-            let strategy_instruments_info_for_symbol = self.strategy_instruments_info.get(symbol).unwrap();
+            let strategy_instruments_info_for_symbol =
+                self.strategy_instruments_info.get(symbol).unwrap();
 
             // Get the current datetime for the symbol
             let current_bar_datetime = data_handler.get_latest_bar_datetime(symbol).unwrap();
             // Get the latest close price for the symbol.
             let close = Some(data_handler.get_latest_bar_value(symbol, "close").unwrap());
- 
+
             // Get the expiration datetime for the symbol
             let expiration_date = &strategy_instruments_info_for_symbol.expiration_date;
-            let expiration_date_dt = farukon_core::utils::string_to_date_time(expiration_date, "%Y-%m-%d %H:%M:%S")?;
+            let expiration_date_dt =
+                farukon_core::utils::string_to_date_time(expiration_date, "%Y-%m-%d %H:%M:%S")?;
 
             // Get the expiration datetime for the symbol from instrument info and parse it.
             let trade_from_date = &strategy_instruments_info_for_symbol.trade_from_date;
-            let trade_from_date_dt = farukon_core::utils::string_to_date_time(trade_from_date, "%Y-%m-%d %H:%M:%S")?;
+            let trade_from_date_dt =
+                farukon_core::utils::string_to_date_time(trade_from_date, "%Y-%m-%d %H:%M:%S")?;
 
             // Get the trade_from_date for the symbol from instrument info and parse it.
             let current_position_state = current_positions.get(symbol).unwrap();
             let current_position_quantity = current_position_state.position;
 
             // Calculate signals
-            let short_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.short_window).unwrap();
-            let long_sma_bars = data_handler.get_latest_bars_values(symbol, "close", self.long_window).unwrap();
+            let short_sma_bars = data_handler
+                .get_latest_bars_values(symbol, "close", self.short_window)
+                .unwrap();
+            let long_sma_bars = data_handler
+                .get_latest_bars_values(symbol, "close", self.long_window)
+                .unwrap();
 
             if let (Some(short_sma), Some(long_sma)) = (
                 farukon_core::indicators::sma(short_sma_bars, self.short_window),
@@ -125,10 +141,20 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             ) {
                 // Print debug information if in Debug mode.
                 if self.mode == "Debug".to_string() {
-                    println!("Start event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Start event, Indicators + equity_point, {:?}", latest_holdings);
+                    println!(
+                        "Start event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}",
+                        symbol,
+                        current_bar_datetime,
+                        short_sma,
+                        long_sma,
+                        current_position_quantity
+                    );
+                    println!(
+                        "Start event, Indicators + equity_point, {:?}",
+                        latest_holdings
+                    );
                 }
-                                
+
                 // if position exist
                 if current_position_quantity != 0.0 {
                     let signal_name = "EXIT";
@@ -176,15 +202,15 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                                 signal_name,
                                 Some(current_position_quantity),
                             )?;
-                        } 
+                        }
                     }
                 }
                 // if no position exist
                 else {
                     // LONG
-                    if short_sma > long_sma &&
-                    current_bar_datetime < expiration_date_dt &&
-                    current_bar_datetime >= trade_from_date_dt 
+                    if short_sma > long_sma
+                        && current_bar_datetime < expiration_date_dt
+                        && current_bar_datetime >= trade_from_date_dt
                     {
                         let signal_name = "LONG";
                         let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
@@ -210,10 +236,9 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         }
                     }
                     // SHORT
-                    else if
-                    short_sma < long_sma &&
-                    current_bar_datetime < expiration_date_dt &&
-                    current_bar_datetime >= trade_from_date_dt 
+                    else if short_sma < long_sma
+                        && current_bar_datetime < expiration_date_dt
+                        && current_bar_datetime >= trade_from_date_dt
                     {
                         let signal_name = "SHORT";
                         let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
@@ -224,7 +249,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                             &self.strategy_settings,
                             strategy_instruments_info_for_symbol,
                         );
-                        
+
                         self.open_by_limit(
                             &self.event_sender,
                             current_bar_datetime,
@@ -241,15 +266,24 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                 }
 
                 if self.mode == "Debug".to_string() {
-                    println!("Finish event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}", symbol, current_bar_datetime, short_sma, long_sma, current_position_quantity);
-                    println!("Finish event, Indicators + equity_point, {:?}", latest_holdings);
+                    println!(
+                        "Finish event, Indicators, {}, {}, short_sma: {}, long_sma: {}, current_position: {}",
+                        symbol,
+                        current_bar_datetime,
+                        short_sma,
+                        long_sma,
+                        current_position_quantity
+                    );
+                    println!(
+                        "Finish event, Indicators + equity_point, {:?}",
+                        latest_holdings
+                    );
                 }
             }
         }
 
         anyhow::Ok(())
     }
-
 }
 
 /// C function exported for dynamic loading.
@@ -268,20 +302,29 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
 pub extern "C" fn create_strategy(
     mode_cstr: *const std::os::raw::c_char,
     strategy_settings_ptr: *const farukon_core::settings::StrategySettings,
-    strategy_instruments_info_ptr: *const std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
+    strategy_instruments_info_ptr: *const std::collections::HashMap<
+        String,
+        farukon_core::instruments_info::InstrumentInfo,
+    >,
     event_sender_ptr: *const std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
 ) -> *mut MovingAverageCrossStrategy {
     // Check for null pointers to prevent crashes.
-    if mode_cstr.is_null() || strategy_settings_ptr.is_null() || strategy_settings_ptr.is_null() || event_sender_ptr.is_null() {
+    if mode_cstr.is_null()
+        || strategy_settings_ptr.is_null()
+        || strategy_settings_ptr.is_null()
+        || event_sender_ptr.is_null()
+    {
         return std::ptr::null_mut();
     }
     // Convert the C string to a Rust String.
-    let mode = unsafe { std::ffi::CStr::from_ptr(mode_cstr) }.to_string_lossy().into_owned();
+    let mode = unsafe { std::ffi::CStr::from_ptr(mode_cstr) }
+        .to_string_lossy()
+        .into_owned();
     // Dereference the raw pointers to get the actual values.
     let strategy_settings_ref = unsafe { &*strategy_settings_ptr }.clone();
     let strategy_instruments_info_ref = unsafe { &*strategy_instruments_info_ptr }.clone();
     let event_sender_ref = unsafe { &*event_sender_ptr }.clone();
-    
+
     // Attempt to create a new strategy instance.
     match MovingAverageCrossStrategy::new(
         mode,
@@ -294,7 +337,6 @@ pub extern "C" fn create_strategy(
         // If an error occurs, return a null pointer.
         Err(_) => std::ptr::null_mut(),
     }
-
 }
 
 /// C function exported for dynamic loading.
@@ -333,12 +375,16 @@ pub extern "C" fn calculate_signals(
     strategy_ptr: *mut std::ffi::c_void,
     data_handler_vtable: *const farukon_core::DataHandlerVTable,
     data_handler_ptr: *const (),
-    current_positions_ptr: *mut std::collections::HashMap<String, farukon_core::portfolio::PositionState>,
+    current_positions_ptr: *mut std::collections::HashMap<
+        String,
+        farukon_core::portfolio::PositionState,
+    >,
     latest_holdings_ptr: *mut farukon_core::portfolio::HoldingSnapshot,
     symbol_list_ptr: *const *const std::os::raw::c_char,
     symbol_list_size: usize,
 ) -> i32 {
-    if strategy_ptr.is_null() || current_positions_ptr.is_null() || /*latest_holdings_ptr.is_null() ||*/symbol_list_ptr.is_null() {
+    if strategy_ptr.is_null() || current_positions_ptr.is_null() || /*latest_holdings_ptr.is_null() ||*/symbol_list_ptr.is_null()
+    {
         return -1;
     }
     // Cast the void pointer to the correct type and get a mutable reference to the strategy.
@@ -346,10 +392,9 @@ pub extern "C" fn calculate_signals(
 
     // Reconstruct the DataHandler trait object from the VTable and data pointers.
     let data_handler: &dyn farukon_core::data_handler::DataHandler = unsafe {
-        std::mem::transmute::<(*const (), *const ()), &dyn farukon_core::data_handler::DataHandler>((
-            data_handler_ptr,
-            data_handler_vtable as *const(),
-        ))
+        std::mem::transmute::<(*const (), *const ()), &dyn farukon_core::data_handler::DataHandler>(
+            (data_handler_ptr, data_handler_vtable as *const ()),
+        )
     };
 
     // Get mutable references to the current positions and latest equity point.
@@ -360,7 +405,9 @@ pub extern "C" fn calculate_signals(
     let symbols: Vec<String> = (0..symbol_list_size)
         .filter_map(|i| unsafe {
             let str_ptr = *symbol_list_ptr.add(i);
-            if str_ptr.is_null() { return None; }
+            if str_ptr.is_null() {
+                return None;
+            }
             std::ffi::CStr::from_ptr(str_ptr)
                 .to_str()
                 .ok()
@@ -369,14 +416,8 @@ pub extern "C" fn calculate_signals(
         .collect();
 
     // Call the Rust calculate_signals method and return 0 on success or -1 on error.
-    match strategy.calculate_signals(
-        data_handler,
-        current_positions,
-        latest_holdings,
-        &symbols,
-    ) {
+    match strategy.calculate_signals(data_handler, current_positions, latest_holdings, &symbols) {
         Ok(_) => 0,
         Err(_) => -1,
     }
-    
 }

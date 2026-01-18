@@ -26,7 +26,7 @@ impl MarketBar {
             high: 0.0,
             low: 0.0,
             close: 0.0,
-            volume: 0
+            volume: 0,
         }
     }
 
@@ -84,7 +84,6 @@ impl MarketBar {
     pub fn get_volume(&self) -> u64 {
         self.volume
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +107,7 @@ impl SOAData {
             volumes: Vec::new(),
         }
     }
-    
+
     pub fn deep_clone(&self) -> Self {
         Self {
             timestamps: self.timestamps.clone(),
@@ -245,9 +244,7 @@ impl SOAData {
             volumes: volumes.to_vec(),
         }
     }
-    
 }
-
 
 /// Defines the interface for a data handler.
 /// All data handlers must implement this trait.
@@ -258,7 +255,7 @@ pub trait DataHandler {
     /// # Returns
     /// * An optional reference to the latest `MarketBar`.
     fn get_latest_bar(&self, symbol: &str) -> Option<SOAData>;
-    
+
     /// Returns the last `n` bars for the specified symbol.
     /// # Arguments
     /// * `symbol` - The symbol to retrieve data for.
@@ -266,14 +263,14 @@ pub trait DataHandler {
     /// # Returns
     /// * A vector of references to the last `n` `MarketBar`s.
     fn get_latest_bars(&self, symbol: &str, n: usize) -> Option<SOAData>;
-    
+
     /// Returns the timestamp of the latest bar for the specified symbol.
     /// # Arguments
     /// * `symbol` - The symbol to retrieve data for.
     /// # Returns
     /// * An optional `chrono::DateTime<chrono::Utc>` representing the timestamp.
     fn get_latest_bar_datetime(&self, symbol: &str) -> Option<chrono::DateTime<chrono::Utc>>;
-    
+
     /// Returns a specific value (open, high, low, close, volume) from the latest bar for the specified symbol.
     /// # Arguments
     /// * `symbol` - The symbol to retrieve data for.
@@ -281,7 +278,7 @@ pub trait DataHandler {
     /// # Returns
     /// * An optional `f64` representing the value, or `None` if not available.
     fn get_latest_bar_value(&self, symbol: &str, val_type: &str) -> Option<f64>;
-    
+
     /// Returns a specific value (open, high, low, close, volume) from the last `n` bars for the specified symbol.
     /// # Arguments
     /// * `symbol` - The symbol to retrieve data for.
@@ -292,18 +289,17 @@ pub trait DataHandler {
     fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Option<&[f64]>;
 
     fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[u64]>;
-    
+
     /// Advances the data handler to the next bar.
     /// This method is called by the backtesting engine to simulate time passing.
-    fn update_bars(&mut self);  // Advance to next bar
-    
+    fn update_bars(&mut self); // Advance to next bar
+
     /// Advances the data handler to the next bar.
     /// This method is called by the backtesting engine to simulate time passing.
-    fn get_continue_backtest(&self) -> bool;    // Is data exhausted?
-    
+    fn get_continue_backtest(&self) -> bool; // Is data exhausted?
+
     /// Sets the flag to stop the backtest.
     /// # Arguments
     /// * `value` - The new value for the flag.
-    fn set_continue_backtest(&mut self, value: bool);   // Stop backtest manually
-
+    fn set_continue_backtest(&mut self, value: bool); // Stop backtest manually
 }

@@ -86,26 +86,24 @@ impl InstrumentInfo {
 
         // Validate trade_from_date
         {
-            chrono::NaiveDateTime::parse_from_str(
-                &self.trade_from_date,
-                "%Y-%m-%d %H:%M:%S",
-            ).with_context(|| format!(
-                "Invalid 'trade_from_date' format '{}' for contract '{}'",
-                self.trade_from_date,
-                contract_name,
-            ))?;
+            chrono::NaiveDateTime::parse_from_str(&self.trade_from_date, "%Y-%m-%d %H:%M:%S")
+                .with_context(|| {
+                    format!(
+                        "Invalid 'trade_from_date' format '{}' for contract '{}'",
+                        self.trade_from_date, contract_name,
+                    )
+                })?;
         }
 
         // Validate expiration_date
         {
-            chrono::NaiveDateTime::parse_from_str(
-                &self.expiration_date,
-                "%Y-%m-%d %H:%M:%S",
-            ).with_context(|| format!(
-                "Invalid 'expiration_date' format '{}' for contract '{}'",
-                self.expiration_date,
-                contract_name,
-            ))?;
+            chrono::NaiveDateTime::parse_from_str(&self.expiration_date, "%Y-%m-%d %H:%M:%S")
+                .with_context(|| {
+                    format!(
+                        "Invalid 'expiration_date' format '{}' for contract '{}'",
+                        self.expiration_date, contract_name,
+                    )
+                })?;
         }
 
         // Validate step
@@ -143,7 +141,6 @@ impl InstrumentInfo {
 
         anyhow::Ok(())
     }
-
 }
 
 /// Type alias for a map of instrument names to their metadata.
@@ -151,15 +148,13 @@ pub type InstrumentBaseInfo = std::collections::HashMap<String, InstrumentInfo>;
 
 /// Registry for all instrument metadata.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct InstrumentsInfoRegistry(
-    pub std::collections::HashMap<String, InstrumentBaseInfo>
-);
+pub struct InstrumentsInfoRegistry(pub std::collections::HashMap<String, InstrumentBaseInfo>);
 
 impl InstrumentsInfoRegistry {
     /// Loads the instrument metadata from the `instruments_info.json` file.
     /// # Returns
     /// * `anyhow::Result<InstrumentsInfoRegistry>` containing the loaded metadata.
-    pub fn load(settings: &settings::Settings,) -> anyhow::Result<Self> {
+    pub fn load(settings: &settings::Settings) -> anyhow::Result<Self> {
         // Validate all instruments
         let file_path = settings.common.instrument_info_path.clone();
         let contents = std::fs::read_to_string(file_path)?;
@@ -180,10 +175,7 @@ impl InstrumentsInfoRegistry {
     /// * `symbol` - The symbol to retrieve metadata for (e.g., "Si-12.23").
     /// # Returns
     /// * An optional reference to the `InstrumentInfo`, or `None` if not found.
-    pub fn get_instrument_info(
-        &self,
-        symbol: &str,
-    ) -> Option<&InstrumentInfo> {
+    pub fn get_instrument_info(&self, symbol: &str) -> Option<&InstrumentInfo> {
         // Finds instrument info by symbol (e.g., "Si-12.23").
 
         for base_name in self.0.keys() {
@@ -203,10 +195,14 @@ impl InstrumentsInfoRegistry {
     /// * `symbol_list` - The list of symbols to retrieve metadata for.
     /// # Returns
     /// * `anyhow::Result<std::collections::HashMap<String, InstrumentInfo>>` containing the metadata for all symbols.
-    pub fn get_instrument_info_for_strategy(&self, symbol_list: &[String]) -> anyhow::Result<std::collections::HashMap<String, InstrumentInfo>> {
+    pub fn get_instrument_info_for_strategy(
+        &self,
+        symbol_list: &[String],
+    ) -> anyhow::Result<std::collections::HashMap<String, InstrumentInfo>> {
         // Returns a map of InstrumentInfo for all symbols in a strategy.
 
-        let mut result: std::collections::HashMap<String, InstrumentInfo> = std::collections::HashMap::new();
+        let mut result: std::collections::HashMap<String, InstrumentInfo> =
+            std::collections::HashMap::new();
         for symbol in symbol_list {
             let instrument_info = self.get_instrument_info(symbol).unwrap();
             result.insert(symbol.clone(), instrument_info.clone());
@@ -214,5 +210,4 @@ impl InstrumentsInfoRegistry {
 
         anyhow::Ok(result)
     }
-
 }

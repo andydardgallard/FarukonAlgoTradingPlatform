@@ -14,14 +14,15 @@
 //!
 //! This module provides functions to load this data and calculate the commission amount for a given trade.
 
-use crate::settings;
 use crate::instruments_info;
+use crate::settings;
 
 /// Represents the commission fee structure for all exchanges.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommissionPlans {
     /// A map of exchange names to their commission plans.
-    pub exchanges: std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>,
+    pub exchanges:
+        std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl CommissionPlans {
@@ -59,7 +60,7 @@ impl CommissionPlans {
     /// * `anyhow::Result<()>` - `Ok(())` if the filtering and attachment process completes successfully.
     ///                          Returns an `Err` if an instrument's info is missing for a symbol listed in a strategy's settings.
     fn add_commission_plans_to_settings(
-        &self, // Reference to the loaded global commission plans
+        &self,                             // Reference to the loaded global commission plans
         settings: &mut settings::Settings, // Mutable reference to the main settings, to be updated
         instruments_info: &instruments_info::InstrumentsInfoRegistry, // Reference to the instrument metadata registry
     ) -> anyhow::Result<()> {
@@ -75,8 +76,8 @@ impl CommissionPlans {
                 if let Some(instruments_info) = instruments_info.get_instrument_info(symbol) {
                     // Insert the (exchange, commission_type) pair into the set to ensure uniqueness.
                     required_combinations.insert((
-                        instruments_info.exchange.clone(), // e.g., "FORTS"
-                        instruments_info.commission_type.clone() // e.g., "currency", "index"
+                        instruments_info.exchange.clone(),        // e.g., "FORTS"
+                        instruments_info.commission_type.clone(), // e.g., "currency", "index"
                     ));
                 } else {
                     // If instrument info is missing, it's a critical error for the backtest configuration.
@@ -86,7 +87,10 @@ impl CommissionPlans {
 
             // --- Phase 2: Filter Global Plans Based on Requirements ---
             // Construct a new, smaller `CommissionPlans` object containing only the necessary data for this strategy.
-            let mut filtered_exchanges: std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>> = std::collections::HashMap::new();
+            let mut filtered_exchanges: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, serde_json::Value>,
+            > = std::collections::HashMap::new();
 
             // Iterate through the unique (Exchange, CommissionType) pairs identified for this strategy.
             for (exchange, commission_type) in required_combinations {
@@ -108,7 +112,9 @@ impl CommissionPlans {
                                     // Get or create an entry for this specific plan name within the exchange's map in the filtered plans.
                                     let plan_entry = filtered_plan_map
                                         .entry(plan_name.clone()) // Use the plan name (e.g., "default") as the key
-                                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new())); // Initialize an empty object if the plan wasn't present
+                                        .or_insert_with(|| {
+                                            serde_json::Value::Object(serde_json::Map::new())
+                                        }); // Initialize an empty object if the plan wasn't present
 
                                     // If the entry is indeed an object (which it should be, due to `or_insert_with` above),
                                     // insert the required commission type and its value into this plan's object.
@@ -145,7 +151,6 @@ impl CommissionPlans {
         // Indicate successful completion of the filtering and attachment process.
         anyhow::Ok(())
     }
-
 
     /// Retrieves the commission rate for a specific exchange, instrument type, and plan name.
     /// # Arguments
@@ -187,7 +192,7 @@ impl CommissionPlans {
     /// * `key` - The key of the field to retrieve.
     /// # Returns
     /// * An optional `serde_json::Value` representing the field value, or `None` if not found.
-    pub fn get_plan_value (
+    pub fn get_plan_value(
         &self,
         exchange: &str,
         plan_name: &str,
@@ -202,7 +207,6 @@ impl CommissionPlans {
         // Return the value for the specified key.
         plan_value.get(key).cloned()
     }
-
 }
 
 /// Calculates the commission for a FORTS futures trade based on the step price, step, and commission plan.
@@ -219,7 +223,7 @@ pub fn calculate_forts_comission(
 ) -> Option<f64> {
     // Calculates commission for FORTS futures based on step_price and step.
     // Uses commission_plans.json to determine rate per instrument type.
-    
+
     // Get the exchange name from the instrument metadata.
     let exchange = &strategy_instruments_info_for_symbol.exchange;
     // Get the step price and step from the instrument metadata.
@@ -227,9 +231,10 @@ pub fn calculate_forts_comission(
     let step = strategy_instruments_info_for_symbol.step;
     // Get the commission type from the instrument metadata.
     let commission_type = strategy_instruments_info_for_symbol.commission_type.clone();
-    
+
     // Get the commission plans from the strategy settings.
-    let commission_plans_map = strategy_settings.commission_plans
+    let commission_plans_map = strategy_settings
+        .commission_plans
         .as_ref()
         .and_then(|cp| cp.exchanges.get(exchange));
 
@@ -251,7 +256,8 @@ pub fn calculate_forts_comission(
             // Calculate the cost of one step price in base currency.
             let cost_of_step_price = ((step_price / step) * 100_000.0).round() / 100_000.0;
             // Calculate the commission base (price * cost_of_step_price).
-            let commission_base = (price.unwrap().abs() * cost_of_step_price * 100.0).round() / 100.0;
+            let commission_base =
+                (price.unwrap().abs() * cost_of_step_price * 100.0).round() / 100.0;
             // Calculate the final commission amount.
             let commission = (commission_base * total_commission_rate * 100.0).round() / 100.0;
 
@@ -259,5 +265,4 @@ pub fn calculate_forts_comission(
         }
     }
     None
-
 }
