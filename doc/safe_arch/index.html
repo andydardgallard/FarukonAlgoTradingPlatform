@@ -1,0 +1,116 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A crate that safely exposes arch intrinsics via `#[cfg()]`."><title>safe_arch - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="safe_arch" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0 (ded5c06cf 2025-12-08)" data-channel="1.92.0" data-search-js="search-d69d8955.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate safe_arch</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../safe_arch/index.html">safe_<wbr>arch</a><span class="version">0.7.4</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#naming-conventions" title="Naming Conventions">Naming Conventions</a></li><li><a href="#current-support" title="Current Support">Current Support</a></li><li><a href="#compile-time-cpu-target-features" title="Compile Time CPU Target Features">Compile Time CPU Target Features</a><ul><li><a href="#a-note-on-working-with-cfg" title="A Note On Working With Cfg">A Note On Working With Cfg</a></li></ul></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#macros" title="Macros">Macros</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>safe_<wbr>arch</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/safe_arch/lib.rs.html#1-318">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A crate that safely exposes arch intrinsics via <code>#[cfg()]</code>.</p>
+<p><code>safe_arch</code> lets you safely use CPU intrinsics. Those things in the
+<a href="https://doc.rust-lang.org/1.92.0/core/arch/index.html" title="mod core::arch"><code>core::arch</code></a> modules. It works purely via <code>#[cfg()]</code> and
+compile time CPU feature declaration. If you want to check for a feature at
+runtime and then call an intrinsic or use a fallback path based on that then
+this crate is sadly not for you.</p>
+<p>SIMD register types are “newtype’d” so that better trait impls can be given
+to them, but the inner value is a <code>pub</code> field so feel free to just grab it
+out if you need to. Trait impls of the newtypes include: <code>Default</code> (zeroed),
+<code>From</code>/<code>Into</code> of appropriate data types, and appropriate operator
+overloading.</p>
+<ul>
+<li>Most intrinsics (like addition and multiplication) are totally safe to use
+as long as the CPU feature is available. In this case, what you get is 1:1
+with the actual intrinsic.</li>
+<li>Some intrinsics take a pointer of an assumed minimum alignment and
+validity span. For these, the <code>safe_arch</code> function takes a reference of an
+appropriate type to uphold safety.
+<ul>
+<li>Try the <a href="https://docs.rs/bytemuck">bytemuck</a> crate (and turn on the
+<code>bytemuck</code> feature of this crate) if you want help safely casting
+between reference types.</li>
+</ul>
+</li>
+<li>Some intrinsics are not safe unless you’re <em>very</em> careful about how you
+use them, such as the streaming operations requiring you to use them in
+combination with an appropriate memory fence. Those operations aren’t
+exposed here.</li>
+<li>Some intrinsics mess with the processor state, such as changing the
+floating point flags, saving and loading special register state, and so
+on. LLVM doesn’t really support you messing with that within a high level
+language, so those operations aren’t exposed here. Use assembly or
+something if you want to do that.</li>
+</ul>
+<h3 id="naming-conventions"><a class="doc-anchor" href="#naming-conventions">§</a>Naming Conventions</h3>
+<p>The <code>safe_arch</code> crate does not simply use the “official” names for each
+intrinsic, because the official names are generally poor. Instead, the
+operations have been given better names that makes things hopefully easier
+to understand then you’re reading the code.</p>
+<p>For a full explanation of the naming used, see the <a href="naming_conventions/index.html" title="mod safe_arch::naming_conventions">Naming
+Conventions</a> page.</p>
+<h3 id="current-support"><a class="doc-anchor" href="#current-support">§</a>Current Support</h3>
+<ul>
+<li><code>x86</code> / <code>x86_64</code> (Intel, AMD, etc)
+<ul>
+<li>128-bit: <code>sse</code>, <code>sse2</code>, <code>sse3</code>, <code>ssse3</code>, <code>sse4.1</code>, <code>sse4.2</code></li>
+<li>256-bit: <code>avx</code>, <code>avx2</code></li>
+<li>Other: <code>adx</code>, <code>aes</code>, <code>bmi1</code>, <code>bmi2</code>, <code>fma</code>, <code>lzcnt</code>, <code>pclmulqdq</code>,
+<code>popcnt</code>, <code>rdrand</code>, <code>rdseed</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="compile-time-cpu-target-features"><a class="doc-anchor" href="#compile-time-cpu-target-features">§</a>Compile Time CPU Target Features</h3>
+<p>At the time of me writing this, Rust enables the <code>sse</code> and <code>sse2</code> CPU
+features by default for all <code>i686</code> (x86) and <code>x86_64</code> builds. Those CPU
+features are built into the design of <code>x86_64</code>, and you’d need a <em>super</em> old
+<code>x86</code> CPU for it to not support at least <code>sse</code> and <code>sse2</code>, so they’re a safe
+bet for the language to enable all the time. In fact, because the standard
+library is compiled with them enabled, simply trying to <em>disable</em> those
+features would actually cause ABI issues and fill your program with UB
+(<a href="https://doc.rust-lang.org/rustc/targets/known-issues.html">link</a>).</p>
+<p>If you want additional CPU features available at compile time you’ll have to
+enable them with an additional arg to <code>rustc</code>. For a feature named <code>name</code>
+you pass <code>-C target-feature=+name</code>, such as <code>-C target-feature=+sse3</code> for
+<code>sse3</code>.</p>
+<p>You can alternately enable <em>all</em> target features of the current CPU with <code>-C target-cpu=native</code>. This is primarily of use if you’re building a program
+you’ll only run on your own system.</p>
+<p>It’s sometimes hard to know if your target platform will support a given
+feature set, but the <a href="https://store.steampowered.com/hwsurvey/Steam-Hardware-Software-Survey-Welcome-to-Steam">Steam Hardware Survey</a> is generally
+taken as a guide to what you can expect people to have available. If you
+click “Other Settings” it’ll expand into a list of CPU target features and
+how common they are. These days, it seems that <code>sse3</code> can be safely assumed,
+and <code>ssse3</code>, <code>sse4.1</code>, and <code>sse4.2</code> are pretty safe bets as well. The stuff
+above 128-bit isn’t as common yet, give it another few years.</p>
+<p><strong>Please note that executing a program on a CPU that doesn’t support the
+target features it was compiles for is Undefined Behavior.</strong></p>
+<p>Currently, Rust doesn’t actually support an easy way for you to check that a
+feature enabled at compile time is <em>actually</em> available at runtime. There is
+the “<a href="https://doc.rust-lang.org/std/index.html?search=feature_detected">feature_detected</a>” family of macros, but if you
+enable a feature they will evaluate to a constant <code>true</code> instead of actually
+deferring the check for the feature to runtime. This means that, if you
+<em>did</em> want a check at the start of your program, to confirm that all the
+assumed features are present and error out when the assumptions don’t hold,
+you can’t use that macro. You gotta use CPUID and check manually. rip.
+Hopefully we can make that process easier in a future version of this crate.</p>
+<h4 id="a-note-on-working-with-cfg"><a class="doc-anchor" href="#a-note-on-working-with-cfg">§</a>A Note On Working With Cfg</h4>
+<p>There’s two main ways to use <code>cfg</code>:</p>
+<ul>
+<li>Via an attribute placed on an item, block, or expression:
+<ul>
+<li><code>#[cfg(debug_assertions)] println!("hello");</code></li>
+</ul>
+</li>
+<li>Via a macro used within an expression position:
+<ul>
+<li><code>if cfg!(debug_assertions) { println!("hello"); }</code></li>
+</ul>
+</li>
+</ul>
+<p>The difference might seem small but it’s actually very important:</p>
+<ul>
+<li>The attribute form will include code or not <em>before</em> deciding if all the
+items named and so forth really exist or not. This means that code that is
+configured via attribute can safely name things that don’t always exist as
+long as the things they name do exist whenever that code is configured
+into the build.</li>
+<li>The macro form will include the configured code <em>no matter what</em>, and then
+the macro resolves to a constant <code>true</code> or <code>false</code> and the compiler uses
+dead code elimination to cut out the path not taken.</li>
+</ul>
+<p>This crate uses <code>cfg</code> via the attribute, so the functions it exposes don’t
+exist at all when the appropriate CPU target features aren’t enabled.
+Accordingly, if you plan to call this crate or not depending on what
+features are enabled in the build you’ll also need to control your use of
+this crate via cfg attribute, not cfg macro.</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="naming_conventions/index.html" title="mod safe_arch::naming_conventions">naming_<wbr>conventions</a></dt><dd>An explanation of the crate’s naming conventions.</dd></dl><h2 id="macros" class="section-header">Macros<a href="#macros" class="anchor">§</a></h2><dl class="item-table"><dt><a class="macro" href="macro.round_op.html" title="macro safe_arch::round_op">round_<wbr>op</a></dt><dd>Turns a round operator token to the correct constant value.</dd></dl></section></div></main></body></html>

@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["objc2_core_foundation",[["impl <a class=\"trait\" href=\"bitflags/traits/trait.Flags.html\" title=\"trait bitflags::traits::Flags\">Flags</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFDataSearchFlags.html\" title=\"struct objc2_core_foundation::CFDataSearchFlags\">CFDataSearchFlags</a>"],["impl <a class=\"trait\" href=\"bitflags/traits/trait.Flags.html\" title=\"trait bitflags::traits::Flags\">Flags</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFRunLoopActivity.html\" title=\"struct objc2_core_foundation::CFRunLoopActivity\">CFRunLoopActivity</a>"],["impl <a class=\"trait\" href=\"bitflags/traits/trait.Flags.html\" title=\"trait bitflags::traits::Flags\">Flags</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFStringCompareFlags.html\" title=\"struct objc2_core_foundation::CFStringCompareFlags\">CFStringCompareFlags</a>"],["impl <a class=\"trait\" href=\"bitflags/traits/trait.Flags.html\" title=\"trait bitflags::traits::Flags\">Flags</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFURLBookmarkCreationOptions.html\" title=\"struct objc2_core_foundation::CFURLBookmarkCreationOptions\">CFURLBookmarkCreationOptions</a>"],["impl <a class=\"trait\" href=\"bitflags/traits/trait.Flags.html\" title=\"trait bitflags::traits::Flags\">Flags</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFURLBookmarkResolutionOptions.html\" title=\"struct objc2_core_foundation::CFURLBookmarkResolutionOptions\">CFURLBookmarkResolutionOptions</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1533]}

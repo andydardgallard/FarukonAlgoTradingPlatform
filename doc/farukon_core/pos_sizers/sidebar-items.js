@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_pos_sizer_from_settings"]};

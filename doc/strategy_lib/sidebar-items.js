@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["calculate_signals","create_strategy","destroy_strategy"],"struct":["MovingAverageCrossStrategy"]};

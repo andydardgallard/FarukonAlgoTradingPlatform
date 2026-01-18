@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["margin_call_control_for_market","margin_call_control_for_signal"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["commission_plans","data_handler","event","execution","index","indicators","instruments_info","optimization","performance","portfolio","pos_sizers","settings","strategy","utils"],"struct":["DataHandlerVTable"]};

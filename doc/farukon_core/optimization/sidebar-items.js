@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["GAConfig","GAStatsPerGeneration","GeneticAlgorythm","GridSearchOptimizer","OptimizationConfig","OptimizationResult","ParameterSet"]};
