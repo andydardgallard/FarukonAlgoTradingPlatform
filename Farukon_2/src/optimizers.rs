@@ -520,7 +520,7 @@ impl OptimizationRunner {
                 "max_DD" => &(-metrics.get_max_drawdown()),
                 "APR/DD_factor" => metrics.get_apr_to_drawdown_ratio(),
                 "Recovery_Factor" => metrics.get_recovery_factor(),
-                "Deals_Count" => &(-(*metrics.get_deals_count() as f64)), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
+                "Deals_Count" => &(-((*metrics.get_deals_count() as f64) + 1.0).ln()), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
                 _ => &0.0, // Default to 0 if the metric name is unknown.
             };
             // Add the weighted value of this metric to the total score.
