@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["main"],"mod":["backtest","cli","data_engine","execution","optimizers","portfolio","risks","strategy_loader"]};

@@ -1,9 +1,0 @@
-(function() {
-    var implementors = Object.fromEntries([["objc2_core_foundation",[["impl&lt;'a, T: ?<a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/marker/trait.Sized.html\" title=\"trait core::marker::Sized\">Sized</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/hash/trait.Hasher.html\" title=\"trait core::hash::Hasher\">Hasher</a> for &amp;'a <a class=\"struct\" href=\"objc2_core_foundation/struct.CFRetained.html\" title=\"struct objc2_core_foundation::CFRetained\">CFRetained</a>&lt;T&gt;<div class=\"where\">where\n    <a class=\"primitive\" href=\"https://doc.rust-lang.org/1.92.0/std/primitive.reference.html\">&amp;'a T</a>: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/hash/trait.Hasher.html\" title=\"trait core::hash::Hasher\">Hasher</a>,</div>"],["impl&lt;T: ?<a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/marker/trait.Sized.html\" title=\"trait core::marker::Sized\">Sized</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/hash/trait.Hasher.html\" title=\"trait core::hash::Hasher\">Hasher</a> for <a class=\"struct\" href=\"objc2_core_foundation/struct.CFRetained.html\" title=\"struct objc2_core_foundation::CFRetained\">CFRetained</a>&lt;T&gt;<div class=\"where\">where\n    for&lt;'a&gt; <a class=\"primitive\" href=\"https://doc.rust-lang.org/1.92.0/std/primitive.reference.html\">&amp;'a T</a>: <a class=\"trait\" href=\"https://doc.rust-lang.org/1.92.0/core/hash/trait.Hasher.html\" title=\"trait core::hash::Hasher\">Hasher</a>,</div>"]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":57,"fragment_lengths":[1505]}

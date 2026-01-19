@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["FitnessValue","KellyMode","MetricsMode","OptimizerType","ParamSpec"],"struct":["CommonSettings","DataSettings","FitnessParams","GAParams","MarginParams","PortfolioSettingsForStrategy","PosSizer","Settings","StrategySettings"]};

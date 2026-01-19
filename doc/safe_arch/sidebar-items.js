@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"macro":["round_op"],"mod":["naming_conventions"]};

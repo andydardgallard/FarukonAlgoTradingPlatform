@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["FillEvent","MarketEvent","OrderEvent","SignalEvent"],"trait":["Event"]};
