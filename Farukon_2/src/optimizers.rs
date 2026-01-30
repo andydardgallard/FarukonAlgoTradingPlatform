@@ -183,7 +183,7 @@ impl OptimizationRunner {
                     };
 
                     println!(
-                        "# {} from {} is done in {:.3} seconds ",
+                        "# {} from {} is done in {:.3} seconds.",
                         current_count,
                         total_combinations,
                         start_time.elapsed().as_secs_f64()

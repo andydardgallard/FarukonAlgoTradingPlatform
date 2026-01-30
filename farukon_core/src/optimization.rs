@@ -279,12 +279,6 @@ impl OptimizationConfig {
         self
     }
 
-    /// Generates all possible combinations of parameters.
-    /// Returns a vector of ParameterSet objects.
-    pub fn generate_all_combinations_vec(&self) -> Vec<ParameterSet> {
-        self.generate_all_combinations_iter().collect()
-    }
-
     /// Generates an iterator over all possible combinations of parameters.
     ///
     /// This method creates a lazy iterator that produces `ParameterSet` objects by combining:
@@ -297,11 +291,9 @@ impl OptimizationConfig {
     /// - Strategy parameters (e.g., `short_window`, `long_window`).
     /// An iterator that yields `ParameterSet` objects.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
-        let strategy_params_names: Vec<String> =
-            self.strategy_params_ranges.keys().cloned().collect();
+        let strategy_params_names: Vec<String> = self.strategy_params_ranges.keys().cloned().collect();
         let pos_sizer_name = self.pos_sizer_name.clone();
-        let pos_sizer_additional_params_names: Vec<String> =
-            self.pos_sizer_additional_params.keys().cloned().collect();
+        let pos_sizer_additional_params_names: Vec<String> = self.pos_sizer_additional_params.keys().cloned().collect();
 
         let slippage_values: Vec<f64> = self
             .slippage_range
@@ -314,12 +306,17 @@ impl OptimizationConfig {
             let pos_sizer_name = pos_sizer_name.clone();
             let pos_sizer_additional_params_names = pos_sizer_additional_params_names.clone();
             move |slippage| {
-                let pos_sizer_values: Vec<f64> = self
+                let pos_sizer_values_raw: Vec<f64> = self
                     .pos_sizer_value_range
                     .expand()
                     .into_iter()
                     .filter_map(|v| v.as_f64())
                     .collect();
+                let pos_sizer_values = if pos_sizer_values_raw.is_empty() {
+                    vec![0.0]
+                } else {
+                    pos_sizer_values_raw
+                };
 
                 pos_sizer_values.into_iter().flat_map({
                     let pos_sizer_name = pos_sizer_name.clone();
@@ -360,7 +357,8 @@ impl OptimizationConfig {
                                             (name.clone(), val)
                                         })
                                         .collect();
-
+                                println!("DEBUG {:?}, {}, {:?}, {}, {}",
+                                    strategy_params, pos_sizer_name.clone(), pos_sizer_additional_params, pos_sizer_val, slippage);
                                 ParameterSet::new()
                                     .with_strategy_params(strategy_params)
                                     .with_pos_sizer_name(pos_sizer_name.clone())
