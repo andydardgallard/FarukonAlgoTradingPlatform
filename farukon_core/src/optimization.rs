@@ -357,8 +357,7 @@ impl OptimizationConfig {
                                             (name.clone(), val)
                                         })
                                         .collect();
-                                println!("DEBUG {:?}, {}, {:?}, {}, {}",
-                                    strategy_params, pos_sizer_name.clone(), pos_sizer_additional_params, pos_sizer_val, slippage);
+
                                 ParameterSet::new()
                                     .with_strategy_params(strategy_params)
                                     .with_pos_sizer_name(pos_sizer_name.clone())
