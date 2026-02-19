@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+#     import matplotlib.pyplot as plt
+# from mpl_toolkits.mplot3d import Axes3D
+# import numpy as np
+
 def args_parser():
     parser = argparse.ArgumentParser(description="Flags of Command-Line options")
     parser.add_argument(
@@ -52,9 +56,106 @@ def two_dimensions(args) -> None:
     print("in TODO list")
     pass
 
+def prepare_data(args) -> dict:
+    data_path = f"{args.file}/optimization_results.csv"
+    with open(data_path, 'r+') as fin:
+        plot_data = pd.read_csv(
+            fin,
+            header= 0,
+            sep= ';',
+        )
+    
+    strategies = set(plot_data["strategy_name"])
+    result = {}
+    for stratagy in strategies:
+        data_for_strategy = plot_data[plot_data["strategy_name"] == stratagy].reset_index(drop= True)
+        xaxis = set(data_for_strategy[args.xaxis])
+        coordinates_x = []
+        coordinates_y = []
+        for x in xaxis:
+            data_for_yaxis = data_for_strategy[data_for_strategy[args.xaxis] == x]
+            y = data_for_yaxis[args.yaxis].max()
+            coordinates_x.append(x)
+            coordinates_y.append(y)
+
+        result[stratagy] = (coordinates_x, coordinates_y)
+
+    return result
+
 def three_dimensions(args) -> None:
-    print("in TODO list")
-    pass
+    data_dict = prepare_data(args)
+    
+    all_x = sorted(set(float(x) for xs, _ in data_dict.values() for x in xs))
+    strategies = sorted(data_dict.keys())
+    
+    x_to_mean = {}
+    for x_val in all_x:
+        y_vals_for_x = []
+        for xs, ys in data_dict.values():
+            for x, y in zip(xs, ys):
+                if float(x) == float(x_val):
+                    y_vals_for_x.append(y)
+        x_to_mean[x_val] = np.mean(y_vals_for_x) if y_vals_for_x else 0.0
+
+    Z = []
+    for strategy in strategies:
+        xs, ys = data_dict[strategy]
+        xy_map = {float(x): y for x, y in zip(xs, ys)}
+        
+        row = []
+        for x_val in all_x:
+            if float(x_val) in xy_map:
+                row.append(xy_map[float(x_val)])
+            else:
+                row.append(x_to_mean[float(x_val)])
+        Z.append(row)
+
+    Z = np.array(Z)
+    
+    X_grid, Y_grid = np.meshgrid(all_x, np.arange(len(strategies)))
+    
+    fig = plt.figure(figsize=(14, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    surf = ax.plot_surface(X_grid, Y_grid, Z, 
+                          cmap='viridis',                   # plasma, coolwarm, viridus
+                          edgecolor='none',
+                          alpha=0.9)
+    
+    for i, strategy in enumerate(strategies):
+        xs, ys = data_dict[strategy]
+        xs_float = [float(x) for x in xs]
+        ax.scatter(xs_float, [i]*len(xs), ys, c='red', s=30, label=f'{strategy} (orig)')
+    
+    ax.set_xlabel(args.xaxis, fontsize=9)
+    ax.set_ylabel('Strategy', fontsize=9)
+    ax.set_zlabel(args.yaxis, fontsize=9)
+    ax.set_xticks(all_x)
+    ax.set_yticks(np.arange(len(strategies)))
+    
+    ax.set_yticklabels(strategies, fontsize=7, rotation=15)
+    
+    # ax.legend(loc='upper left', fontsize=6, bbox_to_anchor=(1.05, 1))
+    
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.45, aspect=10, pad=0.15, label=args.yaxis)
+    cbar.ax.tick_params(labelsize=7)
+    
+    ax.set_title(f'3D Plot: {args.xaxis} (missing values filled with mean)', 
+                fontsize=10, pad=15)
+    
+    ax.view_init(elev=25, azim=45)
+    
+    plt.subplots_adjust(
+        left=0.01,    
+        right=0.99,    
+        bottom=0.02,  
+        top=0.95,      
+        wspace=0.1,
+        hspace=0.1
+    )
+    
+    plt.show()
+
 
 def selection() -> None:
     print("in TODO list")

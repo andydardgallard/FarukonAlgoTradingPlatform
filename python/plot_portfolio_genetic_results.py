@@ -13,22 +13,27 @@ def plot_portfolio_genetic_results(folder) -> None:
             sep= ';',
         )
     
-    plt.figure("Genetic Algorythm Results", figsize=(14, 8))
-    plt.subplots_adjust(
-        hspace= 0.3,
-        top= 0.95,
-        bottom= 0.05,
-        left= 0.05,
-        right= 0.95,
-        wspace= 0.15)
+    strategies = set(plot_data["strategy_name"])
 
-    x = plot_data["number_of_generation"]
-    y1 = plot_data["best_individ"]
-    y2 = plot_data["mean"]
-    
-    plt.plot(x, y1, y2)
-    plt.text(x[1], y1[1] * 0.98, f'{plot_data["best_hromosome_ID"].iloc[-1]}', fontsize= 8)
-    plt.grid(True)
+    for strategy in strategies:  
+        plot_data_for_strategy = plot_data[plot_data["strategy_name"] == strategy].reset_index(drop= True)
+        plt.figure(f"{strategy}_Genetic Algorythm Results", figsize=(14, 8))
+        plt.subplots_adjust(
+            hspace= 0.3,
+            top= 0.95,
+            bottom= 0.05,
+            left= 0.05,
+            right= 0.95,
+            wspace= 0.15)
+
+        x = plot_data_for_strategy["number_of_generation"]
+        y1 = plot_data_for_strategy["best_individ"]
+        y2 = plot_data_for_strategy["mean"]
+
+        plt.plot(x, y1, y2)
+        plt.text(x[1], y1[1] * 0.98, f'{plot_data_for_strategy["best_hromosome_ID"].iloc[-1]}', fontsize= 8)
+        plt.grid(True)
+
     plt.show()
 
 if __name__ == "__main__":

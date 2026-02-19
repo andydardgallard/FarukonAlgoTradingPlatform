@@ -9,3 +9,4 @@ lib.rs
 out.csv
 Cargo.lock
 /SWAP
+/python/VM

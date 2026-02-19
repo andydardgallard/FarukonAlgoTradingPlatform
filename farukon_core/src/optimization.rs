@@ -4,6 +4,7 @@
 //! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
 //! Uses Rayon for parallel evaluation of thousands of parameter combinations.
 
+use ::std::io::Write;
 use itertools::Itertools;
 use rand::prelude::*;
 use rayon::prelude::*;
@@ -291,9 +292,11 @@ impl OptimizationConfig {
     /// - Strategy parameters (e.g., `short_window`, `long_window`).
     /// An iterator that yields `ParameterSet` objects.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
-        let strategy_params_names: Vec<String> = self.strategy_params_ranges.keys().cloned().collect();
+        let strategy_params_names: Vec<String> =
+            self.strategy_params_ranges.keys().cloned().collect();
         let pos_sizer_name = self.pos_sizer_name.clone();
-        let pos_sizer_additional_params_names: Vec<String> = self.pos_sizer_additional_params.keys().cloned().collect();
+        let pos_sizer_additional_params_names: Vec<String> =
+            self.pos_sizer_additional_params.keys().cloned().collect();
 
         let slippage_values: Vec<f64> = self
             .slippage_range
@@ -1333,24 +1336,44 @@ impl GeneticAlgorythm {
             strategy_settings.exit_results_path,
         );
         let path = std::path::Path::new(&filename);
+        std::fs::create_dir_all(strategy_settings.exit_results_path.clone())?;
+        let file_exist = path.exists();
 
-        let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_path(path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(&filename)?;
 
-        wtr.write_record(&[
-            "number_of_generation",
-            "best_individ",
-            "mean",
-            "best_hromosome_ID",
-        ])?;
+        if !file_exist {
+            let headers = &[
+                "strategy_name;",
+                "number_of_generation;",
+                "best_individ;",
+                "mean;",
+                "best_hromosome_ID",
+            ];
+            
+            for header in headers {
+                write!(file, "{}", header)?;
+            }
+            let _ = writeln!(file, "");
+        }
+
         for stat in stats {
-            wtr.write_record(&[
+            let records = &[
+                strategy_settings.strategy_name.clone(),
                 stat.generation.to_string(),
                 stat.best_fitness.to_string(),
                 stat.mean_fitness.to_string(),
                 stat.best_chromosome_id.join(", "),
-            ])?;
+            ];
+
+            for record in &records[0..records.len() - 1] {
+                write!(file, "{};", record)?;
+            }
+            let _ = writeln!(file, "{}", records.last().unwrap());
         }
-        wtr.flush()?;
 
         anyhow::Ok(())
     }
