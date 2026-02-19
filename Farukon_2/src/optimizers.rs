@@ -617,6 +617,9 @@ impl OptimizationRunner {
 
         if !file_exist {
             if let Some(ref names) = result_names {
+                // add Strategy name as first column
+                write!(file, "strategy_name;")?;
+
                 // --- 3.4: Write Strategy Parameter Column Names ---
                 // Writes the names of the strategy parameters to the file header, separated by semicolons.
                 for name in &strategy_params {
@@ -653,6 +656,8 @@ impl OptimizationRunner {
         // Iterates through each OptimizationResult and writes its parameters and metrics as a row in the CSV.
         if let Some(ref names) = result_names {
             for result in results {
+                // write strategy name
+                write!(file, "{};", self.strategy_settings.strategy_name)?;
                 // --- 4.1: Extract Strategy Parameter Values for Current Result ---
                 // Gets the map of (name, value) for the current result's strategy parameters.
                 let params_map: std::collections::HashMap<_, _> = result
