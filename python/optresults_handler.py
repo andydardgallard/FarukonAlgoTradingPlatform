@@ -57,7 +57,7 @@ def two_dimensions(args) -> None:
     pass
 
 def prepare_data(args) -> dict:
-    data_path = f"{args.file}/optimization_results.csv"
+    data_path = f"{args.file}"
     with open(data_path, 'r+') as fin:
         plot_data = pd.read_csv(
             fin,
@@ -117,8 +117,24 @@ def three_dimensions(args) -> None:
     ax2_slice_graph.plot(x, y_yaxis, 'r', label= args.yaxis)
     ax2_slice_graph.set_ylabel(args.yaxis)
 
+    ## plot scatter x_axsis vs y_axsis
+    plt.figure(f"Scatter plot {args.xaxis} vs {args.yaxis}", figsize=(14, 8))
+    plt.subplots_adjust(
+        hspace= 0.3,
+        top= 0.95,
+        bottom= 0.05,
+        left= 0.05,
+        right= 0.95,
+        wspace= 0.15)
+    
+    scatter_pot = plt.subplot()
+    scatter_pot.scatter(y_xaxis, y_yaxis)
+    scatter_pot.set_xlabel(args.xaxis)
+    scatter_pot.set_ylabel(args.yaxis)
+
+
     ## pot hist of frequency of xaxes values
-    bins = int(np.sqrt(len(y_xaxis)))
+    bins = int((max(y_xaxis) - min_y_xaxis) / 25)
 
     plt.figure(f"Frequency of {args.xaxis} hist", figsize=(14, 8))
     plt.subplots_adjust(
@@ -163,7 +179,7 @@ def three_dimensions(args) -> None:
     
     X_grid, Y_grid = np.meshgrid(all_x, np.arange(len(strategies)))
     
-    fig = plt.figure(figsize=(14, 8))
+    fig = plt.figure("3D graph", figsize=(14, 8))
     ax = fig.add_subplot(111, projection='3d')
     
     surf = ax.plot_surface(X_grid, Y_grid, Z, 
