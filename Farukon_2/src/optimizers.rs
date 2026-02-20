@@ -517,9 +517,35 @@ impl OptimizationRunner {
                 "Total_Return" => metrics.get_total_return(),
                 "Total_Return_%" => metrics.get_total_return_percent(),
                 "APR" => metrics.get_apr(),
-                "max_DD" => &(-metrics.get_max_drawdown()),
+                "max_DD_30%" => {
+                    let score = if *metrics.get_max_drawdown() < -0.3 {
+                        0.0
+                    } else {
+                        -100.0
+                    };
+                    println!("DEBUG {}", score);
+                    &score.clone()
+                },
+                "APR/DD_factor_3" => {
+                    let score = if *metrics.get_apr_to_drawdown_ratio() < 3.0 {
+                        0.0
+                    } else {
+                        *metrics.get_apr_to_drawdown_ratio() * 3.0
+                    };
+                    println!("DEBUG {}", score);
+                    &score.clone()
+                },
                 "APR/DD_factor" => metrics.get_apr_to_drawdown_ratio(),
                 "Recovery_Factor" => metrics.get_recovery_factor(),
+                "Recovery_Factor_5" => {
+                    let score = if *metrics.get_recovery_factor() < 5.0 {
+                        0.0
+                    } else {
+                        *metrics.get_recovery_factor() / 3.0
+                    };
+                    println!("DEBUG {}", score);
+                    &score.clone()
+                }
                 "Deals_Count" => &(-((*metrics.get_deals_count() as f64) + 1.0).ln()), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
                 _ => &0.0, // Default to 0 if the metric name is unknown.
             };

@@ -385,10 +385,12 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                                     "Total_Return_%",
                                     "APR",
                                     "max_DD",
+                                    "max_DD_30%",
                                     "max_DD_%",
                                     "APR/DD_factor",
+                                    "APR/DD_factor_3",
                                     "Recovery_Factor",
-                                    "Recovery_Factor_%",
+                                    "Recovery_Factor_5",
                                     "Deals_Count",
                                 ];
 

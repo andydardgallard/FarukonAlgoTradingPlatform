@@ -208,7 +208,7 @@ def three_dimensions(args) -> None:
     ax.set_title(f'3D Plot: {args.xaxis} (missing values filled with mean)', 
                 fontsize=10, pad=15)
     
-    ax.view_init(elev=25, azim=45)
+    ax.view_init(elev=25, azim=225)
     
     plt.subplots_adjust(
         left=0.01,    

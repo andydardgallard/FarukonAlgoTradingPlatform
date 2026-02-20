@@ -157,7 +157,11 @@
                         "std_stop": 0.0000000000000001,
                         "fitness_params": {
                             "fitness_direction": "max",
-                            "fitness_value": "APR/DD_factor"
+                            "fitness_value": {
+                                "Composite": {
+                                        "metrics": ["APR/DD_factor_3", "Recovery_Factor_5", "max_DD_30%"]
+                                    }
+                            }
                         }
                     }
                 }
