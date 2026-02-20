@@ -84,9 +84,58 @@ def prepare_data(args) -> dict:
 
 def three_dimensions(args) -> None:
     data_dict = prepare_data(args)
-    
-    all_x = sorted(set(float(x) for xs, _ in data_dict.values() for x in xs))
     strategies = sorted(data_dict.keys())
+
+    ## Plot slice of 3D graph with max values
+    slice_graph = {}
+    for strategy in strategies:
+        max_value_for_strategy = max(data_dict[strategy][1])
+        position_of_max_value = data_dict[strategy][1].index(max_value_for_strategy)
+        slice_graph[strategy] = (data_dict[strategy][0][position_of_max_value], max_value_for_strategy)
+    
+    plt.figure("Otimization Results", figsize=(14, 8))
+    plt.subplots_adjust(
+        hspace= 0.3,
+        top= 0.95,
+        bottom= 0.05,
+        left= 0.05,
+        right= 0.95,
+        wspace= 0.15)
+    
+    x = strategies
+    y_xaxis = [slice_graph[strategy][0] for strategy in strategies]
+    y_yaxis = [slice_graph[strategy][1] for strategy in strategies]
+
+    min_y_xaxis = min(y_xaxis)
+
+    ax1_slice_graph = plt.subplot()
+    ax1_slice_graph.plot(x, y_xaxis, 'b', label= args.xaxis)
+    ax1_slice_graph.set_ylabel(args.xaxis)
+    ax1_slice_graph.fill_between(x, min_y_xaxis, y_xaxis, color= 'b', alpha= 0.5)
+
+    ax2_slice_graph = ax1_slice_graph.twinx()
+    ax2_slice_graph.plot(x, y_yaxis, 'r', label= args.yaxis)
+    ax2_slice_graph.set_ylabel(args.yaxis)
+
+    ## pot hist of frequency of xaxes values
+    bins = int(np.sqrt(len(y_xaxis)))
+
+    plt.figure(f"Frequency of {args.xaxis} hist", figsize=(14, 8))
+    plt.subplots_adjust(
+        hspace= 0.3,
+        top= 0.95,
+        bottom= 0.05,
+        left= 0.05,
+        right= 0.95,
+        wspace= 0.15)
+
+    plt.hist(y_xaxis, bins= bins, edgecolor='black') # 'bins' defines the number of groups
+    plt.xlabel(f'{args.xaxis}')
+    plt.ylabel('Frequency (Count)')
+
+
+    ## plot 3D graph
+    all_x = sorted(set(float(x) for xs, _ in data_dict.values() for x in xs))
     
     x_to_mean = {}
     for x_val in all_x:
@@ -122,10 +171,10 @@ def three_dimensions(args) -> None:
                           edgecolor='none',
                           alpha=0.9)
     
-    for i, strategy in enumerate(strategies):
-        xs, ys = data_dict[strategy]
-        xs_float = [float(x) for x in xs]
-        ax.scatter(xs_float, [i]*len(xs), ys, c='red', s=30, label=f'{strategy} (orig)')
+    # for i, strategy in enumerate(strategies):
+    #     xs, ys = data_dict[strategy]
+    #     xs_float = [float(x) for x in xs]
+    #     ax.scatter(xs_float, [i]*len(xs), ys, c='red', s=30, label=f'{strategy} (orig)')
     
     ax.set_xlabel(args.xaxis, fontsize=9)
     ax.set_ylabel('Strategy', fontsize=9)
