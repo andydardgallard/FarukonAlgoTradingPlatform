@@ -523,7 +523,6 @@ impl OptimizationRunner {
                     } else {
                         -100.0
                     };
-                    println!("DEBUG {}", score);
                     &score.clone()
                 },
                 "APR/DD_factor_3" => {
@@ -532,7 +531,6 @@ impl OptimizationRunner {
                     } else {
                         *metrics.get_apr_to_drawdown_ratio() * 3.0
                     };
-                    println!("DEBUG {}", score);
                     &score.clone()
                 },
                 "APR/DD_factor" => metrics.get_apr_to_drawdown_ratio(),
@@ -543,7 +541,6 @@ impl OptimizationRunner {
                     } else {
                         *metrics.get_recovery_factor() / 3.0
                     };
-                    println!("DEBUG {}", score);
                     &score.clone()
                 }
                 "Deals_Count" => &(-((*metrics.get_deals_count() as f64) + 1.0).ln()), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
