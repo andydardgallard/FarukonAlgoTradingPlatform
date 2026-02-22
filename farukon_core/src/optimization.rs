@@ -1353,7 +1353,7 @@ impl GeneticAlgorythm {
                 "mean;",
                 "best_hromosome_ID",
             ];
-            
+
             for header in headers {
                 write!(file, "{}", header)?;
             }
