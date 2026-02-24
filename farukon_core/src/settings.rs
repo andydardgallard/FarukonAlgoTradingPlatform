@@ -391,6 +391,7 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                                     "APR/DD_factor_3",
                                     "Recovery_Factor",
                                     "Recovery_Factor_5",
+                                    "Composite",
                                     "Deals_Count",
                                 ];
 

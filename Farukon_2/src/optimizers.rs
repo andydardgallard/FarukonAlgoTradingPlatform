@@ -524,7 +524,7 @@ impl OptimizationRunner {
                         0.0
                     };
                     score
-                }
+                },
                 "APR/DD_factor_3" => {
                     let score = if *metrics.get_apr_to_drawdown_ratio() < 3.0 {
                         0.0
@@ -532,7 +532,7 @@ impl OptimizationRunner {
                         *metrics.get_apr_to_drawdown_ratio() * 3.0
                     };
                     score
-                }
+                },
                 "APR/DD_factor" => *metrics.get_apr_to_drawdown_ratio(),
                 "Recovery_Factor" => *metrics.get_recovery_factor(),
                 "Recovery_Factor_5" => {
@@ -542,8 +542,34 @@ impl OptimizationRunner {
                         *metrics.get_recovery_factor() / 3.0
                     };
                     score
-                }
+                },
                 "Deals_Count" => -((*metrics.get_deals_count() as f64) + 1.0).ln(), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
+                "Composite" => {
+                    let apr_dd_metric = *metrics.get_apr_to_drawdown_ratio();
+                    let rf_metric = *metrics.get_recovery_factor();
+                    let dd_metric = *metrics.get_max_drawdown();
+
+                    let mut penalty = 0.0;
+                    if apr_dd_metric < 3.0 {
+                        penalty += 1000.0;
+                    } else {
+                        penalty += 0.0;
+                    }
+
+                    if rf_metric < 5.0 {
+                        penalty += 1000.0;
+                    } else {
+                        penalty += 0.0;
+                    }
+
+                    if dd_metric < -0.3 {
+                        penalty += 1000.0;
+                    } else {
+                        penalty += 0.0;
+                    }
+
+                    200.0 * apr_dd_metric + (1.0 + rf_metric).ln() / 10.0 - penalty
+                }
                 _ => 0.0, // Default to 0 if the metric name is unknown.
             };
             // Add the weighted value of this metric to the total score.
