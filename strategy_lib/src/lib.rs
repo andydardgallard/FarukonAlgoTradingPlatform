@@ -97,14 +97,12 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             String,
             farukon_core::portfolio::PositionState,
         >,
-        latest_holdings: &farukon_core::portfolio::HoldingSnapshot,
+        all_holdings: &Vec<farukon_core::portfolio::HoldingSnapshot>,
         symbol_list: &[String],
     ) -> anyhow::Result<()> {
         // Iterate through each symbol in the list.
-        for symbol in symbol_list {
-            // Get the current capital from the equity point.
-            let capital = Some(latest_holdings.capital);
-            // Get the current capital from the equity point.
+        for symbol in symbol_list {            
+            // Get instrument info
             let strategy_instruments_info_for_symbol =
                 self.strategy_instruments_info.get(symbol).unwrap();
 
@@ -151,7 +149,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                     );
                     println!(
                         "Start event, Indicators + equity_point, {:?}",
-                        latest_holdings
+                        all_holdings
                     );
                 }
 
@@ -215,7 +213,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         let signal_name = "LONG";
                         let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
                             &self.mode,
-                            capital,
+                            all_holdings,
                             close,
                             Some(long_sma),
                             &self.strategy_settings,
@@ -243,7 +241,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         let signal_name = "SHORT";
                         let quantity = farukon_core::pos_sizers::get_pos_sizer_from_settings(
                             &self.mode,
-                            capital,
+                            all_holdings,
                             close,
                             Some(long_sma),
                             &self.strategy_settings,
@@ -276,7 +274,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                     );
                     println!(
                         "Finish event, Indicators + equity_point, {:?}",
-                        latest_holdings
+                        all_holdings
                     );
                 }
             }
@@ -379,7 +377,7 @@ pub extern "C" fn calculate_signals(
         String,
         farukon_core::portfolio::PositionState,
     >,
-    latest_holdings_ptr: *mut farukon_core::portfolio::HoldingSnapshot,
+    all_holdings_ptr: *mut Vec<farukon_core::portfolio::HoldingSnapshot>,
     symbol_list_ptr: *const *const std::os::raw::c_char,
     symbol_list_size: usize,
 ) -> i32 {
@@ -399,7 +397,7 @@ pub extern "C" fn calculate_signals(
 
     // Get mutable references to the current positions and latest equity point.
     let current_positions = unsafe { &mut *current_positions_ptr };
-    let latest_holdings = unsafe { &mut *latest_holdings_ptr };
+    let all_holdings = unsafe { &mut *all_holdings_ptr };
 
     // Convert the C string array to a Vec<String>.
     let symbols: Vec<String> = (0..symbol_list_size)
@@ -416,7 +414,7 @@ pub extern "C" fn calculate_signals(
         .collect();
 
     // Call the Rust calculate_signals method and return 0 on success or -1 on error.
-    match strategy.calculate_signals(data_handler, current_positions, latest_holdings, &symbols) {
+    match strategy.calculate_signals(data_handler, current_positions, all_holdings, &symbols) {
         Ok(_) => 0,
         Err(_) => -1,
     }

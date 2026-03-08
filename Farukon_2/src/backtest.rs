@@ -203,18 +203,17 @@ impl Backtest {
             self.process_pending_events()?;
 
             // Run strategy logic on new market data
-            if let Some(latest_holdings) = self.portfolio.get_latest_holdings() {
-                if let Err(e) = self.dynamic_strategy.calculate_signals(
-                    &*self.data_handler,
-                    self.portfolio.get_current_positions(),
-                    latest_holdings,
-                    &self.strategy_settings.symbols,
-                ) {
-                    eprintln!("Error in Strategy::calculate_signals: {}", e);
-                    self.data_handler.set_continue_backtest(false);
-                    break;
+
+            if let Err(e) = self.dynamic_strategy.calculate_signals(
+                &*self.data_handler,
+                self.portfolio.get_current_positions(),
+                self.portfolio.get_all_holdings(),
+                &self.strategy_settings.symbols,
+            ) {
+                eprintln!("Error in Strategy::calculate_signals: {}", e);
+                self.data_handler.set_continue_backtest(false);
+                break;
                 }
-            }
 
             // Update portfolio time index (equity, positions, holdings)
             self.portfolio.update_timeindex(&self.data_handler);

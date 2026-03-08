@@ -1,0 +1,44 @@
+{   
+    "common": {
+        "mode": "Debug",
+        "initial_capital": 1000000.0,
+        "commission_plans_path": "commission_plans.json",
+        "instrument_info_path": "instruments_info.json",
+        "global_data_storage_mode": "arc"
+    },
+    "portfolio": {
+        "Strategy_3": {
+            "threads": 8,
+            "strategy_name": "MA_cross_3",
+            "strategy_path": "target/release/libstrategy_lib.dylib",
+            "exit_results_path": "opt_results/MA_cross_Si_test",
+            "strategy_weight": 1,
+            "slippage": [0.005],
+            "data": {
+                "data_path": "Tickers/FBS/RTS",
+                "timeframe": "5min"
+            },
+            "symbols": [
+                "RTS-9.24",
+                "RTS-12.24"
+            ],
+            "strategy_params": {
+                "short_window": [100],
+                "long_window": [500]
+            },
+            "pos_sizer_params": {
+                "pos_sizer_name": "fixed_ratio",
+                "pos_sizer_params": {},
+                "pos_sizer_value": [1000]
+            },
+            "margin_params": {
+                "min_margin": 0.5,
+                "margin_call_type": "close_deal"
+            },
+            "portfolio_settings_for_strategy": {
+                "metrics_calculation_mode": "offline"
+            },
+            "optimizer_type": "Grid_Search"
+        }
+    }
+}

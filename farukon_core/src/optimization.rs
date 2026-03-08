@@ -170,7 +170,7 @@ impl ParameterSet {
         };
 
         let pos_sizer_str = format!(
-            "{{'pos_sizer_type': '{}', 'pos_sizer_value': {}, 'pos_sizer_additional_params': {}}}",
+            "{{'pos_sizer_type': '{}', 'pos_sizer_value': {:.2}, 'pos_sizer_additional_params': {}}}",
             self.pos_sizer_name, self.pos_sizer_value, additional_params_str,
         );
 
