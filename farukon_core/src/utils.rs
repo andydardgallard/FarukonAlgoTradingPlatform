@@ -503,3 +503,44 @@ pub fn get_param_as_f64(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::ParamSpec;
+
+    fn discrete_param(values: Vec<f64>) -> std::collections::HashMap<String, ParamSpec> {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "width_channel".to_string(),
+            ParamSpec::Discrete(
+                values
+                    .into_iter()
+                    .map(serde_json::Value::from)
+                    .collect(),
+            ),
+        );
+        map
+    }
+
+    #[test]
+    fn get_param_as_f64_preserves_fractional_values() {
+        // A fractional threshold (e.g., 0.05) must NOT be truncated to 0.
+        let params = discrete_param(vec![0.05]);
+        let value = get_param_as_f64(&params, "width_channel").expect("should parse");
+        assert!((value - 0.05).abs() < 1e-12, "value={}", value);
+    }
+
+    #[test]
+    fn get_param_as_f64_accepts_integer_values() {
+        let params = discrete_param(vec![100.0]);
+        let value = get_param_as_f64(&params, "width_channel").expect("should parse");
+        assert!((value - 100.0).abs() < 1e-12, "value={}", value);
+    }
+
+    #[test]
+    fn get_param_as_f64_missing_param_errors() {
+        let params = discrete_param(vec![1.0]);
+        assert!(get_param_as_f64(&params, "absent").is_err());
+    }
+}

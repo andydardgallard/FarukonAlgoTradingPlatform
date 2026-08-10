@@ -6,3 +6,10 @@ out.csv
 Cargo.lock
 /SWAP
 /python/VM
+# --- Code Factory runtime (auto-added by prepare_factory.sh) ---
+.code-factory/
+__pycache__/
+*.pyc
+
+# Backtest run artifacts
+opt_results/

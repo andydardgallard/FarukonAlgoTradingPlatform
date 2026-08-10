@@ -18,7 +18,7 @@ pub struct SYMIChSMAUpStrategy {
     avg_price_period: usize,
     channel_period: usize,
     prct_width_channel: f64,
-    width_channel: usize,
+    width_channel: f64,
     sma_period: usize,
 
     high_prices_data: std::collections::HashMap<String, std::collections::VecDeque<Option<f64>>>,
@@ -47,7 +47,7 @@ impl SYMIChSMAUpStrategy {
         let avg_price_period = utils::get_param_as_usize(&strategy_settings.strategy_params, "avg_price_period")?;
         let channel_period = utils::get_param_as_usize(&strategy_settings.strategy_params, "channel_period")?;
         let prct_width_channel = utils::get_param_as_f64(&strategy_settings.strategy_params, "prct_width_channel")?;
-        let width_channel = utils::get_param_as_usize(&strategy_settings.strategy_params, "width_channel")?;
+        let width_channel = utils::get_param_as_f64(&strategy_settings.strategy_params, "width_channel")?;
         let sma_period = utils::get_param_as_usize(&strategy_settings.strategy_params, "sma_period")?;
 
         let mut high_prices_data = std::collections::HashMap::new();
@@ -249,7 +249,7 @@ impl farukon_core::strategy::Strategy for SYMIChSMAUpStrategy {
                         // LONG
                         if 
                         high >= high_level &&
-                        (width as usize) < self.width_channel &&
+                        width < self.width_channel &&
                         sma < low_level &&
                         current_bar_datetime < expiration_date_dt &&
                         current_bar_datetime >= trade_from_date_dt 
@@ -280,7 +280,7 @@ impl farukon_core::strategy::Strategy for SYMIChSMAUpStrategy {
                         // SHORT
                         else if
                         low <= low_level &&
-                        (width as usize) < self.width_channel &&
+                        width < self.width_channel &&
                         sma > high_level &&
                         current_bar_datetime < expiration_date_dt &&
                         current_bar_datetime >= trade_from_date_dt 

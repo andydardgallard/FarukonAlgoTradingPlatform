@@ -1078,6 +1078,75 @@ To create a new trading strategy for the Farukon platform, you implement the `St
 
 By focusing primarily on the `calculate_signals` function, you can implement the core logic of your trading strategy while leveraging the robust infrastructure provided by the Farukon platform and the standard patterns for initialization and signal sending.
 
+### 8.4 `SYMI_Ch_SMA_up_lmt` Strategy
+
+`SYMI_Ch_SMA_up_lmt` (source: `strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs`) is a channel-based
+strategy. It builds a price channel from moving averages of highs and lows, computes the channel
+width, and enters LONG/SHORT positions when the current bar breaks the channel boundary, the
+channel width is below the `width_channel` threshold, and the SMA confirms the direction.
+
+#### 8.4.1 Strategy Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `avg_price_period` | int | Period of the SMA applied to high/low prices forming the channel |
+| `channel_period` | int | Lookback period for `highest`/`lowest` channel boundaries |
+| `prct_width_channel` | float (percent) | Internal offset ("lustra") from the channel boundaries used for exits |
+| `width_channel` | **float (points)** | Maximum allowed channel width for entering a position |
+| `sma_period` | int | Period of the SMA on close used for direction confirmation |
+
+#### 8.4.2 Working with Instruments of Different Price Magnitudes
+
+`width_channel` is a **fractional threshold expressed in price points** and is compared to the
+channel width **without integer truncation**. This is important for instruments with small
+fractional prices:
+
+- **Expensive integer-priced instruments** (e.g., `Si-3.23`, prices ~79 000): the channel width
+  is tens–hundreds of points; set `width_channel` to a value of the same order of magnitude
+  (e.g., `100`–`200`). Values smaller than the typical channel width will filter out all entries —
+  this is intended filtering behavior.
+- **Cheap fractional-priced instruments** (e.g., `CNY-3.23`, prices ~11.7): the channel width is
+  hundredths–thousandths of a point (0.01–0.05). Set `width_channel` to a fractional value in the
+  same range (e.g., `0.05`–`1.5`). Do **not** rely on integer truncation of the width: the
+  comparison is performed in `f64`, so a fractional threshold is preserved exactly.
+- When optimizing, use a `Range` spec for `width_channel` (e.g., `{"start": 0.05, "end": 1.505,
+  "step": 0.05}`); the optimizer expands it to discrete values before the strategy is created.
+
+The same logic applies to `prct_width_channel` — it is a percentage offset, so it is
+scale-independent by design.
+
+#### 8.4.3 Building the Strategy Library
+
+`SYMI_Ch_SMA_up_lmt` is not part of the default workspace build; compile it manually into a
+`cdylib` after building the workspace release:
+
+```sh
+cargo build --release
+rustc --edition 2024 --crate-type cdylib \
+  --extern farukon_core=target/release/libfarukon_core.rlib \
+  --extern anyhow=$(ls target/release/deps/libanyhow-*.rlib | head -1) \
+  --extern chrono=$(ls target/release/deps/libchrono-*.rlib | head -1) \
+  -L dependency=target/release/deps \
+  -o target/release/SYMI_Ch_SMA_Up.so \
+  strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs
+```
+
+Then point `strategy_path` in the portfolio config to `target/release/SYMI_Ch_SMA_Up.so`.
+
+#### 8.4.4 Automated Business Test
+
+`python/biztest_symi.py` verifies the strategy works on both instrument types:
+
+1. Rebuilds the strategy library.
+2. Runs the CNY grid search (`width_channel` 0.05..1.505) and asserts that more than 2 unique
+   result variants are produced (different thresholds → different outcomes).
+3. Runs the Si grid search and asserts results are identical to the pre-fix baseline
+   (`.code-factory/logs/pre-fix/Si_before_fix.csv`).
+
+```sh
+python3 python/biztest_symi.py
+```
+
 ---
 
 ## 9. File Formats

@@ -169,3 +169,66 @@ where
         .flat_map(|&x| x)
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sma_on_fractional_values_keeps_precision() {
+        // Prices of a "cheap" fractional instrument (e.g., CNY ~11.7).
+        // sma takes the LAST n bars.
+        let prices = vec![11.70, 11.71, 11.72, 11.71, 11.70, 11.69, 11.70];
+        let sma = sma(prices.iter(), 4).expect("sma should compute");
+        let expected = (11.71 + 11.70 + 11.69 + 11.70) / 4.0;
+        assert!((sma - expected).abs() < 1e-12, "sma={} expected={}", sma, expected);
+    }
+
+    #[test]
+    fn sma_insufficient_data_returns_none() {
+        let prices = vec![1.0_f64, 2.0, 3.0];
+        assert!(sma(prices.iter(), 5).is_none());
+        assert!(sma(prices.iter(), 0).is_none());
+    }
+
+    #[test]
+    fn highest_on_fractional_values_keeps_precision() {
+        let highs: Vec<Option<f64>> = vec![
+            Some(11.705),
+            Some(11.712),
+            Some(11.698),
+            Some(11.721),
+            Some(11.709),
+        ];
+        let result = highest(highs.iter(), 5, 0).expect("highest should compute");
+        assert!((result - 11.721).abs() < 1e-12, "highest={}", result);
+    }
+
+    #[test]
+    fn lowest_on_fractional_values_keeps_precision() {
+        let lows: Vec<Option<f64>> = vec![
+            Some(11.698),
+            Some(11.702),
+            Some(11.687),
+            Some(11.691),
+            Some(11.694),
+        ];
+        let result = lowest(lows.iter(), 5, 0).expect("lowest should compute");
+        assert!((result - 11.687).abs() < 1e-12, "lowest={}", result);
+    }
+
+    #[test]
+    fn highest_respects_shift_window() {
+        // Window with shift=1, n=3 covers indices [1..4) of 5 bars:
+        // the current (last) bar is excluded from the scan.
+        let highs: Vec<Option<f64>> = vec![
+            Some(11.70),
+            Some(11.71),
+            Some(11.72),
+            Some(11.73),
+            Some(99.0), // current bar — must be excluded by shift=1
+        ];
+        let result = highest(highs.iter(), 3, 1).expect("highest should compute");
+        assert!((result - 11.73).abs() < 1e-12, "highest={}", result);
+    }
+}
