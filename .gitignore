@@ -1,11 +1,7 @@
 /target
-/tmp
 .DS_Store
-start.sh
 TODO's.txt
-SYMI*
 /portfolios/Debug_Portfolio.json
-lib.rs
 out.csv
 Cargo.lock
 /SWAP
