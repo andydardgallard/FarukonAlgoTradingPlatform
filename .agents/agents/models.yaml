@@ -1,11 +1,35 @@
 # Model configuration for Code Factory roles.
 # Change any model here to switch providers/families (deepseek, qwen, kimi/moonshot, etc.).
-# Models must be available through the configured Kimi CLI provider.
 
-# Default model used by the main factory agent (when launched via CLI/SDK without an explicit model).
+# ============================================================
+# NEW Kimi Code CLI (0.34+, Node binary, ~/.kimi-code):
+# ============================================================
+# Models are configured in ~/.kimi-code/config.toml:
+#   default_model = "deepseek-v4-pro"          # main agent (and planner/diagnostician work)
+#   [secondary_model]
+#   model = "deepseek-v4-flash"                # cheap model for sub-agents
+#
+# Sub-agent model selection in agent files (frontmatter):
+#   model_preference: primary   -> uses the caller's model (deepseek-v4-pro)
+#   model_preference: secondary -> uses [secondary_model] (deepseek-v4-flash)
+#   - OR pass model="primary"|"secondary" in the Agent tool call.
+#   - Requires the secondary-model experiment: KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1
+#     (or KIMI_CODE_EXPERIMENTAL_FLAG=1). Without it, sub-agents inherit the caller's model.
+#
+# Recommended mapping (from config.toml):
+#   main agent / planner / diagnostician  -> default_model (deepseek-v4-pro)
+#   analyzer / coder / tester (sub-agents)-> [secondary_model] (deepseek-v4-flash)
+#   - To force per-role models regardless of experiment, see `roles` below and override
+#     model_preference in the agent .md files.
+
+# ============================================================
+# LEGACY Kimi CLI (1.12, Python, ~/.kimi):
+# ============================================================
+# Default model used by the main factory agent (CLI/SDK launch).
 default: deepseek-v4-flash
 
-# Per-role models. Cheaper/faster models for mechanical roles, reasoning models for analysis.
+# Per-role models for legacy sub-agents (YAML agent files). Cheaper/faster models for
+# mechanical roles, reasoning models for analysis.
 roles:
   analyzer: deepseek-v4-flash       # fast read-only exploration (subagent factory-analyzer)
   planner: deepseek-v4-pro          # reasoning, DAG decomposition (used by main agent)
@@ -13,20 +37,4 @@ roles:
   tester: deepseek-v4-flash         # fast test writing/running (subagent factory-tester)
   diagnostician: deepseek-v4-pro    # deep failure analysis (subagent factory-diagnostician)
 
-# ENFORCEMENT (mandatory): the main agent MUST pass `model=` to every subagent it launches via
-# the Agent tool, reading the value from this file by role:
-#   factory-analyzer      -> roles.analyzer
-#   factory-coder         -> roles.coder
-#   factory-tester        -> roles.tester
-#   factory-diagnostician -> roles.diagnostician
-# The `planner` role is executed BY THE MAIN AGENT itself (plan mode) — it does NOT spawn a
-# subagent. To use roles.planner, start the CLI session with `kimi -m <roles.planner>` or
-# switch with /model before planning.
-# After launching each subagent, record the actual model in .code-factory/state/pipeline.yaml
-# under `models_used.<role>` so the run is auditable (see report.md).
-
-# How to apply:
-# - CLI:  start with `kimi -m <model>` or use `/model` in the session.
-# - SDK:  pass `model=` to `prompt(...)` / `Session.create(...)`; subagents can be launched
-#         with a `model` override via the Agent tool.
-# - Task: override per-role models in task.yaml `models:` (takes precedence over this file).
+# Task-level override: task.yaml `models:` field takes precedence over this file.

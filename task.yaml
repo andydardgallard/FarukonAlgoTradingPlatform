@@ -1,107 +1,166 @@
 # =============================================================================
 # TASK FILE for the Autonomous Code Factory
-# Задача: интеграция LSHADE-RSP в FarukonAlgoTradingPlatform
+# Задача: LSHADE-RSP падает при старте на боевом конфиге (аномальная аллокация ~1.9 ТБ)
 # =============================================================================
 
-# --- Краткое название задачи (1 предложение, бизнес-язык) --------------------
-# Обязательное поле.
-title: "Добавить алгоритм оптимизации LSHADE-RSP третьим оптимизатором платформы, не ухудшив существующие алгоритмы"
+title: "LSHADE-RSP аварийно завершается на старте боевого конфига (аллокация ~1.9 ТБ) — исправить и добиться полного прогона с визуализациями"
 
-# --- Путь к существующему репозиторию (для проектов, которые уже есть) -------
-# Опционально.
 repo_path: .
 
-# --- Описание задачи (бизнес-язык, без технических деталей) ------------------
-# Обязательное поле. Многострочное (используйте | для блока текста).
 description: |
-  Платформа подбирает параметры торговых стратегий с помощью собственного
-  генетического алгоритма Genetic_Search. Нужно добавить ещё один алгоритм
-  оптимизации по научным статьям из папки upgrade — LSHADE-RSP / NL-SHADE-RSP
-  (дифференциальная эволюция с ранговым селективным давлением; референсная
-  реализация: https://github.com/VladimirStanovov/LSHADE-RSP.git).
+  При первом боевом прогоне оптимизатора LSHADE_RSP на реальных данных (41 символ CNY,
+  включая synth_) с конфигурацией SYMI_Ch_SMA_up_lmt_lshade_mpr_add_dd_wide.json процесс
+  падает сразу после загрузки данных при "global_data_storage_mode": "deep":
 
-  Новый алгоритм должен стать третьим полноценным оптимизатором платформы:
-  выбираться через конфигурационные файлы, работать с ядром и со всеми
-  файлами визуализации из папки Python, использовать те же данные и те же
-  целевые функции (max APR/DD, max Composite), что и существующие алгоритмы.
+      Starting to load and process FlatBuffer SOA files from ../../Tickers_fbs/soa/CNY...
+      GlobalDataStore loaded and processed in 0.416 seconds
+      Symbols loaded: 41
+      memory allocation of 1924304548880 bytes failed
+      note: run with RUST_BACKTRACE=1 environment variable to display a backtrace
+    и при "global_data_storage_mode": "arc":
+        Starting to load and process FlatBuffer SOA files from ../../Tickers_fbs/soa/CNY...
+        GlobalDataStore loaded and processed in 0.391 seconds
+        Symbols loaded: 41
+        memory allocation of 1652537109376 bytes failed
+        memory allocation of 1652537110176 bytes failed
+        skipping backtrace printing to avoid potential recursion 
 
-  Работа двух предыдущих алгоритмов оптимизации не должна быть затронута.
+  Попытка выделить ~1.9 ТБ — очевидно НЕкорректный размер (мусорное/неинициализированное
+  значение или ошибочный расчёт capacity), а не реальная потребность: популяция 250 особей
+  по 5+1 параметров — это килобайты, а не терабайты.
 
-  После успешного выполнения задачи необходимо обновить README проекта:
-  - подробно описать, как запускать новый оптимизатор (команды, примеры);
-  - перечислить все его настройки;
-  - для каждой настройки объяснить, что она делает и на что влияет;
-  - указать рекомендуемые диапазоны значений для каждой настройки.
+  ПОДОЗРЕНИЕ ЗАКАЗЧИКА (проверить в первую очередь): сбой происходит в момент формирования
+  первоначальной популяции (population_size = 250).
+  Проверить по статьям (папка upgrade - LSHADE-RSP: CEC 2018 stanovov20183.pdf и ICINCO 2018 68525.pdf):
+  исходная популяция в LSHADE/SHADE инициализируется равномерно-случайно в границах
+  параметров (xi,j = rand(xL,j, xU,j), формула (2) в CEC 2018). То есть случайный выбор
+  первой популяции, КАК В ГЕНЕТИЧЕСКОМ АЛГОРИТМЕ (Genetic_Search), ПОЛНОСТЬЮ соответствует
+  алгоритму и может быть переиспользован.
+  ЕСЛИ подозрение подтверждается — переиспользовать код случайной инициализации из GA.
+  ЕСЛИ НЕТ — снять RUST_BACKTRACE=1, найти точное место аллокации и устранить баг
+  (неинициализированная память, переполнение при расчёте capacity, неверный размер буфера
+  фитнесов/архива/популяции и т.п.).
 
-# --- Приоритет ----------------------------------------------------------------
-# Опционально. Допустимо: high | medium | low. По умолчанию: medium.
+  После исправления — ПОЛНЫЙ прогон оптимизации на конфиге В ТОЧНОСТИ как ниже, от начала
+  до конца, с записью файлов результатов и успешным выполнением всех Python-визуализаций,
+  связанных с этим алгоритмом.
+
+  КОНФИГ (предварительно проверить указанные пути и использовать В ТОЧНОСТИ, байт-в-байт):
+
+  {
+      "common": {
+          "mode": "Optimize",
+          "initial_capital": 1000000.0,
+          "commission_plans_path": "commission_plans.json",
+          "instrument_info_path": "instruments_info.json",
+          "global_data_storage_mode": "deep"
+      },
+      "portfolio": {
+          "Strategy_1": {
+              "threads": 8,
+              "strategy_name": "SYMI_Ch_SMA_up_lmt",
+              "strategy_path": "target/release/SYMI_Ch_SMA_up_lmt.so",
+              "exit_results_path": "opt_results/apr_dd_test_from_kimi",
+              "strategy_weight": 1,
+              "slippage": [0.0],
+              "data": {
+                  "data_path": "Tickers_fbs/soa/CNY",
+                  "timeframe": "5min"
+              },
+              "symbols": [
+                  "synth_CNY-12.15",
+                  "synth_CNY-3.16", "synth_CNY-6.16", "synth_CNY-9.16", "synth_CNY-12.16",
+                  "synth_CNY-3.17", "synth_CNY-6.17", "synth_CNY-9.17", "synth_CNY-12.17",
+                  "synth_CNY-3.18", "synth_CNY-6.18", "synth_CNY-9.18", "synth_CNY-12.18",
+                  "synth_CNY-3.19", "synth_CNY-6.19", "synth_CNY-9.19", "synth_CNY-12.19",
+                  "synth_CNY-3.20", "synth_CNY-6.20", "synth_CNY-9.20", "synth_CNY-12.20",
+                  "synth_CNY-3.21", "synth_CNY-6.21", "synth_CNY-9.21", "synth_CNY-12.21",
+                  "synth_CNY-3.22", "synth_CNY-6.22", "CNY-9.22",       "CNY-12.22",
+                  "CNY-3.23",       "CNY-6.23",       "CNY-9.23",       "CNY-12.23",
+                  "CNY-3.24",       "CNY-6.24",       "CNY-9.24",       "CNY-12.24",
+                  "CNY-3.25",       "CNY-6.25",       "CNY-9.25",       "CNY-12.25"
+              ],
+              "strategy_params": {
+                  "avg_price_period": { "start": 2, "end": 52, "step": 2 },
+                  "channel_period": { "start": 100, "end": 1025, "step": 25 },
+                  "prct_width_channel": { "start": 30, "end": 155, "step": 5 },
+                  "width_channel": { "start": 0.005, "end": 1.005, "step": 0.005 },
+                  "sma_period": { "start": 500, "end": 10100, "step": 100 }
+              },
+              "pos_sizer_params": {
+                  "pos_sizer_name": "mpr",
+                  "pos_sizer_params": {},
+                  "pos_sizer_value": { "start": 0.5, "end": 10.05, "step": 0.05 }
+              },
+              "margin_params": { "min_margin": 0.5, "margin_call_type": "close_deal" },
+              "portfolio_settings_for_strategy": { "metrics_calculation_mode": "offline" },
+              "optimizer_type": {
+                  "LSHADE_RSP": {
+                      "lshade_params": {
+                          "population_size": 250,
+                          "max_evaluations": 60000,
+                          "p_best": 0.085,
+                          "archive_rate": 1.0,
+                          "memory_size": 5,
+                          "fitness_params": {
+                              "fitness_direction": "max",
+                              "fitness_value": "APR/DD_factor"
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  Ожидаемый терминальный вывод — по одной строке на особь в поколении (формат как у Genetic_Search), счёт особей = population_size (250). Для отслеживания работы и прогресса алгоритма lshade:
+    Evaluation: # 37
+    # 1 from 250 {'prct_width_channel': 85.0, 'width_channel': 2800.0, 'avg_price_period': 94.0, 'channel_period': 870.0, 'sma_period': 7475.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 3.50, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 2 from 250 {'avg_price_period': 77.0, 'prct_width_channel': 70.0, 'width_channel': 3425.0, 'channel_period': 775.0, 'sma_period': 7625.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 2.50, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 3 from 250 {'prct_width_channel': 50.0, 'width_channel': 3525.0, 'avg_price_period': 69.0, 'channel_period': 900.0, 'sma_period': 7500.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 3.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 4 from 250 {'prct_width_channel': 40.0, 'width_channel': 3550.0, 'avg_price_period': 69.0, 'channel_period': 900.0, 'sma_period': 7250.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 2.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 5 from 250 {'avg_price_period': 56.0, 'prct_width_channel': 90.0, 'width_channel': 3625.0, 'channel_period': 755.0, 'sma_period': 6700.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 8.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 6 from 250 {'prct_width_channel': 50.0, 'width_channel': 2925.0, 'avg_price_period': 74.0, 'channel_period': 785.0, 'sma_period': 7500.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 2.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 7 from 250 {'prct_width_channel': 65.0, 'width_channel': 2675.0, 'avg_price_period': 98.0, 'channel_period': 775.0, 'sma_period': 7500.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 3.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    # 8 from 250 {'avg_price_period': 97.0, 'prct_width_channel': 100.0, 'width_channel': 2925.0, 'channel_period': 710.0, 'sma_period': 7025.0} {'pos_sizer_type': 'mpr', 'pos_sizer_value': 7.00, 'pos_sizer_additional_params': } {'slippage': 0}
+    ...
+    Evaluation: # 38
+    ...
+
+    ВАЖНО: Полный прогон алгоритма на таком объеме данных может занимать до 1 недели. Ни в коем случае не прерывать выполнение полного прогона алгоритма по таймауту. Дождаться выполнения.
+
 priority: high
 
-# --- Режим работы -------------------------------------------------------------
-# Опционально. hitl (по умолчанию) | auto.
 mode: auto
 
-# --- Критерии приёмки (что считается успехом) --------------------------------
-# Опционально. Список бизнес-критериев, которые пользователь сможет проверить
-# лично после завершения. Фабрика подтверждает каждый критерий с доказательством.
 acceptance_criteria:
-  - "LSHADE-RSP зарегистрирован в платформе как третий оптимизатор и запускается через конфиг наравне с существующими алгоритмами."
-  - "Два предыдущих алгоритма оптимизации работают как прежде: то же поведение, те же результаты, без регрессий."
-  - "Файлы визуализации из папки Python работают с результатами нового оптимизатора."
-  - "Пройдены 4 бизнес-сценария: наборы инструментов Si-*.25 и Si-*.23 x целевые функции max APR/DD и max Composite; фабрика сама сформировала конфиги по образцам из папки portfolios и сохранила новые конфиги в ту же папку."
-  - "На одинаковых данных LSHADE-RSP работает быстрее Genetic_Search и находит решение не хуже по значению целевой функции."
-  - "Все замеры (время работы, лучшие параметры, значения целевых функций обоих алгоритмов) собраны в отдельный файл сравнительного отчёта в репозитории."
-  - "README обновлён: описан запуск оптимизатора, полный список настроек, для каждой настройки — что делает, на что влияет и рекомендуемые диапазоны значений."
+  - "Запуск Farukon_2 с конфигом SYMI_Ch_SMA_up_lmt_lshade_mpr_add_dd_wide.json (в точности) проходит от начала до конца без паники, exit code 0."
+  - "В opt_results/apr_dd_test_from_kimi появляются НЕпустые файлы результатов оптимизации."
+  - "Все Python-визуализации, связанные с алгоритмом/оптимизатором, запускаются на полученных результатах и завершаются без исключений, строят графики."
+  - "Подозрение проверено документированно: либо подтверждено и первая популяция формируется случайным выбором (как в GA, что соответствует статьям LSHADE-RSP), либо приложен RUST_BACKTRACE=1 с точным местом аллокации и устранён истинный баг."
+  - "Параметры соответствуют статьям: memory_size H=5, p_best=0.085 с формулой p = 0.085 + 0.085*NFE/NFEmax, archive_rate=1.0, адаптация F/Cr (Коши/нормальное), Lehmer mean, LPSR."
+  - "Задействовано указаное в параметре 'threads:' конфига колличество потоков."
+  - "Вывод в терминал аналогичен указанному."
+  - "Потребление памяти адекватное (нет аллокаций порядка ГБ/ТБ на старте)."
+  - "Нет регрессий: Genetic_Search и Grid_Search работают как до изменений."
 
-# --- Бизнес-тесты (сценарии проверки) ----------------------------------------
-# Опционально. Если не заполнить — фабрика уточнит их у пользователя на этапе
-# планирования (в режиме hitl).
 business_tests:
-  - scenario: "LSHADE-RSP: портфель Si-*.25, цель max APR/DD"
-    symbols: ["Si-3.25", "Si-6.25", "Si-9.25", "Si-12.25"]
-    objective: "max APR/DD"
-    config: "portfolios/lshade_si_25_apr_dd.json — фабрика генерирует по образцам из portfolios/"
-    expected_results: "Оптимизация завершается без паник, CSV с результатами создан, хотя бы у одной комбинации Deals_Count > 0"
+  - scenario: "Полный боевой прогон LSHADE_RSP на конфиге в точности"
+    config: "portfolios/SYMI_Ch_SMA_up_lmt_lshade_mpr_add_dd_wide.json"
+    expected_results: "Прогон завершается с кодом 0; в opt_results/apr_dd_test_from_kimi записаны непустые файлы результатов; память в норме."
+  - scenario: "Python-визуализации на результатах прогона"
+    config: "opt_results/apr_dd_test_from_kimi"
+    expected_results: "Все скрипты визуализации, связанные с алгоритмом, отрабатывают без исключений и строят графики."
+  - scenario: "Регрессия существующих оптимизаторов"
+    config: "существующий конфиг Genetic_Search"
+    expected_results: "Genetic_Search/Grid_Search работают как до изменений, без регрессий."
 
-  - scenario: "LSHADE-RSP: портфель Si-*.25, цель max Composite"
-    symbols: ["Si-3.25", "Si-6.25", "Si-9.25", "Si-12.25"]
-    objective: "max Composite"
-    config: "portfolios/lshade_si_25_composite.json — фабрика генерирует по образцам из portfolios/"
-    expected_results: "Оптимизация завершается без паник, CSV с результатами создан, Composite посчитан для всех комбинаций"
-
-  - scenario: "LSHADE-RSP: портфель Si-*.23, цель max APR/DD"
-    symbols: ["Si-3.23", "Si-6.23", "Si-9.23", "Si-12.23"]
-    objective: "max APR/DD"
-    config: "portfolios/lshade_si_23_apr_dd.json — фабрика генерирует по образцам из portfolios/"
-    expected_results: "Оптимизация завершается без паник, CSV с результатами создан, хотя бы у одной комбинации Deals_Count > 0"
-
-  - scenario: "LSHADE-RSP: портфель Si-*.23, цель max Composite"
-    symbols: ["Si-3.23", "Si-6.23", "Si-9.23", "Si-12.23"]
-    objective: "max Composite"
-    config: "portfolios/lshade_si_23_composite.json — фабрика генерирует по образцам из portfolios/"
-    expected_results: "Оптимизация завершается без паник, CSV с результатами создан, Composite посчитан для всех комбинаций"
-
-  - scenario: "Сравнительный бенчмарк: Genetic_Search против LSHADE-RSP на тех же 4 сценариях"
-    config: "те же 4 конфига прогоняются обоими оптимизаторами с одинаковой сеткой параметров"
-    expected_results: "В репозитории создан файл сравнительного отчёта: время работы и лучшие значения целевых функций обоих алгоритмов по каждому сценарию; LSHADE-RSP не медленнее и не хуже по качеству"
-
-  - scenario: "Регрессия: существующие алгоритмы на старых конфигах из portfolios/"
-    config: "существующие конфиги portfolios/"
-    expected_results: "Результаты идентичны дотеграционным, регрессий нет"
-
-# --- Файлы, которые НЕЛЬЗЯ коммитить в git -----------------------------------
-# Опционально. Glob-паттерны относительно корня репозитория. Фабрика может
-# менять эти файлы (бэкапы/тесты/откат), но никогда не добавит их в коммит.
 commit_exclude:
   - "opt_results/**"
-  - "opt_results_si/**"
   - "target/**"
 
-# --- Переопределение моделей для ролей ---------------------------------------
-# Опционально. Позволяет переопределить модели из .agents/agents/models.yaml
-# для конкретной задачи.
 models:
-  analyzer: deepseek-v4-pro
+  analyzer: deepseek-v4-flash
   planner: deepseek-v4-pro
   coder: deepseek-v4-pro
   tester: deepseek-v4-flash

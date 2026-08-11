@@ -1,0 +1,94 @@
+{   
+    "common": {
+        "mode": "Optimize",
+        "initial_capital": 1000000.0,
+        "commission_plans_path": "commission_plans.json",
+        "instrument_info_path": "instruments_info.json",
+        "global_data_storage_mode": "deep"
+    },
+    "portfolio": {
+        "Strategy_1": {
+            "threads": 8,
+            "strategy_name": "SYMI_Ch_SMA_up_lmt",
+            "strategy_path": "SYMI_Ch_SMA_up_lmt.so",
+            "exit_results_path": "opt_results/apr_dd_test_from_kimi",
+            "strategy_weight": 1,
+            "slippage": [0.0],
+            "data": {
+                "data_path": "Tickers_fbs/soa/CNY",
+                "timeframe": "5min"
+            },
+            "symbols": [
+                                                                      "synth_CNY-12.15",
+                "synth_CNY-3.16", "synth_CNY-6.16", "synth_CNY-9.16", "synth_CNY-12.16",
+                "synth_CNY-3.17", "synth_CNY-6.17", "synth_CNY-9.17", "synth_CNY-12.17",
+                "synth_CNY-3.18", "synth_CNY-6.18", "synth_CNY-9.18", "synth_CNY-12.18",
+                "synth_CNY-3.19", "synth_CNY-6.19", "synth_CNY-9.19", "synth_CNY-12.19",
+                "synth_CNY-3.20", "synth_CNY-6.20", "synth_CNY-9.20", "synth_CNY-12.20",
+                "synth_CNY-3.21", "synth_CNY-6.21", "synth_CNY-9.21", "synth_CNY-12.21",
+                "synth_CNY-3.22", "synth_CNY-6.22", "CNY-9.22",       "CNY-12.22",
+                "CNY-3.23",       "CNY-6.23",       "CNY-9.23",       "CNY-12.23",
+                "CNY-3.24",       "CNY-6.24",       "CNY-9.24",       "CNY-12.24",
+                "CNY-3.25",       "CNY-6.25",       "CNY-9.25",       "CNY-12.25"
+            ],
+            "strategy_params": {
+                "avg_price_period":{
+                    "start": 2,
+                    "end": 52,
+                    "step": 2
+                },
+                "channel_period": {
+                    "start": 100,
+                    "end": 1025,
+                    "step": 25
+                },
+                "prct_width_channel": {
+                    "start": 30,
+                    "end": 155,
+                    "step": 5
+                },
+                "width_channel": {
+                    "start": 0.005,
+                    "end": 1.005,
+                    "step": 0.005
+                },
+                "sma_period": {
+                    "start": 500,
+                    "end": 10100,
+                    "step": 100
+                }
+            },
+            "pos_sizer_params": {
+                "pos_sizer_name": "mpr",
+                "pos_sizer_params": {},
+                "pos_sizer_value": {
+                    "start": 0.5,
+                    "end": 10.05,
+                    "step": 0.05
+                }
+            },
+            "margin_params": {
+                "min_margin": 0.5,
+                "margin_call_type": "close_deal"
+            },
+            "portfolio_settings_for_strategy": {
+                "metrics_calculation_mode": "offline"
+            },
+            "optimizer_type": {
+                "LSHADE_RSP": {
+                    "lshade_params": {
+                        "population_size": 250,
+                        "max_evaluations": 60000,
+                        "p_best": 0.085,
+                        "archive_rate": 1.0,
+                        "memory_size": 5,
+                        "fitness_params": {
+                            "fitness_direction": "max",
+                            "fitness_value": "APR/DD_factor"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

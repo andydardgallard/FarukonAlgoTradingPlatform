@@ -44,7 +44,7 @@
                 "pos_sizer_params": {},
                 "pos_sizer_value": {
                     "start": 0.5,
-                    "end": 15.5,
+                    "end": 10.5,
                     "step": 0.5
                 }
             },
@@ -58,9 +58,9 @@
             "optimizer_type": {
                 "LSHADE_RSP": {
                     "lshade_params": {
-                        "population_size": 10,
-                        "max_evaluations": 20,
-                        "p_best": 0.1,
+                        "population_size": 250,
+                        "max_evaluations": 60000,
+                        "p_best": 0.085,
                         "archive_rate": 1.0,
                         "memory_size": 5,
                         "fitness_params": {

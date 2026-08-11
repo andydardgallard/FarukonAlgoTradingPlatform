@@ -231,7 +231,7 @@ This is the third optimizer available in the platform, alongside Grid Search and
   "LSHADE_RSP": {
     "lshade_params": {
       "population_size": 50,
-      "max_evaluations": 200,
+      "max_evaluations": 100,
       "p_best": 0.1,
       "archive_rate": 1.0,
       "memory_size": 5,

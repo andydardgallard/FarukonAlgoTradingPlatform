@@ -35,7 +35,7 @@ flowchart TD
     C -->|No| D[Ask the user business-level clarifying questions via AskUserQuestion. Ask ONLY business logic and expectations, never coding questions. Then update the parsed task.]
     D --> B
     C -->|Yes| E[Analyze the project: launch factory-analyzer subagents in parallel to determine tech stack, structure, entry points, test setup. Detect the stack deterministically using references/tech-stack-detection.md. Run the existing test suite to establish a regression baseline and save it to .code-factory/logs/baseline.md.]
-    E --> SC[Scout pipeline: refine the project model with the analyzer report; generate AGENTS.md with the 8 standard sections; run native /init kimi so Kimi adapts AGENTS.md to itself. Skip if AGENTS.md already exists and the project is unchanged.]
+    E --> SC[Scout pipeline: refine the project model with the analyzer report; generate AGENTS.md with the 8 standard sections; run /init via `kimi -p /init --print --yolo -w PROJECT_PATH` so Kimi adapts AGENTS.md to itself (it is a slash command, not a CLI subcommand). Skip if AGENTS.md already exists and the project is unchanged.]
     SC --> C2{Does the task match the analyzed repo? Check that files, symbols, configs and data referenced by the task actually exist.}
     C2 -->|No| R1[Ask the user for the missing files or context via AskUserQuestion in hitl mode, or in auto mode record an assumption that the repo is the source of truth and continue. Then re-analyze.]
     R1 --> E
@@ -49,7 +49,7 @@ flowchart TD
     G -->|auto| L[Make reasonable business assumptions from the task description. Record every assumption explicitly in the plan.]
     L --> PF[Pre-flight git check: if the project has no git repository, run git init. Working tree must be clean: auto-untrack build artifacts (target/, node_modules/, __pycache__/ etc.) and commit factory artifacts (AGENTS.md). Record git HEAD and git status in .code-factory/state/.]
     PF --> K[Backup the current state: copy every file that will be modified to .code-factory/backups/ preserving relative paths. Track created files in .code-factory/manifest.json. Write the checkpoint .code-factory/state/pipeline.yaml after every phase for resume.]
-    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. MANDATORY: pass model= to every subagent from models.yaml by role, and log the used model for each role to pipeline.yaml after each run. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
+    K --> M[Implement: launch factory-coder subagents for the plan tasks, respecting dependencies; independent tasks can run in parallel. Models are configured per subagent via model_preference in their agent .md files (new CLI) or models.yaml (legacy). Do NOT pass a concrete model name to the Agent tool — it is not supported. After each subagent returns, log the used model for each role to pipeline.yaml models_used. Each coder follows the plan and the project coding style in an isolated context. After every change, update manifest.json. Also create any new skills/scripts/plugins defined in the plan.]
     M --> N[Integration tests: write and run per-task tests for the changed modules following references/verification-strategy.md.]
     N --> O{Tests passed?}
     O -->|No| RR[Route the failure per references/error-routing.md: classify deterministically by regex, record the error context in .code-factory/logs/errors.md, and update retry counters in pipeline.yaml.]
@@ -115,10 +115,12 @@ Rules that always apply:
   Also write `.code-factory/report_code_changes.md` (next to it) via
   `scripts/gen_code_changes_report.py` — a deterministic was-became diff report of the commit
   (zero LLM tokens).
-- **Models**: consult `.agents/agents/models.yaml` and the task `models:` override. MANDATORY:
-  pass the per-role `model=` to every subagent launch via the Agent tool; log the actual model
-  to `.code-factory/state/pipeline.yaml` (`models_used`) and include it in `report.md` so the
-  run is auditable. The main agent's own model (used for planning) is the session model
+- **Models**: models are configured per role in the agent files themselves — in the new CLI
+  (`model_preference: primary|secondary` in each sub-agent `.md`, resolved against
+  `config.toml` `default_model`/`[secondary_model]`), in legacy via `.agents/agents/models.yaml`.
+  Do NOT pass a concrete model name to the Agent tool (not supported). Log the actual model used
+  for each role to `.code-factory/state/pipeline.yaml` (`models_used`) and include it in
+  `report.md` so the run is auditable. The main agent's own model is the session model
   (set via `kimi -m` / `/model`); record it too.
 - **Commit policy**: respect `commit_exclude` from the task — never commit matching files
   (e.g. personal strategy code); stage everything EXCEPT the excluded patterns.

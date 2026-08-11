@@ -84,8 +84,13 @@ model + AGENTS.md that every later phase can rely on:
    `Key Configuration Files`, `Build & Run Instructions`, `Dependencies & Integrations`,
    `Known Constraints & Limitations`. Copy build/test/run commands VERBATIM from config files;
    record observed bugs/debt in section 8; keep sections self-contained.
-4. **Run native `/init kimi`** so Kimi adapts AGENTS.md to its own tooling (skip gracefully
-   if the CLI is unavailable).
+4. **Run `/init` to let Kimi adapt AGENTS.md to its own tooling** (skip gracefully if the CLI
+   is unavailable). `/init` is a SLASH COMMAND, not a CLI subcommand — run it in print mode:
+   ```bash
+   kimi -p /init --print --yolo -w <project-root>
+   ```
+   Do NOT try to run `/init kimi` as a shell command — it will fail with
+   "The kimi init CLI subcommand doesn't exist".
 
 Cache: keep the project model in `.code-factory/state/project-model.yaml`. Skip the whole
 Scout phase if AGENTS.md already exists and the project is unchanged (the file is the Single

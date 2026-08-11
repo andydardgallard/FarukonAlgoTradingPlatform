@@ -25,21 +25,51 @@
 │       └── assets/
 │           └── task-template.yaml   # шаблон бизнес-задачи
 ├── agents/
-│   ├── code-factory.yaml            # главный агент фабрики (--agent-file)
-│   ├── system.md                    # системный промпт главного агента
+│   ├── code-factory.yaml            # главный агент (legacy 1.12, --agent-file YAML)
+│   ├── code-factory.md              # главный агент (Kimi Code 0.34+, --agent-file Markdown)
+│   ├── system.md                    # системный промпт главного агента (legacy)
 │   ├── models.yaml                  # модели для ролей (deepseek/qwen/kimi и др.)
 │   └── sub-agents/
-│       ├── analyzer.yaml            # сабагент: анализ проекта (read-only)
-│       ├── coder.yaml               # сабагент: реализация кода
-│       ├── tester.yaml              # сабагент: тесты и проверка результатов
-│       └── diagnostician.yaml       # сабагент: глубокий анализ ошибок (read-only)
+│       ├── analyzer.{yaml,md}       # сабагент: анализ проекта (read-only)
+│       ├── coder.{yaml,md}          # сабагент: реализация кода
+│       ├── tester.{yaml,md}         # сабагент: тесты и проверка результатов
+│       └── diagnostician.{yaml,md}  # сабагент: глубокий анализ ошибок (read-only)
 └── examples/
-    └── run_factory_sdk.py           # пример запуска через Kimi Agent SDK
+    └── run_factory_sdk.py           # пример запуска через Kimi Agent SDK (legacy)
 ```
 
 Рантайм-состояние фабрики живёт в `.code-factory/` внутри проекта:
 `state/` (задача, план), `backups/` (бэкапы изменяемых файлов), `manifest.json` (список
 изменённых/созданных файлов), `logs/` (ошибки, результаты тестов).
+
+## Две версии Kimi CLI
+
+Фабрика поддерживает обе версии Kimi:
+
+| | Kimi CLI 1.12 (Python, `~/.kimi`) | Kimi Code 0.34+ (Node, `~/.kimi-code`) |
+|---|---|---|
+| Flow-скилл | `/flow:code-factory` | `/skill:code-factory` (flow вызывается так же) |
+| Агент | `--agent-file .agents/agents/code-factory.yaml` | `--agent-file .agents/agents/code-factory.md` |
+| Сабагенты | `sub-agents/*.yaml` | `sub-agents/*.md` |
+| Модели | `models.yaml` → `model=` в Agent tool | `config.toml` (`default_model` + `[secondary_model]`) |
+| Автономность | `--yolo` | `--yolo` / `--auto` |
+
+### Запуск в новой версии (Kimi Code 0.34+)
+
+```bash
+kimi
+# в чате:
+/skill:code-factory        # запуск flow-скилла (без текста после!)
+# или:
+kimi --agent-file .agents/agents/code-factory.md "прочитай task.yaml и выполни"
+```
+
+Полный автономный режим: `kimi --auto` → `/skill:code-factory`. Модели: `default_model` и
+`[secondary_model]` в `~/.kimi-code/config.toml`; сабагентам — `model_preference:
+primary|secondary` в `.md`-файлах (см. `agents/models.yaml`).
+
+> Примечание: warning про `system.md` (Missing frontmatter) при старте — безвреден
+> (старый файл для legacy-версии; новая версия использует `code-factory.md`).
 
 ## Формат бизнес-задачи
 
@@ -66,12 +96,19 @@ cd <проект>
 kimi
 ```
 
-Затем в чате: `/flow:code-factory` — фабрика спросит бизнес-вопросы и покажет план на
-согласование.
+Затем в чате:
+- **Новая версия (Kimi Code 0.34+):** `/skill:code-factory`
+- **Старая версия (Kimi CLI 1.12):** `/flow:code-factory`
+
+Фабрика спросит бизнес-вопросы и покажет план на согласование. Полный автомат:
+`kimi --auto` (новая) или `kimi --yolo` (обе) → команда выше.
 
 Или сразу с готовой задачей:
 
 ```sh
+# новая версия:
+kimi --agent-file .agents/agents/code-factory.md "Прочитай task.yaml и реши задачу"
+# старая версия:
 kimi --agent-file .agents/agents/code-factory.yaml "Прочитай task.yaml и реши задачу"
 ```
 
@@ -111,8 +148,10 @@ Checkpoint/resume: после каждой фазы пишется `.code-factor
 
 Итоговый отчёт: при завершении (успех или FAILED) фабрика пишет `.code-factory/report.md` —
 один самодостаточный файл со всей историей прогона (задача, план, изменения, тесты,
-ошибки, диагностика, acceptance). Его достаточно переслать разработчику фабрики для
-анализа — читать весь `.code-factory/` не нужно.
+ошибки, диагностика, acceptance). Рядом генерируется `.code-factory/report_code_changes.md` —
+наглядный отчёт «было → стало» по изменённым строкам коммита (скриптом
+`scripts/gen_code_changes_report.py`, без затрат LLM). Оба файла достаточно переслать
+разработчику фабрики для анализа — читать весь `.code-factory/` не нужно.
 
 ## Бизнес-тесты
 
@@ -137,5 +176,17 @@ Checkpoint/resume: после каждой фазы пишется `.code-factor
 - CLI: `kimi -m <model>` или `/model` в сессии;
 - SDK: `model=` в `prompt(...)` / `Session.create(...)`;
 - в задаче: поле `models:` в `task.yaml` (см. шаблон).
+
+**Проверка фактических моделей**: главный агент ОБЯЗАН передавать `model=` каждому сабагенту
+из `models.yaml` и записывать фактическую модель в `.code-factory/state/pipeline.yaml`
+(`models_used`) и в `report.md` (раздел «Models used»). Если после прогона в `pipeline.yaml`
+все роли показывают одну модель — значит, модели не разделялись; проверяй, что запуск CLI
+использует ожидаемую модель по умолчанию (`kimi -m …`).
+
+## Коммиты
+
+Фабрика коммитит изменения в feature-ветку. Поле `commit_exclude` в задаче позволяет
+исключить файлы из коммита (например, личную стратегию) — фабрика всё равно может их
+менять (бэкапы/тесты/откат), но в git-коммит они не попадут.
 
 
