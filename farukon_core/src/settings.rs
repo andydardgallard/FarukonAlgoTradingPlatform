@@ -141,6 +141,8 @@ pub enum OptimizerType {
     GridSearch,
     #[serde(rename = "Genetic")]
     Genetic { ga_params: GAParams },
+    #[serde(rename = "LSHADE_RSP")]
+    LshadeRSP { lshade_params: LshadeRspParams },
 }
 
 /// Type of fitness metric to optimize.
@@ -190,6 +192,24 @@ pub struct GAParams {
 pub struct FitnessParams {
     pub fitness_direction: String,
     pub fitness_value: FitnessValue,
+}
+
+/// Parameters for the LSHADE-RSP optimizer.
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LshadeRspParams {
+    /// Initial population size (20-200, default 50).
+    pub population_size: usize,
+    /// Maximum number of fitness evaluations (criterion for stopping).
+    pub max_evaluations: usize,
+    /// Fraction of best individuals used for mutation direction (0.05-0.3, default 0.1).
+    pub p_best: f64,
+    /// Archive size as a fraction of current population size (0.5-1.5, default 1.0).
+    pub archive_rate: f64,
+    /// Size of historical memory for adaptive F and CR (3-10, default 5).
+    pub memory_size: usize,
+    /// Fitness function parameters (reuse existing FitnessParams).
+    pub fitness_params: FitnessParams,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -409,6 +429,56 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                                             metric,
                                             VALID_COMPOSITE_METRICS
                                         );
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    OptimizerType::LshadeRSP { lshade_params } => {
+                        if lshade_params.population_size == 0 {
+                            anyhow::bail!("LSHADE_RSP population_size must be greater than 0");
+                        }
+                        if lshade_params.max_evaluations == 0 {
+                            anyhow::bail!("LSHADE_RSP max_evaluations must be greater than 0");
+                        }
+                        if lshade_params.p_best <= 0.0 || lshade_params.p_best > 1.0 {
+                            anyhow::bail!("LSHADE_RSP p_best must be between 0.0 and 1.0 (exclusive 0)");
+                        }
+                        if lshade_params.archive_rate <= 0.0 {
+                            anyhow::bail!("LSHADE_RSP archive_rate must be greater than 0");
+                        }
+                        if lshade_params.memory_size == 0 {
+                            anyhow::bail!("LSHADE_RSP memory_size must be greater than 0");
+                        }
+                        // check fitness_direction
+                        let dir_str = &lshade_params.fitness_params.fitness_direction;
+                        if dir_str != "max" && dir_str != "min" {
+                            anyhow::bail!("fitness_direction must be 'max' or 'min'");
+                        }
+                        // check fitness_value
+                        match &lshade_params.fitness_params.fitness_value {
+                            FitnessValue::Composite { metrics } => {
+                                const VALID_COMPOSITE_METRICS: &[&str] = &[
+                                    "Total_Return",
+                                    "Total_Return_%",
+                                    "APR",
+                                    "max_DD",
+                                    "max_DD_30%",
+                                    "max_DD_%",
+                                    "APR/DD_factor",
+                                    "APR/DD_factor_3",
+                                    "Recovery_Factor",
+                                    "Recovery_Factor_5",
+                                    "Composite",
+                                    "Deals_Count",
+                                ];
+                                if metrics.is_empty() {
+                                    anyhow::bail!("Composite fitness must have at least one metric.");
+                                }
+                                for metric in metrics {
+                                    if !VALID_COMPOSITE_METRICS.contains(&metric.as_str()) {
+                                        anyhow::bail!("Invalid composite metric '{}'.", metric);
                                     }
                                 }
                             }

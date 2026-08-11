@@ -579,6 +579,110 @@ impl OptimizationRunner {
         total_score
     }
 
+    /// Executes a LSHADE-RSP optimization.
+    pub fn run_lshade_rsp_search(
+        self,
+        lshade_params: &farukon_core::settings::LshadeRspParams,
+        global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
+    ) -> anyhow::Result<()> {
+        let lshade_config = farukon_core::optimization::LshadeRspConfig::from_settings(lshade_params);
+        let opt_config = self.get_grid_search_optimizer().get_config();
+        let mut lshade = farukon_core::optimization::LshadeRspOptimizer::new()
+            .with_config(lshade_config.clone())
+            .with_optimization_config(opt_config.clone());
+
+        let lib_path = &self.strategy_settings.strategy_path;
+        let lib = std::sync::Arc::new(unsafe {
+            libloading::Library::new(lib_path).expect("Can't load library")
+        });
+
+        let initial_capital_for_strategy = self.initial_capital_for_strategy;
+        let common_settings = self.common_settings.clone();
+        let strategy_settings = self.strategy_settings.clone();
+        let strategy_instruments_info = self.strategy_instruments_info.clone();
+        let lshade_config_closure = lshade_config.clone();
+
+        let all_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let all_results_clone = std::sync::Arc::clone(&all_results_shared);
+
+        let stats = lshade.run(&strategy_settings.clone(), move |params| {
+            let mode = &common_settings.mode;
+            let global_data_storage_mode = &common_settings.global_data_storage_mode;
+            let test_settings = &farukon_core::utils::create_stratagy_settings_from_params(
+                &strategy_settings,
+                params,
+            );
+            let results = match global_data_storage_mode.as_str() {
+                "arc" => Self::run_backtest_with_settings_arc(
+                    mode,
+                    &initial_capital_for_strategy,
+                    test_settings,
+                    &strategy_instruments_info,
+                    std::sync::Arc::clone(&global_data_store),
+                    lib.clone(),
+                ),
+                _ => Self::run_backtest_with_settings_deep(
+                    mode,
+                    &initial_capital_for_strategy,
+                    test_settings,
+                    &strategy_instruments_info,
+                    std::sync::Arc::clone(&global_data_store),
+                    lib.clone(),
+                ),
+            };
+
+            let results_obj = farukon_core::optimization::OptimizationResult::new()
+                .with_parameters(params.clone())
+                .with_results(results.clone());
+
+            {
+                let mut results_guard = all_results_clone.lock().unwrap();
+                results_guard.push(results_obj);
+            }
+            Self::calculate_fitness_score_lshade(&results, &lshade_config_closure)
+        })?;
+
+        let final_results = {
+            let results_guard = all_results_shared.lock().unwrap();
+            results_guard.clone()
+        };
+
+        // Save results using existing method
+        self.save_grid_search_optimization_results(&final_results)?;
+        lshade.save_stats_to_csv(&stats, &self.strategy_settings)?;
+
+        anyhow::Ok(())
+    }
+
+    /// Calculates a scalar fitness score from performance metrics for LSHADE-RSP.
+    fn calculate_fitness_score_lshade(
+        metrics: &farukon_core::performance::PerformanceMetrics,
+        lshade_config: &farukon_core::optimization::LshadeRspConfig,
+    ) -> f64 {
+        let raw_fitness = match lshade_config.get_fitness_metric() {
+            farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
+            farukon_core::settings::FitnessValue::TotalReturnPercent => metrics.get_total_return_percent(),
+            farukon_core::settings::FitnessValue::APR => metrics.get_apr(),
+            farukon_core::settings::FitnessValue::MaxDD => metrics.get_max_drawdown(),
+            farukon_core::settings::FitnessValue::AprDDFactor => metrics.get_apr_to_drawdown_ratio(),
+            farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
+            farukon_core::settings::FitnessValue::DealsCount => {
+                &(metrics.get_deals_count().clone() as f64)
+            }
+            farukon_core::settings::FitnessValue::Composite { metrics: composite_metrics } => {
+                &Self::calculate_composite_score(metrics, composite_metrics)
+            }
+        };
+
+        let fitness = match lshade_config.get_fitness_direction().as_str() {
+            "max" => *raw_fitness,
+            "min" => -raw_fitness,
+            _ => *raw_fitness,
+        };
+
+        fitness
+    }
+
     /// Saves the results of a Grid Search optimization to a CSV file.
     /// The CSV file contains the tested parameter sets and their corresponding performance metrics.
     /// This allows for easy analysis and comparison of different hyperparameter combinations.

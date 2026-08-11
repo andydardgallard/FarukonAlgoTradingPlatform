@@ -83,6 +83,10 @@ fn main() -> anyhow::Result<()> {
                         farukon_core::settings::OptimizerType::Genetic { ga_params } => {
                             optimization_runner.run_genetic_search(ga_params, global_data_store)?;
                         }
+                        farukon_core::settings::OptimizerType::LshadeRSP { lshade_params } => {
+                            optimization_runner
+                                .run_lshade_rsp_search(lshade_params, global_data_store)?;
+                        }
                     },
                 }
             }

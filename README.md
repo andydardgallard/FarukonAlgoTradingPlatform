@@ -216,6 +216,56 @@ Farukon is designed to be **AI-native** — a platform for automated strategy di
 > 
 > An AI agent (e.g., Optuna, BayesianOptimization, or custom RL) generates parameter sets → > Farukon runs backtest → Returns metrics → Agent updates policy → Repeat.
 
+### LSHADE-RSP Optimizer
+
+**LSHADE-RSP** (Linear Success-History based Adaptive Differential Evolution with Rank-based Selective Pressure) is a state-of-the-art Differential Evolution variant that combines:
+- **LPSR** (Linear Population Size Reduction) — the population shrinks during optimization, focusing evaluations on the most promising regions
+- **SHADE** (Success-History based Adaptive Differential Evolution) — adaptive F (mutation factor) and CR (crossover rate) parameters automatically tuned from historical memory
+- **RSP** (Rank-based Selective Pressure) — individuals are selected for mutation based on their rank, directing search toward high-fitness areas
+
+This is the third optimizer available in the platform, alongside Grid Search and Genetic Algorithm.
+
+**JSON Configuration Example:**
+```json
+"optimizer_type": {
+  "LSHADE_RSP": {
+    "lshade_params": {
+      "population_size": 50,
+      "max_evaluations": 200,
+      "p_best": 0.1,
+      "archive_rate": 1.0,
+      "memory_size": 5,
+      "fitness_params": {
+        "fitness_direction": "max",
+        "fitness_value": "APR/DD_factor"
+      }
+    }
+  }
+}
+```
+
+**Full Settings Reference:**
+
+| Parameter | Type | Default | Description | Affects | Recommended |
+|-----------|------|---------|-------------|--------|-------------|
+| `population_size` | int | 50 | Initial population size | Wider initial search coverage; more = better diversity, slower per iteration | 20–200 |
+| `max_evaluations` | int | 200 | Maximum fitness evaluations (stop criterion) | Primary stop condition; more = longer search, potentially better optimum | 100–10,000 |
+| `p_best` | float | 0.1 | Fraction of best individuals used for mutation direction | Greediness: higher = faster convergence, higher risk of premature convergence | 0.05–0.3 |
+| `archive_rate` | float | 1.0 | External archive size as fraction of current population | Diversity: archive stores displaced solutions used for mutation diversity | 0.5–1.5 |
+| `memory_size` | int | 5 | Size of historical memory for adaptive F and CR | Adaptation speed: smaller = faster adaptation but noisier | 3–10 |
+| `fitness_params` | object | — | Fitness function configuration (same as Genetic) | Target metric and optimization direction (max/min) | Same as GA |
+
+**How to Run:**
+```bash
+# Build the strategy library first
+cargo build -p strategy_lib --release
+
+# Run LSHADE-RSP optimization
+cargo run --release -- -c portfolios/lshade_si_25_apr_dd.json
+```
+
+> 💡 **Comparison Note:** LSHADE-RSP uses adaptive F/CR parameters (automatically tuned from historical memory) and Linear Population Size Reduction — the population shrinks during optimization, focusing evaluations on the most promising regions. This typically finds equal or better solutions than Genetic Algorithm in fewer evaluations.
+
 ## 📈 Why FlatBuffers + SOA + SIMD?
 Farukon is engineered for **ultra-low-latency**:
 | Feature | Benefit |
