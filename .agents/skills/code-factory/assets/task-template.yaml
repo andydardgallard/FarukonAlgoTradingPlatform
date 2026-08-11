@@ -1,0 +1,46 @@
+# Business task template for the Code Factory
+# Fill in ONLY business terms — no code details needed.
+# Only `title` and `description` are required.
+
+title: "Short business goal, e.g.: Strategy works wrong for CNY instrument — no trading signals"
+
+# Path to an existing repository. Omit for brand-new projects.
+repo_path: ./repo
+
+# Business description — plain language, no technical jargon.
+description: |
+  Describe the problem or the desired feature as a business person would.
+  Examples:
+  - "The trading strategy stops generating signals for the CNY instrument.
+     It should work the same way it does for the Si instrument."
+  - "Build a service that prepares the monthly sales report and emails it."
+  - "Add a page where the manager can see the current warehouse balance."
+  The factory will analyze the code and decide how to implement it.
+
+# Priority: high | medium | low (default: medium)
+priority: high
+
+# Mode: hitl = human-in-the-loop (default, the factory will ask you business
+# questions and show the plan for approval) | auto = fully automatic
+mode: hitl
+
+# What success looks like — in business terms, things you will personally check.
+acceptance_criteria:
+  - "Criterion 1, e.g.: The strategy generates at least 5 LONG/SHORT signals for CNY."
+  - "Criterion 2, e.g.: Behavior for the Si instrument did not change."
+
+# Optional: business test scenarios. If omitted, the factory will ask you about
+# them at the planning stage (in hitl mode).
+# business_tests:
+#   - scenario: "Run the strategy on the CNY data file"
+#     config: "path/to/config.toml"
+#     expected_results: "At least 5 LONG/SHORT signals and a positive equity curve"
+
+# Optional: override the default models (see .agents/agents/models.yaml).
+# Supported families: deepseek, qwen, kimi/moonshot, and any model of your provider.
+# models:
+#   analyzer: deepseek-v4-flash
+#   planner: deepseek-v4-pro
+#   coder: deepseek-v4-flash
+#   tester: deepseek-v4-flash
+#   diagnostician: deepseek-v4-pro

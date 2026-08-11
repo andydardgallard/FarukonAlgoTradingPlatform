@@ -1,0 +1,18 @@
+version: 1
+agent:
+  extend: default
+  name: code-factory
+  system_prompt_path: ./system.md
+  subagents:
+    factory-analyzer:
+      path: ./sub-agents/analyzer.yaml
+      description: "Analyze project structure, tech stack, tests and entry points (read-only)"
+    factory-coder:
+      path: ./sub-agents/coder.yaml
+      description: "Implement code changes exactly following the plan"
+    factory-tester:
+      path: ./sub-agents/tester.yaml
+      description: "Write and run integration, regression and business tests; verify acceptance criteria"
+    factory-diagnostician:
+      path: ./sub-agents/diagnostician.yaml
+      description: "Deep LLM analysis of persistent failures; recommend the next role (read-only)"
