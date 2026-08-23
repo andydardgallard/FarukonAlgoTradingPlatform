@@ -8,6 +8,7 @@ Cargo.lock
 /python/VM
 .venv
 SYMI*
+/Tickers*
 
 # --- Code Factory runtime (auto-added by prepare_factory.sh) ---
 /.code-factory
