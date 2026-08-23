@@ -69,12 +69,36 @@ impl PerformanceMetrics {
             "Recovery_Factor".to_string(),
             format!("{:.2}", self.recovery_factor),
         ));
+        stats.push((
+            "Composite".to_string(),
+            format!("{:.5}", self.get_composite_score()),
+        ));
         stats.push(("Deals_Count".to_string(), self.deals_count.to_string()));
 
         stats
     }
 
     // Getters
+
+    /// Calculates the Composite score using APR/DD ratio, Recovery Factor and Max Drawdown.
+    pub fn get_composite_score(&self) -> f64 {
+        let apr_dd_metric = self.apr_to_drawdown_ratio;
+        let rf_metric = self.recovery_factor;
+        let dd_metric = self.max_drawdown;
+
+        let mut penalty = 0.0;
+        if apr_dd_metric < 3.0 {
+            penalty += 1000.0;
+        }
+        if rf_metric < 5.0 {
+            penalty += 1000.0;
+        }
+        if dd_metric < -0.3 {
+            penalty += 1000.0;
+        }
+
+        200.0 * apr_dd_metric + (1.0 + rf_metric).ln() / 10.0 - penalty
+    }
 
     /// Returns a reference to the APR to Drawdown ratio.
     pub fn get_apr_to_drawdown_ratio(&self) -> &f64 {
@@ -454,4 +478,60 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     }
 
     (max_dd, max_dd_pct, drawdowns, drawdowns_pct)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PerformanceMetrics;
+
+    #[test]
+    fn composite_score_no_penalty() {
+        let metrics = PerformanceMetrics {
+            total_return: 100.0,
+            total_return_percent: 10.0,
+            apr: 10.0,
+            max_drawdown: -0.2,
+            max_drawdown_pct: -200.0,
+            apr_to_drawdown_ratio: 4.0,
+            recovery_factor: 6.0,
+            deals_count: 10,
+        };
+
+        let expected = 200.0 * 4.0 + (1.0_f64 + 6.0_f64).ln() / 10.0;
+        assert!((metrics.get_composite_score() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn composite_score_full_penalty() {
+        let metrics = PerformanceMetrics {
+            total_return: -50.0,
+            total_return_percent: -5.0,
+            apr: -10.0,
+            max_drawdown: -0.5,
+            max_drawdown_pct: -500.0,
+            apr_to_drawdown_ratio: 2.0,
+            recovery_factor: 4.0,
+            deals_count: 10,
+        };
+
+        let expected = 200.0 * 2.0 + (1.0_f64 + 4.0_f64).ln() / 10.0 - 3000.0;
+        assert!((metrics.get_composite_score() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stats_list_contains_composite() {
+        let metrics = PerformanceMetrics {
+            total_return: 100.0,
+            total_return_percent: 10.0,
+            apr: 10.0,
+            max_drawdown: -0.2,
+            max_drawdown_pct: -200.0,
+            apr_to_drawdown_ratio: 4.0,
+            recovery_factor: 6.0,
+            deals_count: 10,
+        };
+
+        let stats = metrics.to_stats_list();
+        assert!(stats.iter().any(|(key, _)| key == "Composite"));
+    }
 }

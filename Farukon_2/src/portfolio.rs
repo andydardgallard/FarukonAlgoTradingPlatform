@@ -678,12 +678,18 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
         let drawdowns = self.performance_manager.get_drawdons();
         let drawdowns_pct = self.performance_manager.get_drawdowns_pct();
 
-        if self.mode == "Visual" || self.mode == "Debug" {
+        if self.mode == "Visual" || self.mode == "Debug" || self.mode == "Portfolio" {
+            let filename = if self.mode == "Portfolio" {
+                format!("equity_curve_{}.csv", self.strategy_settings.strategy_name)
+            } else {
+                "equity_series.csv".to_string()
+            };
             farukon_core::utils::export_equity_drawdowns_to_csv(
                 drawdowns,
                 drawdowns_pct,
                 &self.equity_series,
                 &self.strategy_settings,
+                &filename,
             )?;
         }
 

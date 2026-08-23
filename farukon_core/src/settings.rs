@@ -349,7 +349,7 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
 
     // check mode
     {
-        const VALID_MODES: &[&str] = &["Debug", "Optimize", "Visual"];
+        const VALID_MODES: &[&str] = &["Debug", "Optimize", "Visual", "Portfolio"];
         if !VALID_MODES.contains(&settings.common.mode.as_str()) {
             anyhow::bail!("Wrong mode setting! Use one of {:?}", VALID_MODES);
         }
@@ -366,6 +366,16 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
     // check portfolio
     {
         for (_strategy, strategy_settings) in settings.portfolio.iter_mut() {
+            // check portfolio mode: only GridSearch is allowed
+            if settings.common.mode == "Portfolio"
+                && !matches!(strategy_settings.optimizer_type, OptimizerType::GridSearch)
+            {
+                anyhow::bail!(
+                    "In 'Portfolio' mode only 'Grid_Search' optimizer_type is allowed (strategy '{}').",
+                    strategy_settings.strategy_name
+                );
+            }
+
             // check optimizer type
             {
                 match &mut strategy_settings.optimizer_type {
@@ -660,4 +670,101 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
     }
 
     anyhow::Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a complete settings JSON string with the given mode and optimizer_type.
+    fn build_settings_json(mode: &str, optimizer_type: &str) -> String {
+        let exit_results_path = std::env::temp_dir()
+            .join("farukon_core_portfolio_mode_test")
+            .to_string_lossy()
+            .to_string();
+        format!(
+            r#"{{
+                "common": {{
+                    "mode": "{}",
+                    "initial_capital": 1000000.0,
+                    "commission_plans_path": "commission_plans.json",
+                    "instrument_info_path": "instruments_info.json",
+                    "global_data_storage_mode": "arc"
+                }},
+                "portfolio": {{
+                    "Strategy_1": {{
+                        "threads": 8,
+                        "strategy_name": "Test_Strategy_1",
+                        "strategy_path": "target/release/libstrategy_lib.dylib",
+                        "exit_results_path": "{}",
+                        "strategy_weight": 1.0,
+                        "slippage": [0.005],
+                        "data": {{
+                            "data_path": "Tickers_fbs/soa/Si",
+                            "timeframe": "1min"
+                        }},
+                        "symbols": ["Si-3.23"],
+                        "strategy_params": {{
+                            "short_window": [5],
+                            "long_window": [10]
+                        }},
+                        "pos_sizer_params": {{
+                            "pos_sizer_name": "mpr",
+                            "pos_sizer_params": {{}},
+                            "pos_sizer_value": {{"start": 0.5, "end": 10.5, "step": 0.5}}
+                        }},
+                        "margin_params": {{
+                            "min_margin": 0.5,
+                            "margin_call_type": "close_deal"
+                        }},
+                        "portfolio_settings_for_strategy": {{
+                            "metrics_calculation_mode": "offline"
+                        }},
+                        "optimizer_type": {}
+                    }}
+                }}
+            }}"#,
+            mode, exit_results_path, optimizer_type
+        )
+    }
+
+    const GENETIC_OPTIMIZER_JSON: &str = r#"{"Genetic": {"ga_params": {
+        "population_size": 3,
+        "elite_size": 1,
+        "p_crossover": 0.8,
+        "p_mutation": 0.2,
+        "max_generations": 5,
+        "std_stop": 0.0000000000000001,
+        "fitness_params": {
+            "fitness_direction": "max",
+            "fitness_value": "APR/DD_factor"
+        }
+    }}}"#;
+
+    #[test]
+    fn portfolio_mode_allows_grid_search() {
+        let json = build_settings_json("Portfolio", "\"Grid_Search\"");
+        let mut settings: Settings = serde_json::from_str(&json).unwrap();
+        assert!(check_args(&mut settings).is_ok());
+    }
+
+    #[test]
+    fn portfolio_mode_rejects_genetic() {
+        let json = build_settings_json("Portfolio", GENETIC_OPTIMIZER_JSON);
+        let mut settings: Settings = serde_json::from_str(&json).unwrap();
+        let err = check_args(&mut settings).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("Grid_Search"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn optimize_mode_allows_genetic() {
+        let json = build_settings_json("Optimize", GENETIC_OPTIMIZER_JSON);
+        let mut settings: Settings = serde_json::from_str(&json).unwrap();
+        assert!(check_args(&mut settings).is_ok());
+    }
 }

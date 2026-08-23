@@ -22,3 +22,9 @@ task.yaml
 # Backtest run artifacts
 /opt_results
 compcomparison_report.csv
+
+# --- Code Factory (auto-added by prepare_factory.sh) ---
+.agents/
+.code-factory/
+__pycache__/
+*.pyc

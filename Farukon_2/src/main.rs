@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
         farukon_core::commission_plans::CommissionPlans::load(&mut all_settings, instruments_info)?;
 
     // For each strategy in portfolio, run optimization
+    let mut portfolio_equity_files: Vec<(String, f64)> = Vec::new();
     for (_strategy_id, strategy_settings) in all_settings.portfolio {
         let strategy_instruments_info =
             &instruments_info.get_instrument_info_for_strategy(&strategy_settings.symbols)?;
@@ -48,6 +49,7 @@ fn main() -> anyhow::Result<()> {
             if common_settings.mode == "Optimize"
                 || common_settings.mode == "Debug"
                 || common_settings.mode == "Visual"
+                || common_settings.mode == "Portfolio"
             {
                 let optimization_runner = optimizers::OptimizationRunner::new(
                     &initial_capital_for_strategy,
@@ -57,7 +59,7 @@ fn main() -> anyhow::Result<()> {
                 );
 
                 match common_settings.mode.as_str() {
-                    "Visual" => {
+                    "Visual" | "Portfolio" => {
                         let total_combinations = optimization_runner
                             .get_grid_search_optimizer()
                             .calculate_total_combinations()?;
@@ -66,6 +68,16 @@ fn main() -> anyhow::Result<()> {
                             let results = optimization_runner
                                 .run_grid_search(total_combinations, global_data_store);
                             optimization_runner.save_grid_search_optimization_results(&results)?;
+                            if common_settings.mode == "Portfolio" {
+                                portfolio_equity_files.push((
+                                    format!(
+                                        "{}/equity_curve_{}.csv",
+                                        strategy_settings.exit_results_path,
+                                        strategy_settings.strategy_name
+                                    ),
+                                    initial_capital_for_strategy,
+                                ));
+                            }
                         } else {
                             anyhow::bail!("total combinations != 1. Found {}", total_combinations);
                         }
@@ -91,6 +103,17 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+    }
+
+    if common_settings.mode == "Portfolio" && !portfolio_equity_files.is_empty() {
+        let output_path = {
+            let first_file = std::path::Path::new(&portfolio_equity_files[0].0);
+            let dir = first_file.parent().unwrap_or(std::path::Path::new("."));
+            dir.join("equity_curve_portfolio.csv")
+                .to_string_lossy()
+                .to_string()
+        };
+        farukon_core::utils::export_portfolio_equity_csv(&portfolio_equity_files, &output_path)?;
     }
 
     println!(

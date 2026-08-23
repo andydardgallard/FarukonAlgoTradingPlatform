@@ -544,32 +544,7 @@ impl OptimizationRunner {
                     score
                 },
                 "Deals_Count" => -((*metrics.get_deals_count() as f64) + 1.0).ln(), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
-                "Composite" => {
-                    let apr_dd_metric = *metrics.get_apr_to_drawdown_ratio();
-                    let rf_metric = *metrics.get_recovery_factor();
-                    let dd_metric = *metrics.get_max_drawdown();
-
-                    let mut penalty = 0.0;
-                    if apr_dd_metric < 3.0 {
-                        penalty += 1000.0;
-                    } else {
-                        penalty += 0.0;
-                    }
-
-                    if rf_metric < 5.0 {
-                        penalty += 1000.0;
-                    } else {
-                        penalty += 0.0;
-                    }
-
-                    if dd_metric < -0.3 {
-                        penalty += 1000.0;
-                    } else {
-                        penalty += 0.0;
-                    }
-
-                    200.0 * apr_dd_metric + (1.0 + rf_metric).ln() / 10.0 - penalty
-                }
+                "Composite" => metrics.get_composite_score(),
                 _ => 0.0, // Default to 0 if the metric name is unknown.
             };
             // Add the weighted value of this metric to the total score.
@@ -699,10 +674,17 @@ impl OptimizationRunner {
         // --- 1. Determine Output Filename ---
         // Constructs the path for the output CSV file based on the strategy's settings.
         // The filename includes a fixed name "optimization_results.csv" appended to the 'exit_results_path'.
-        let filename = format!(
-            "{}/optimization_results.csv",
-            self.strategy_settings.exit_results_path,
-        );
+        let filename = if self.common_settings.mode == "Portfolio" {
+            format!(
+                "{}/optimization_results_{}.csv",
+                self.strategy_settings.exit_results_path, self.strategy_settings.strategy_name
+            )
+        } else {
+            format!(
+                "{}/optimization_results.csv",
+                self.strategy_settings.exit_results_path
+            )
+        };
         let path = std::path::Path::new(&filename);
 
         // --- 2. Create/Open Output File ---
