@@ -134,7 +134,7 @@ def three_dimensions(args) -> None:
 
 
     ## pot hist of frequency of xaxes values
-    bins = int((max(y_xaxis) - min_y_xaxis) / 25)
+    bins = max(1, int((max(y_xaxis) - min_y_xaxis) / 25))
 
     plt.figure(f"Frequency of {args.xaxis} hist", figsize=(14, 8))
     plt.subplots_adjust(

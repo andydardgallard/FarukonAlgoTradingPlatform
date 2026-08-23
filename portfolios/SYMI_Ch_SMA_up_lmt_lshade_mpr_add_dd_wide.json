@@ -10,7 +10,7 @@
         "Strategy_1": {
             "threads": 8,
             "strategy_name": "SYMI_Ch_SMA_up_lmt",
-            "strategy_path": "SYMI_Ch_SMA_up_lmt.so",
+            "strategy_path": "target/release/SYMI_Ch_SMA_Up_lmt.so",
             "exit_results_path": "opt_results/apr_dd_test_from_kimi",
             "strategy_weight": 1,
             "slippage": [0.0],
@@ -78,7 +78,7 @@
                 "LSHADE_RSP": {
                     "lshade_params": {
                         "population_size": 250,
-                        "max_evaluations": 60000,
+                        "max_evaluations": 35000,
                         "p_best": 0.085,
                         "archive_rate": 1.0,
                         "memory_size": 5,

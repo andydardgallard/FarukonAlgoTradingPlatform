@@ -1925,13 +1925,50 @@ impl LshadeRspOptimizer {
         self.create_initial_population(pop_size);
 
         // Evaluate initial population
+        println!("Evaluation: #0");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let batch_size = pop_size;
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
         self.fitness_values = pool.install(|| {
             self.population.par_iter()
-                .map(|ps| evaluate(ps))
+                .map(|ps| {
+                    let start_time = std::time::Instant::now();
+                    let current_count =
+                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    println!(
+                        "# {} from {} {}",
+                        current_count,
+                        batch_size,
+                        ps.format_for_display()
+                    );
+                    let fitness = evaluate(ps);
+                    println!(
+                        "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                        current_count,
+                        batch_size,
+                        start_time.elapsed().as_secs_f64(),
+                        fitness
+                    );
+                    fitness
+                })
                 .collect()
         });
         self.eval_count = self.population.len();
+
+        // Early-stopping (convergence detection) parameters.
+        // Stop when the best fitness has not improved by more than a relative
+        // RELATIVE_IMPROVEMENT_EPS for STALL_PATIENCE consecutive iterations.
+        // Relative threshold scales with the magnitude of the fitness value, so it
+        // works across metrics of very different scale (e.g. -2000.0 .. +999.0).
+        const STALL_PATIENCE: usize = 100;
+        const RELATIVE_IMPROVEMENT_EPS: f64 = 1e-6;
+
+        let mut best_so_far = self
+            .fitness_values
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut stall_counter: usize = 0;
 
         let mut iteration = 0;
 
@@ -1947,6 +1984,9 @@ impl LshadeRspOptimizer {
 
             // Evaluate trials in parallel batches
             // Always count evaluations; track success for CR/F memory
+            println!("Evaluation: #{}", iteration + 1);
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let batch_size = pop_size_before;
             let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> = pool.install(|| {
                 (0..pop_size_before).into_par_iter()
                     .map(|i| {
@@ -1972,7 +2012,23 @@ impl LshadeRspOptimizer {
 
                         let mutant = self.mutate(i, &mut local_rng);
                         let trial = self.crossover(i, &mutant, cr_val, &mut local_rng);
+                        let start_time = std::time::Instant::now();
+                        let current_count =
+                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        println!(
+                            "# {} from {} {}",
+                            current_count,
+                            batch_size,
+                            trial.format_for_display()
+                        );
                         let trial_fitness = evaluate(&trial);
+                        println!(
+                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                            current_count,
+                            batch_size,
+                            start_time.elapsed().as_secs_f64(),
+                            trial_fitness
+                        );
 
                         let is_better = trial_fitness.partial_cmp(&self.fitness_values[i])
                             == Some(std::cmp::Ordering::Greater);
@@ -2020,8 +2076,35 @@ impl LshadeRspOptimizer {
                 iteration, self.eval_count, max_evals, self.population.len(), best, mean,
             );
 
+            // Checkpoint: periodically persist accumulated iteration stats so that
+            // progress is not lost if the process is interrupted mid-run.
+            if iteration % 10 == 0 {
+                let _ = self.save_stats_to_csv(&stats, initial_strategy_settings);
+            }
+
             iteration += 1;
+
+            // Convergence detection: update stall counter based on relative improvement
+            // of the best fitness. Using a relative threshold keeps the stopping criterion
+            // meaningful regardless of the absolute scale of the fitness metric.
+            let scale = best_so_far.abs().max(best.abs()).max(1.0);
+            let rel_improvement = (best - best_so_far) / scale;
+            if rel_improvement > RELATIVE_IMPROVEMENT_EPS {
+                best_so_far = best;
+                stall_counter = 0;
+            } else {
+                stall_counter += 1;
+            }
+
             if self.eval_count >= max_evals {
+                break;
+            }
+
+            if stall_counter >= STALL_PATIENCE {
+                println!(
+                    "LSHADE-RSP converged: no relative improvement > {:.6} for {} consecutive iterations. Stopping early at Evals={}/{} (Best={:.5}).",
+                    RELATIVE_IMPROVEMENT_EPS, stall_counter, self.eval_count, max_evals, best,
+                );
                 break;
             }
         }
