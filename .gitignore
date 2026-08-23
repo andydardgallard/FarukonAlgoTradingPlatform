@@ -17,6 +17,7 @@ __pycache__/
 *.log
 prepare_factory.sh
 task.yaml
+/example
 
 # Backtest run artifacts
 /opt_results
