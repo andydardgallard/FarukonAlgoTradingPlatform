@@ -1,9 +1,0 @@
-scenario,optimizer,time_seconds,best_fitness,APR,MaxDD,Deals_Count
-"Si-*.23, APR/DD",LSHADE-RSP,2.87,-1.0,-0.98539,-0.98843,1763
-"Si-*.23, APR/DD",Genetic_Search,2.59,-1.0,-0.98542,-0.98982,2002
-"Si-*.25, APR/DD",LSHADE-RSP,2.93,-1.0,-0.98687,-0.98868,918
-"Si-*.25, APR/DD",Genetic_Search,3.38,-1.0,-0.98688,-0.98889,962
-"Si-*.23, Composite",LSHADE-RSP,2.91,-1.0,-0.98542,-0.98975,1937
-"Si-*.23, Composite",Genetic_Search,1.12,-1.0,-0.98543,-0.98975,1925
-"Si-*.25, Composite",LSHADE-RSP,2.72,-1.0,-0.98667,-0.98807,1050
-"Si-*.25, Composite",Genetic_Search,1.08,-1.0,-0.98667,-0.98807,1050
