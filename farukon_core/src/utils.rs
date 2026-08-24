@@ -218,6 +218,47 @@ pub fn export_portfolio_equity_csv(
     strategy_equity_files: &[(String, f64)],
     output_path: &str,
 ) -> anyhow::Result<()> {
+    let summed = aggregate_portfolio_equity(strategy_equity_files)?;
+
+    let mut file = std::fs::File::create(output_path)
+        .with_context(|| format!("Failed to create output CSV '{}'", output_path))?;
+    writeln!(file, "datetime;capital;drawdown;drawdown_pct")?;
+
+    let mut peak = 0.0_f64;
+    for (datetime, capital) in &summed {
+        peak = peak.max(*capital);
+        let drawdown = capital / peak - 1.0;
+        let drawdown_pct = capital - peak;
+        writeln!(
+            file,
+            "{};{};{};{}",
+            datetime.format("%Y-%m-%d %H:%M:%S"),
+            capital,
+            drawdown,
+            drawdown_pct
+        )?;
+    }
+
+    anyhow::Ok(())
+}
+
+/// Reads per-strategy equity CSV files and sums their forward-filled capital curves by datetime.
+///
+/// Each per-strategy file has header `datetime;capital;drawdown;drawdown_pct` and rows
+/// `YYYY-MM-DD HH:MM:SS;capital;...` (semicolon-separated). For each strategy, capital is
+/// forward-filled: before its first timestamp it equals its `initial_capital`, after its last
+/// timestamp it stays at the last observed value. Portfolio capital at each timestamp is the
+/// sum across strategies.
+///
+/// # Arguments
+/// * `strategy_equity_files` - slice of (path_to_equity_csv, initial_capital).
+///
+/// # Returns
+/// * `anyhow::Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>>` - datetimes ascending with
+///   summed portfolio capital.
+fn aggregate_portfolio_equity(
+    strategy_equity_files: &[(String, f64)],
+) -> anyhow::Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>> {
     let mut per_strategy_capital: Vec<
         std::collections::BTreeMap<chrono::DateTime<chrono::Utc>, f64>,
     > = Vec::with_capacity(strategy_equity_files.len());
@@ -260,11 +301,7 @@ pub fn export_portfolio_equity_csv(
         .map(|(_path, initial_capital)| *initial_capital)
         .collect();
 
-    let mut file = std::fs::File::create(output_path)
-        .with_context(|| format!("Failed to create output CSV '{}'", output_path))?;
-    writeln!(file, "datetime;capital;drawdown;drawdown_pct")?;
-
-    let mut peak = 0.0_f64;
+    let mut summed = Vec::with_capacity(all_datetimes.len());
     for datetime in &all_datetimes {
         let mut capital = 0.0;
         for (i, capital_map) in per_strategy_capital.iter().enumerate() {
@@ -273,18 +310,76 @@ pub fn export_portfolio_equity_csv(
             }
             capital += current_capital[i];
         }
-        peak = peak.max(capital);
-        let drawdown = capital / peak - 1.0;
-        let drawdown_pct = capital - peak;
-        writeln!(
-            file,
-            "{};{};{};{}",
-            datetime.format("%Y-%m-%d %H:%M:%S"),
-            capital,
-            drawdown,
-            drawdown_pct
-        )?;
+        summed.push((*datetime, capital));
     }
+
+    anyhow::Ok(summed)
+}
+
+/// Writes aggregated portfolio metrics to `optimization_results_portfolio.csv`.
+///
+/// Metrics are computed from the summed equity curve using the same methodology as a
+/// single strategy (via `PerformanceManager::calculate_final`). `Deals_Count` is the
+/// weighted sum of per-strategy deal counts rounded to an integer.
+///
+/// # Arguments
+/// * `strategy_inputs` - per strategy: (equity_csv_path, initial_capital, deals_count, strategy_weight).
+/// * `reference_strategy_settings` - any strategy settings (only used to construct PerformanceManager).
+/// * `output_path` - full path for the output CSV.
+pub fn export_portfolio_optimization_results_csv(
+    strategy_inputs: &[(String, f64, usize, f64)],
+    reference_strategy_settings: &settings::StrategySettings,
+    output_path: &str,
+) -> anyhow::Result<()> {
+    let portfolio_initial_capital: f64 = strategy_inputs.iter().map(|(_, ic, _, _)| ic).sum();
+    let equity_files: Vec<(String, f64)> = strategy_inputs
+        .iter()
+        .map(|(path, ic, _, _)| (path.clone(), *ic))
+        .collect();
+    let summed = aggregate_portfolio_equity(&equity_files)?;
+
+    if summed.is_empty() {
+        return anyhow::Ok(());
+    }
+
+    let start_date = summed.first().unwrap().0;
+    let end_date = summed.last().unwrap().0;
+
+    let weighted_deals = strategy_inputs
+        .iter()
+        .map(|(_, _, deals, w)| *deals as f64 * w)
+        .sum::<f64>()
+        .round() as usize;
+
+    let mut pm = crate::performance::PerformanceManager::new(
+        portfolio_initial_capital,
+        reference_strategy_settings,
+    );
+    let capitals: Vec<f64> = summed.iter().map(|(_, c)| *c).collect();
+    pm.calculate_final(&capitals, start_date, end_date, weighted_deals);
+    let stats = pm.get_current_performance_metrics().to_stats_list();
+
+    let mut names: Vec<String> = stats.iter().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    let stats_map: std::collections::HashMap<String, String> = stats.into_iter().collect();
+
+    if let Some(parent) = std::path::Path::new(output_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file = std::fs::File::create(output_path)
+        .with_context(|| format!("Failed to create output CSV '{}'", output_path))?;
+    write!(file, "strategy_name;")?;
+    for name in &names[0..names.len() - 1] {
+        write!(file, "{};", name)?;
+    }
+    writeln!(file, "{}", names.last().unwrap())?;
+
+    write!(file, "portfolio;")?;
+    for name in &names[0..names.len() - 1] {
+        write!(file, "{};", stats_map[name])?;
+    }
+    writeln!(file, "{}", stats_map[names.last().unwrap()])?;
 
     anyhow::Ok(())
 }
@@ -716,6 +811,154 @@ mod tests {
         assert_eq!(capitals, vec![100.0, 110.0]);
 
         let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    fn test_strategy_settings() -> settings::StrategySettings {
+        settings::StrategySettings {
+            threads: None,
+            strategy_name: "test".to_string(),
+            strategy_path: String::new(),
+            exit_results_path: String::new(),
+            strategy_weight: 1.0,
+            slippage: ParamSpec::Discrete(vec![]),
+            data: crate::settings::DataSettings {
+                data_path: String::new(),
+                timeframe: String::new(),
+            },
+            symbols: vec![],
+            strategy_params: std::collections::HashMap::new(),
+            pos_sizer_params: crate::settings::PosSizer {
+                pos_sizer_name: "1".to_string(),
+                pos_sizer_params: std::collections::HashMap::new(),
+                pos_sizer_value: ParamSpec::Discrete(vec![]),
+            },
+            margin_params: crate::settings::MarginParams {
+                min_margin: 0.0,
+                margin_call_type: String::new(),
+            },
+            portfolio_settings_for_strategy: crate::settings::PortfolioSettingsForStrategy {
+                metrics_calculation_mode: crate::settings::MetricsMode::Offline,
+            },
+            optimizer_type: crate::settings::OptimizerType::GridSearch,
+            commission_plans: None,
+        }
+    }
+
+    #[test]
+    fn portfolio_optimization_results_has_expected_columns_and_name() {
+        let suffix = std::process::id();
+        let temp_dir = std::env::temp_dir();
+        let file = temp_dir.join(format!("portfolio_opt_cols_{}.csv", suffix));
+        let output = temp_dir.join(format!("portfolio_opt_cols_out_{}.csv", suffix));
+
+        // Single strategy: initial capital 100, 2 rows.
+        std::fs::write(
+            &file,
+            "datetime;capital;drawdown;drawdown_pct\n\
+             2025-01-01 09:00:00;100\n\
+             2025-01-01 09:05:00;110\n",
+        )
+        .unwrap();
+
+        let result = export_portfolio_optimization_results_csv(
+            &[(file.to_str().unwrap().to_string(), 100.0, 100, 1.0)],
+            &test_strategy_settings(),
+            output.to_str().unwrap(),
+        );
+        assert!(result.is_ok(), "write failed: {:?}", result.err());
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 1 header + 1 data row");
+
+        let header = lines[0];
+        for metric in [
+            "strategy_name",
+            "APR",
+            "APR/Drawdown_factor",
+            "Composite",
+            "Deals_Count",
+            "Max_Drawdown",
+            "Max_Drawdown_pct",
+            "Recovery_Factor",
+            "Total_Return",
+            "Total_Return_%",
+        ] {
+            assert!(
+                header.split(';').any(|col| col == metric),
+                "header missing '{}': {}",
+                metric,
+                header
+            );
+        }
+        for absent in ["pos_sizer_name", "slippage", "short_window"] {
+            assert!(
+                !header.split(';').any(|col| col == absent),
+                "header should not contain '{}': {}",
+                absent,
+                header
+            );
+        }
+
+        let row: Vec<&str> = lines[1].split(';').collect();
+        let name_index = header
+            .split(';')
+            .position(|col| col == "strategy_name")
+            .unwrap();
+        assert_eq!(row[name_index], "portfolio");
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn portfolio_deals_count_is_weighted_and_rounded() {
+        let suffix = std::process::id();
+        let temp_dir = std::env::temp_dir();
+        let file_a = temp_dir.join(format!("portfolio_deals_a_{}.csv", suffix));
+        let file_b = temp_dir.join(format!("portfolio_deals_b_{}.csv", suffix));
+        let output = temp_dir.join(format!("portfolio_deals_out_{}.csv", suffix));
+
+        // Strategy A: initial capital 100.
+        std::fs::write(
+            &file_a,
+            "datetime;capital;drawdown;drawdown_pct\n\
+             2025-01-01 09:00:00;100\n\
+             2025-01-01 09:05:00;105\n",
+        )
+        .unwrap();
+        // Strategy B: initial capital 200.
+        std::fs::write(
+            &file_b,
+            "datetime;capital;drawdown;drawdown_pct\n\
+             2025-01-01 09:00:00;200\n\
+             2025-01-01 09:05:00;210\n",
+        )
+        .unwrap();
+
+        let result = export_portfolio_optimization_results_csv(
+            &[
+                (file_a.to_str().unwrap().to_string(), 100.0, 100, 0.4),
+                (file_b.to_str().unwrap().to_string(), 200.0, 200, 0.6),
+            ],
+            &test_strategy_settings(),
+            output.to_str().unwrap(),
+        );
+        assert!(result.is_ok(), "write failed: {:?}", result.err());
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        let header = lines[0];
+        let row: Vec<&str> = lines[1].split(';').collect();
+        let deals_index = header
+            .split(';')
+            .position(|col| col == "Deals_Count")
+            .unwrap();
+        assert_eq!(row[deals_index], "160");
+
+        let _ = std::fs::remove_file(&file_a);
+        let _ = std::fs::remove_file(&file_b);
         let _ = std::fs::remove_file(&output);
     }
 }

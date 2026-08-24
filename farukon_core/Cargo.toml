@@ -1,7 +1,7 @@
 [package]
 name = "farukon_core"
-version = "0.1.3"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 wide = "0.7"

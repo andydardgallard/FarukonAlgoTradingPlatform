@@ -1,7 +1,7 @@
 [package]
 name = "Farukon_2"
-version = "0.1.3"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [lints.rust]
 mismatched_lifetime_syntaxes = "allow"
