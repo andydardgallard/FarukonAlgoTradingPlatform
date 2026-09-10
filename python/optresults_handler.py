@@ -1,6 +1,16 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+"""Visualization and comparison of optimization-results CSV files.
+
+Modes:
+  * ``-y set`` with ``-m visual``: plots one panel per numeric metric column.
+  * ``-y set_cmp``, or any run passing ``-fc/--file_compare``: prints a per-metric
+    difference table for two CSV files matched by strategy name and x axis, then
+    draws the per-metric comparison plot.
+"""
+
+import sys
 import math
 import argparse
 import numpy as np
@@ -49,6 +59,12 @@ def args_parser():
         type= str,                                           # Тип строковый
         choices= ["visual", "select"],
         help= "The mode of handler. Visual = plot graphs. Select = selection of results by mask."
+    )
+    parser.add_argument(
+        "-fc", "--file_compare",
+        default= None,
+        type= str,
+        help= "Path to the second CSV file to compare with --file"
     )
     return parser.parse_args()
 
@@ -236,11 +252,32 @@ def plot_set_get_xaxis(args) -> pd.DataFrame:
     
     return data
 
+## Columns that describe settings/structure of a run, not its performance metrics
+COMPARE_STRUCTURAL_COLUMNS = {
+    "strategy_name",
+    "avg_price_period",
+    "channel_period",
+    "prct_width_channel",
+    "sma_period",
+    "width_channel",
+    "pos_sizer_name",
+    "pos_sizer_value",
+    "slippage",
+}
+
+def numeric_metric_columns(data: pd.DataFrame, xaxis: str) -> list:
+    """Numeric metric columns: numbers without settings/structure columns and without xaxis."""
+    return [
+        column for column in data.select_dtypes(include= [np.number]).columns
+        if column not in COMPARE_STRUCTURAL_COLUMNS and column != xaxis
+    ]
+
 def plot_set(args) -> None:
+    """Plots one panel per numeric metric column, against the x axis parameter."""
     results = plot_set_get_xaxis(args)
     results = results.drop_duplicates().reset_index(drop= True)
     
-    results_list = results.columns.to_list()[-8:]
+    results_list = numeric_metric_columns(results, args.xaxis)
     sorted_results = results.sort_values(
         by=args.xaxis,
         ascending=True
@@ -267,9 +304,137 @@ def plot_set(args) -> None:
 
     plt.show()
 
+def format_compare_value(value) -> str:
+    """Formats a value for the comparison table: ``None`` for NaN, integers without a decimal part."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "None"
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if math.isnan(number):
+        return "None"
+    if number.is_integer():
+        return str(int(number))
+
+    return f"{number:.5f}"
+
+def compare_files(args) -> None:
+    """Compares two optimization-results CSV files.
+
+    Rows are matched on ``strategy_name`` and the x axis parameter. Prints a
+    metric-by-metric table with both values and their difference, then draws the
+    comparison plot. Non-numeric metrics (e.g. ``Max_Drawdown_DateTime``) are printed
+    with ``n/a`` as difference.
+    """
+    with open(args.file) as fin:
+        first_data = pd.read_csv(
+            fin,
+            header= 0,
+            sep= ';',
+            )
+    with open(args.file_compare) as fin:
+        second_data = pd.read_csv(
+            fin,
+            header= 0,
+            sep= ';',
+            )
+
+    merge_keys = ["strategy_name", args.xaxis]
+    merged = first_data.merge(
+        second_data,
+        on= merge_keys,
+        suffixes= ("_file", "_file_compare"),
+        how= "inner",
+    )
+
+    metric_columns = [
+        column for column in first_data.columns
+        if column in second_data.columns
+        and column not in COMPARE_STRUCTURAL_COLUMNS
+        and column != args.xaxis
+    ]
+    ## Textual metrics (e.g. Max_Drawdown_DateTime) are printed, but have no numeric difference
+    numeric_metrics = {
+        column for column in metric_columns
+        if column in numeric_metric_columns(first_data, args.xaxis)
+        and column in numeric_metric_columns(second_data, args.xaxis)
+    }
+
+    print(f"file          : {args.file}")
+    print(f"file_compare  : {args.file_compare}")
+    print(f"merge keys    : {', '.join(merge_keys)}")
+    print(f"matched rows  : {len(merged)}")
+    print()
+    print("strategy\tmetric\tfile\tfile_compare\tdifference")
+
+    for _, row in merged.iterrows():
+        strategy = row["strategy_name"]
+        for metric in metric_columns:
+            first_value = row[f"{metric}_file"]
+            second_value = row[f"{metric}_file_compare"]
+
+            if metric not in numeric_metrics:
+                difference = "n/a"
+            elif pd.isna(first_value) or pd.isna(second_value):
+                difference = "None"
+            else:
+                difference = format_compare_value(float(second_value) - float(first_value))
+
+            print(
+                f"{strategy}\t{metric}\t"
+                f"{format_compare_value(first_value)}\t"
+                f"{format_compare_value(second_value)}\t"
+                f"{difference}"
+            )
+
+    plot_compare(merged, [metric for metric in metric_columns if metric in numeric_metrics], [
+        f"{row['strategy_name']} ({args.xaxis}={format_compare_value(row[args.xaxis])})"
+        for _, row in merged.iterrows()
+    ])
+
+def plot_compare(merged: pd.DataFrame, metric_columns: list, labels: list) -> None:
+    """Draws one bar panel per numeric metric, with side-by-side bars for both files.
+
+    Plotting failures are reported on stdout instead of aborting the comparison.
+    """
+    try:
+        figure, axes = plt.subplots(
+            1,
+            len(metric_columns),
+            figsize=(4 * max(1, len(metric_columns)), 6),
+            squeeze= False,
+        )
+
+        positions = np.arange(len(merged))
+        for index, metric in enumerate(metric_columns):
+            ax = axes[0][index]
+            ax.bar(positions - 0.2, merged[f"{metric}_file"], width= 0.4, label= "file")
+            ax.bar(positions + 0.2, merged[f"{metric}_file_compare"], width= 0.4, label= "file_compare")
+            ax.set_title(metric, fontsize=10)
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels, fontsize=7, rotation=15)
+            ax.grid(True)
+
+        axes[0][0].legend()
+        figure.suptitle("Comparison of optimization results")
+        plt.show()
+    except Exception as error:
+        print(f"Plot skipped: {error}")
+
 if __name__ == "__main__":
     args = args_parser()
-    if args.mode == "visual":
+    if args.yaxis == "set_cmp" and args.file_compare is None:
+        print(
+            "Error: -y set_cmp compares two files, but -fc/--file_compare was not given.",
+            file= sys.stderr,
+        )
+        sys.exit(2)
+    if args.file_compare is not None or args.yaxis == "set_cmp":
+        compare_files(args)
+    elif args.mode == "visual":
         if args.dimension == "2D":
             if args.yaxis == "set":
                 plot_set(args)

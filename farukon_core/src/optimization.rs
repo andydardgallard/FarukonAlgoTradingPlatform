@@ -1,7 +1,8 @@
 // farukon_core/src/optimization.rs
 
 //! Optimization engine for hyperparameter tuning.
-//! Supports Grid Search (exhaustive) and Genetic Algorithm (evolutionary).
+//! Supports Grid Search (exhaustive), Genetic Algorithm (evolutionary) and
+//! LSHADE-RSP (adaptive differential evolution) optimizers.
 //! Uses Rayon for parallel evaluation of thousands of parameter combinations.
 
 use ::std::io::Write;
@@ -281,7 +282,9 @@ impl OptimizationConfig {
     }
 
     /// Returns a reference to the strategy parameters ranges.
-    pub fn get_strategy_params_ranges(&self) -> &std::collections::HashMap<String, settings::ParamSpec> {
+    pub fn get_strategy_params_ranges(
+        &self,
+    ) -> &std::collections::HashMap<String, settings::ParamSpec> {
         &self.strategy_params_ranges
     }
 
@@ -1516,6 +1519,7 @@ fn hash_parameter_set(params: &ParameterSet) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
     hash_params(&params.strategy_params, &mut hasher);
+    params.pos_sizer_name.hash(&mut hasher);
     params.pos_sizer_value.to_bits().hash(&mut hasher);
     params.slippage.to_bits().hash(&mut hasher);
     hash_params(&params.pos_sizer_additional_params, &mut hasher);
@@ -1591,6 +1595,7 @@ pub struct LshadeRspConfig {
     archive_rate: f64,
     memory_size: usize,
     fitness_metric: settings::FitnessValue,
+    /// `"max"` or `"min"`; applied to selection, best/worst statistics and early stopping.
     fitness_direction: String,
 }
 
@@ -1619,19 +1624,42 @@ impl LshadeRspConfig {
         }
     }
 
-    pub fn get_fitness_metric(&self) -> &settings::FitnessValue { &self.fitness_metric }
-    pub fn get_fitness_direction(&self) -> &String { &self.fitness_direction }
+    pub fn get_fitness_metric(&self) -> &settings::FitnessValue {
+        &self.fitness_metric
+    }
+    pub fn get_fitness_direction(&self) -> &String {
+        &self.fitness_direction
+    }
 }
 
 /// Statistics for one iteration of LSHADE-RSP.
 #[derive(Debug, Clone)]
 pub struct LshadeRspIterationStats {
+    /// 1-based iteration number; the initial population is iteration 1.
     pub iteration: usize,
+    /// Best fitness in the population, interpreted according to `fitness_direction`.
     pub best_fitness: f64,
+    /// Worst fitness in the population, interpreted according to `fitness_direction`.
     pub worst_fitness: f64,
+    /// Mean fitness of the current population.
     pub mean_fitness: f64,
+    /// Population size after the LPSR reduction of this iteration.
     pub population_size: usize,
+    /// Cumulative number of fitness evaluations performed so far.
     pub evaluations: usize,
+}
+
+/// Clears and releases the LSHADE chromosome bank when it goes out of scope.
+struct BankClearGuard {
+    bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+}
+
+impl Drop for BankClearGuard {
+    fn drop(&mut self) {
+        let mut bank = self.bank.lock().unwrap_or_else(|e| e.into_inner());
+        bank.clear();
+        bank.shrink_to_fit();
+    }
 }
 
 /// The LSHADE-RSP (Linear Population Size Reduction with SHADE) optimizer.
@@ -1639,6 +1667,8 @@ pub struct LshadeRspIterationStats {
 pub struct LshadeRspOptimizer {
     config: LshadeRspConfig,
     optimization_config: OptimizationConfig,
+    /// Caches fitness per hashed `ParameterSet` for the duration of a single `run`.
+    chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
     population: Vec<ParameterSet>,
     fitness_values: Vec<f64>,
     archive: Vec<ParameterSet>,
@@ -1653,6 +1683,9 @@ impl LshadeRspOptimizer {
         Self {
             config: LshadeRspConfig::new(),
             optimization_config: OptimizationConfig::new(),
+            chromosome_bank: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             population: Vec::new(),
             fitness_values: Vec::new(),
             archive: Vec::new(),
@@ -1673,6 +1706,95 @@ impl LshadeRspOptimizer {
         self
     }
 
+    /// Evaluates a parameter set through the chromosome bank, reusing cached fitness values.
+    fn evaluate_cached<F>(
+        params: &ParameterSet,
+        bank: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+        evaluate: &F,
+    ) -> f64
+    where
+        F: Fn(&ParameterSet) -> f64,
+    {
+        let hash = hash_parameter_set(params);
+        if let Some(cached) = bank
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&hash)
+            .copied()
+        {
+            return cached;
+        }
+        let fitness = evaluate(params);
+        bank.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hash, fitness);
+        fitness
+    }
+
+    /// Returns the index of the best individual according to the configured fitness direction.
+    fn best_index(&self) -> usize {
+        if self.fitness_values.is_empty() {
+            return 0;
+        }
+        let min_direction = self.config.get_fitness_direction().as_str() == "min";
+        let comparator = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+        let selected = if min_direction {
+            self.fitness_values
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| comparator(a, b))
+        } else {
+            self.fitness_values
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| comparator(a, b))
+        };
+        selected.map(|(i, _)| i).unwrap_or(0)
+    }
+
+    /// Returns a human-readable display of the best individual's chromosome.
+    fn best_chromosome_display(&self) -> String {
+        if self.population.is_empty() {
+            return String::new();
+        }
+        self.population[self.best_index()].format_for_display()
+    }
+
+    /// Folds fitness values into the best value for the configured direction.
+    fn direction_best(&self, values: &[f64]) -> f64 {
+        if self.config.get_fitness_direction().as_str() == "min" {
+            values.iter().cloned().fold(f64::INFINITY, f64::min)
+        } else {
+            values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        }
+    }
+
+    /// Folds fitness values into the worst value for the configured direction.
+    fn direction_worst(&self, values: &[f64]) -> f64 {
+        if self.config.get_fitness_direction().as_str() == "min" {
+            values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        } else {
+            values.iter().cloned().fold(f64::INFINITY, f64::min)
+        }
+    }
+
+    /// Builds the iteration statistics for the current population state.
+    fn build_iteration_stats(&self, iteration: usize) -> LshadeRspIterationStats {
+        let mean = if self.fitness_values.is_empty() {
+            0.0
+        } else {
+            self.fitness_values.iter().sum::<f64>() / self.fitness_values.len() as f64
+        };
+        LshadeRspIterationStats {
+            iteration,
+            best_fitness: self.direction_best(&self.fitness_values),
+            worst_fitness: self.direction_worst(&self.fitness_values),
+            mean_fitness: mean,
+            population_size: self.population.len(),
+            evaluations: self.eval_count,
+        }
+    }
+
     /// Initializes the historical memory with default values.
     fn init_memory(&mut self) {
         let msize = self.config.memory_size;
@@ -1685,12 +1807,21 @@ impl LshadeRspOptimizer {
     fn create_initial_population(&mut self, pop_size: usize) {
         let mut rng = rand::thread_rng();
         self.population.clear();
-        let param_names: Vec<String> = self.optimization_config.get_strategy_params_ranges().keys().cloned().collect();
+        let param_names: Vec<String> = self
+            .optimization_config
+            .get_strategy_params_ranges()
+            .keys()
+            .cloned()
+            .collect();
 
         for _ in 0..pop_size {
             let mut strategy_params = Vec::new();
             for name in &param_names {
-                if let Some(spec) = self.optimization_config.get_strategy_params_ranges().get(name) {
+                if let Some(spec) = self
+                    .optimization_config
+                    .get_strategy_params_ranges()
+                    .get(name)
+                {
                     let val = Self::random_value_in_spec(spec, &mut rng);
                     strategy_params.push((name.clone(), val));
                 }
@@ -1699,13 +1830,17 @@ impl LshadeRspOptimizer {
             let pos_sizer_val = {
                 let spec = self.optimization_config.get_pos_sizer_value_range();
                 let vals = spec.expand();
-                vals.choose(&mut rng).cloned().unwrap_or(serde_json::Value::Null)
+                vals.choose(&mut rng)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
             };
 
             let slippage = {
                 let spec = self.optimization_config.get_slippage_range();
                 let vals = spec.expand();
-                vals.choose(&mut rng).and_then(|v| v.as_f64()).unwrap_or(0.005)
+                vals.choose(&mut rng)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.005)
             };
 
             let ps = ParameterSet::new()
@@ -1719,44 +1854,70 @@ impl LshadeRspOptimizer {
     }
 
     /// Generates a random value conforming to the ParamSpec.
-    fn random_value_in_spec(spec: &settings::ParamSpec, rng: &mut impl rand::Rng) -> serde_json::Value {
+    fn random_value_in_spec(
+        spec: &settings::ParamSpec,
+        rng: &mut impl rand::Rng,
+    ) -> serde_json::Value {
         match spec {
-            settings::ParamSpec::Discrete(values) => {
-                values.choose(rng).cloned().unwrap_or(serde_json::Value::Null)
-            }
+            settings::ParamSpec::Discrete(values) => values
+                .choose(rng)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
             settings::ParamSpec::Range { start, end, step } => {
                 let mut val = rng.gen_range(*start..=*end);
                 if *step > 0.0 {
                     val = (val / step).round() * step;
                     val = val.clamp(*start, *end);
                 }
-                serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap_or(serde_json::Number::from_f64(*start).unwrap()))
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(val)
+                        .unwrap_or(serde_json::Number::from_f64(*start).unwrap()),
+                )
             }
         }
     }
 
-    /// Performs DE/current-to-pbest/1 mutation with archive.
-    fn mutate(&self, target_idx: usize, rng: &mut impl rand::Rng) -> Vec<(String, serde_json::Value)> {
+    /// Selects the pbest index: a random pick among the top `p_best` fraction of the
+    /// population, ordered by fitness according to the configured direction.
+    fn pbest_index(&self, rng: &mut impl rand::Rng) -> usize {
         let pop_size = self.population.len();
-        let p_best = self.config.p_best;
-        let p_num = (pop_size as f64 * p_best).max(1.0) as usize;
+        let p_num = ((pop_size as f64 * self.config.p_best).max(1.0) as usize).min(pop_size);
+        let min_direction = self.config.get_fitness_direction().as_str() == "min";
+
+        let mut indices: Vec<usize> = (0..pop_size).collect();
+        indices.sort_by(|&a, &b| {
+            let ordering = self.fitness_values[a]
+                .partial_cmp(&self.fitness_values[b])
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if min_direction {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+        indices[rng.gen_range(0..p_num)]
+    }
+
+    /// Performs DE/current-to-pbest/1 mutation with archive.
+    fn mutate(
+        &self,
+        target_idx: usize,
+        rng: &mut impl rand::Rng,
+    ) -> Vec<(String, serde_json::Value)> {
+        let pop_size = self.population.len();
 
         // Select F from memory
         let ri = rng.gen_range(0..self.memory_f.len());
         let f = self.memory_f[ri];
 
         // Select pbest individual
-        let pbest_idx = {
-            let mut indices: Vec<usize> = (0..pop_size).collect();
-            indices.sort_by(|&a, &b| {
-                self.fitness_values[b].partial_cmp(&self.fitness_values[a]).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            indices[rng.gen_range(0..p_num)]
-        };
+        let pbest_idx = self.pbest_index(rng);
 
         // Select r1 from population (not target, not pbest)
         let mut r1 = rng.gen_range(0..pop_size);
-        while r1 == target_idx || r1 == pbest_idx { r1 = rng.gen_range(0..pop_size); }
+        while r1 == target_idx || r1 == pbest_idx {
+            r1 = rng.gen_range(0..pop_size);
+        }
 
         // Select r2 from population ∪ archive (not target, not pbest, not r1)
         let total_pool = pop_size + self.archive.len();
@@ -1775,18 +1936,46 @@ impl LshadeRspOptimizer {
         };
 
         // Create mutant: target + F*(pbest - target) + F*(r1 - r2)
-        let param_names: Vec<String> = self.optimization_config.get_strategy_params_ranges().keys().cloned().collect();
+        let param_names: Vec<String> = self
+            .optimization_config
+            .get_strategy_params_ranges()
+            .keys()
+            .cloned()
+            .collect();
         let mut mutant = Vec::new();
 
         for name in &param_names {
-            let spec = self.optimization_config.get_strategy_params_ranges().get(name);
-            let target_val = target.strategy_params.iter().find(|(n, _)| n == name).map(|(_, v)| v);
-            let pbest_val = pbest.strategy_params.iter().find(|(n, _)| n == name).map(|(_, v)| v);
-            let r1_val = x_r1.strategy_params.iter().find(|(n, _)| n == name).map(|(_, v)| v);
-            let r2_val = x_r2.strategy_params.iter().find(|(n, _)| n == name).map(|(_, v)| v);
+            let spec = self
+                .optimization_config
+                .get_strategy_params_ranges()
+                .get(name);
+            let target_val = target
+                .strategy_params
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v);
+            let pbest_val = pbest
+                .strategy_params
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v);
+            let r1_val = x_r1
+                .strategy_params
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v);
+            let r2_val = x_r2
+                .strategy_params
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v);
 
-            if let (Some(tv), Some(pv), Some(r1v), Some(r2v), Some(spec)) = (target_val, pbest_val, r1_val, r2_val, spec) {
-                if let (Some(t), Some(p), Some(r1_n), Some(r2_n)) = (tv.as_f64(), pv.as_f64(), r1v.as_f64(), r2v.as_f64()) {
+            if let (Some(tv), Some(pv), Some(r1v), Some(r2v), Some(spec)) =
+                (target_val, pbest_val, r1_val, r2_val, spec)
+            {
+                if let (Some(t), Some(p), Some(r1_n), Some(r2_n)) =
+                    (tv.as_f64(), pv.as_f64(), r1v.as_f64(), r2v.as_f64())
+                {
                     let mut mutant_val = t + f * (p - t) + f * (r1_n - r2_n);
                     // Clamp to bounds
                     if let settings::ParamSpec::Range { start, end, step } = spec {
@@ -1796,14 +1985,20 @@ impl LshadeRspOptimizer {
                             mutant_val = mutant_val.clamp(*start, *end);
                         }
                     }
-                    mutant.push((name.clone(), serde_json::Value::Number(
-                        serde_json::Number::from_f64(mutant_val).unwrap()
-                    )));
+                    mutant.push((
+                        name.clone(),
+                        serde_json::Value::Number(
+                            serde_json::Number::from_f64(mutant_val).unwrap(),
+                        ),
+                    ));
                 } else {
                     mutant.push((name.clone(), pv.clone()));
                 }
             } else {
-                mutant.push((name.clone(), pbest_val.cloned().unwrap_or(serde_json::Value::Null)));
+                mutant.push((
+                    name.clone(),
+                    pbest_val.cloned().unwrap_or(serde_json::Value::Null),
+                ));
             }
         }
 
@@ -1811,19 +2006,36 @@ impl LshadeRspOptimizer {
     }
 
     /// Binomial crossover between target and mutant to produce trial vector.
-    fn crossover(&self, target_idx: usize, mutant: &[(String, serde_json::Value)], cr: f64, rng: &mut impl rand::Rng) -> ParameterSet {
+    fn crossover(
+        &self,
+        target_idx: usize,
+        mutant: &[(String, serde_json::Value)],
+        cr: f64,
+        rng: &mut impl rand::Rng,
+    ) -> ParameterSet {
         let target = &self.population[target_idx];
-        let param_names: Vec<String> = self.optimization_config.get_strategy_params_ranges().keys().cloned().collect();
+        let param_names: Vec<String> = self
+            .optimization_config
+            .get_strategy_params_ranges()
+            .keys()
+            .cloned()
+            .collect();
         let j_rand = rng.gen_range(0..param_names.len());
         let mut trial_params = Vec::new();
 
         for (j, name) in param_names.iter().enumerate() {
             let use_mutant = j == j_rand || rng.r#gen::<f64>() <= cr;
-            let target_val = target.strategy_params.iter().find(|(n, _)| n == name).map(|(_, v)| v);
+            let target_val = target
+                .strategy_params
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v);
             let mutant_val = mutant.iter().find(|(n, _)| n == name).map(|(_, v)| v);
 
             let val = if use_mutant {
-                mutant_val.cloned().unwrap_or_else(|| target_val.cloned().unwrap_or(serde_json::Value::Null))
+                mutant_val
+                    .cloned()
+                    .unwrap_or_else(|| target_val.cloned().unwrap_or(serde_json::Value::Null))
             } else {
                 target_val.cloned().unwrap_or(serde_json::Value::Null)
             };
@@ -1843,11 +2055,21 @@ impl LshadeRspOptimizer {
             return;
         }
 
-        // Find index of worst fitness
-        let worst_idx = self.fitness_values.iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i);
+        // Find index of worst fitness: the minimum for "max", the maximum for "min"
+        let min_direction = self.config.get_fitness_direction().as_str() == "min";
+        let comparator = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+        let worst_idx = if min_direction {
+            self.fitness_values
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| comparator(a, b))
+        } else {
+            self.fitness_values
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| comparator(a, b))
+        }
+        .map(|(i, _)| i);
 
         if let Some(idx) = worst_idx {
             // Move to archive before removing (if archive not full)
@@ -1900,6 +2122,12 @@ impl LshadeRspOptimizer {
     }
 
     /// Runs the LSHADE-RSP optimization.
+    ///
+    /// The chromosome bank is cleared before the run starts and released again on every exit
+    /// path. Statistics are appended to `lshade_optimization_results.csv` after each iteration
+    /// (the file is recreated with its header at the start of the run) and iterations are
+    /// numbered starting from 1.
+    ///
     /// # Arguments
     /// * `initial_strategy_settings` - The initial strategy settings.
     /// * `evaluate` - A function that takes a `ParameterSet` and returns a fitness score.
@@ -1921,16 +2149,34 @@ impl LshadeRspOptimizer {
         // Initialize memory
         self.init_memory();
 
+        // Reset the chromosome bank so results do not leak between runs, and release
+        // it on every exit path (success, `?`, or unwind).
+        self.chromosome_bank
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let _bank_guard = BankClearGuard {
+            bank: self.chromosome_bank.clone(),
+        };
+
         // Create initial population
         self.create_initial_population(pop_size);
+
+        self.initialize_stats_csv(initial_strategy_settings)?;
+
+        let max_is_best = self.config.get_fitness_direction().as_str() != "min";
 
         // Evaluate initial population
         println!("Evaluation: #0");
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let batch_size = pop_size;
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?;
+        let chromosome_bank = self.chromosome_bank.clone();
         self.fitness_values = pool.install(|| {
-            self.population.par_iter()
+            self.population
+                .par_iter()
                 .map(|ps| {
                     let start_time = std::time::Instant::now();
                     let current_count =
@@ -1941,7 +2187,7 @@ impl LshadeRspOptimizer {
                         batch_size,
                         ps.format_for_display()
                     );
-                    let fitness = evaluate(ps);
+                    let fitness = Self::evaluate_cached(ps, &chromosome_bank, &evaluate);
                     println!(
                         "# {} from {} is done in {:.3} seconds, fitnesss= {}",
                         current_count,
@@ -1955,6 +2201,11 @@ impl LshadeRspOptimizer {
         });
         self.eval_count = self.population.len();
 
+        let initial_stat = self.build_iteration_stats(1);
+        self.print_iteration_summary(&initial_stat, max_evals);
+        self.append_stats_csv(&initial_stat, initial_strategy_settings)?;
+        stats.push(initial_stat);
+
         // Early-stopping (convergence detection) parameters.
         // Stop when the best fitness has not improved by more than a relative
         // RELATIVE_IMPROVEMENT_EPS for STALL_PATIENCE consecutive iterations.
@@ -1963,14 +2214,10 @@ impl LshadeRspOptimizer {
         const STALL_PATIENCE: usize = 100;
         const RELATIVE_IMPROVEMENT_EPS: f64 = 1e-6;
 
-        let mut best_so_far = self
-            .fitness_values
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let mut best_so_far = self.direction_best(&self.fitness_values);
         let mut stall_counter: usize = 0;
 
-        let mut iteration = 0;
+        let mut iteration = 2;
 
         loop {
             if self.eval_count >= max_evals {
@@ -1984,58 +2231,68 @@ impl LshadeRspOptimizer {
 
             // Evaluate trials in parallel batches
             // Always count evaluations; track success for CR/F memory
-            println!("Evaluation: #{}", iteration + 1);
+            println!("Evaluation: #{}", iteration - 1);
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let batch_size = pop_size_before;
-            let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> = pool.install(|| {
-                (0..pop_size_before).into_par_iter()
-                    .map(|i| {
-                        let mut local_rng = rand::thread_rng();
-                        let ri = local_rng.gen_range(0..self.memory_cr.len());
-                        let mut cr_val = self.memory_cr[ri];
-                        let mut f_val;
+            let chromosome_bank = self.chromosome_bank.clone();
+            let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> =
+                pool.install(|| {
+                    (0..pop_size_before)
+                        .into_par_iter()
+                        .map(|i| {
+                            let mut local_rng = rand::thread_rng();
+                            let ri = local_rng.gen_range(0..self.memory_cr.len());
+                            let mut cr_val = self.memory_cr[ri];
+                            let mut f_val;
 
-                        if local_rng.r#gen::<f64>() < 0.1 {
-                            cr_val = local_rng.r#gen::<f64>();
-                        } else {
-                            let noise = (local_rng.r#gen::<f64>() - 0.5) * 0.2;
-                            cr_val = (cr_val + noise).clamp(0.0, 1.0);
-                        }
+                            if local_rng.r#gen::<f64>() < 0.1 {
+                                cr_val = local_rng.r#gen::<f64>();
+                            } else {
+                                let noise = (local_rng.r#gen::<f64>() - 0.5) * 0.2;
+                                cr_val = (cr_val + noise).clamp(0.0, 1.0);
+                            }
 
-                        let ri = local_rng.gen_range(0..self.memory_f.len());
-                        let mf = self.memory_f[ri];
-                        loop {
-                            f_val = mf + 0.1 * (local_rng.r#gen::<f64>() * 2.0 - 1.0).tan();
-                            if f_val > 0.0 { break; }
-                        }
-                        f_val = f_val.min(1.0);
+                            let ri = local_rng.gen_range(0..self.memory_f.len());
+                            let mf = self.memory_f[ri];
+                            loop {
+                                f_val = mf + 0.1 * (local_rng.r#gen::<f64>() * 2.0 - 1.0).tan();
+                                if f_val > 0.0 {
+                                    break;
+                                }
+                            }
+                            f_val = f_val.min(1.0);
 
-                        let mutant = self.mutate(i, &mut local_rng);
-                        let trial = self.crossover(i, &mutant, cr_val, &mut local_rng);
-                        let start_time = std::time::Instant::now();
-                        let current_count =
-                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        println!(
-                            "# {} from {} {}",
-                            current_count,
-                            batch_size,
-                            trial.format_for_display()
-                        );
-                        let trial_fitness = evaluate(&trial);
-                        println!(
-                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                            current_count,
-                            batch_size,
-                            start_time.elapsed().as_secs_f64(),
-                            trial_fitness
-                        );
+                            let mutant = self.mutate(i, &mut local_rng);
+                            let trial = self.crossover(i, &mutant, cr_val, &mut local_rng);
+                            let start_time = std::time::Instant::now();
+                            let current_count =
+                                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            println!(
+                                "# {} from {} {}",
+                                current_count,
+                                batch_size,
+                                trial.format_for_display()
+                            );
+                            let trial_fitness =
+                                Self::evaluate_cached(&trial, &chromosome_bank, &evaluate);
+                            println!(
+                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                                current_count,
+                                batch_size,
+                                start_time.elapsed().as_secs_f64(),
+                                trial_fitness
+                            );
 
-                        let is_better = trial_fitness.partial_cmp(&self.fitness_values[i])
-                            == Some(std::cmp::Ordering::Greater);
-                        (i, trial, trial_fitness, cr_val, f_val, is_better)
-                    })
-                    .collect()
-            });
+                            let ordering = trial_fitness.partial_cmp(&self.fitness_values[i]);
+                            let is_better = if max_is_best {
+                                ordering == Some(std::cmp::Ordering::Greater)
+                            } else {
+                                ordering == Some(std::cmp::Ordering::Less)
+                            };
+                            (i, trial, trial_fitness, cr_val, f_val, is_better)
+                        })
+                        .collect()
+                });
 
             // Count all evaluations and apply successful trials
             self.eval_count += trial_results.len();
@@ -2058,29 +2315,11 @@ impl LshadeRspOptimizer {
             self.update_memory(&successful_cr, &successful_f);
 
             // Calculate stats
-            let best = self.fitness_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let worst = self.fitness_values.iter().cloned().fold(f64::INFINITY, f64::min);
-            let mean = self.fitness_values.iter().sum::<f64>() / self.fitness_values.len() as f64;
-
-            stats.push(LshadeRspIterationStats {
-                iteration,
-                best_fitness: best,
-                worst_fitness: worst,
-                mean_fitness: mean,
-                population_size: self.population.len(),
-                evaluations: self.eval_count,
-            });
-
-            println!(
-                "LSHADE-RSP Iteration {}: Evals={}/{}, PopSize={}, Best={:.5}, Mean={:.5}",
-                iteration, self.eval_count, max_evals, self.population.len(), best, mean,
-            );
-
-            // Checkpoint: periodically persist accumulated iteration stats so that
-            // progress is not lost if the process is interrupted mid-run.
-            if iteration % 10 == 0 {
-                let _ = self.save_stats_to_csv(&stats, initial_strategy_settings);
-            }
+            let new_stat = self.build_iteration_stats(iteration);
+            let best = new_stat.best_fitness;
+            self.print_iteration_summary(&new_stat, max_evals);
+            self.append_stats_csv(&new_stat, initial_strategy_settings)?;
+            stats.push(new_stat);
 
             iteration += 1;
 
@@ -2088,7 +2327,11 @@ impl LshadeRspOptimizer {
             // of the best fitness. Using a relative threshold keeps the stopping criterion
             // meaningful regardless of the absolute scale of the fitness metric.
             let scale = best_so_far.abs().max(best.abs()).max(1.0);
-            let rel_improvement = (best - best_so_far) / scale;
+            let rel_improvement = if max_is_best {
+                (best - best_so_far) / scale
+            } else {
+                (best_so_far - best) / scale
+            };
             if rel_improvement > RELATIVE_IMPROVEMENT_EPS {
                 best_so_far = best;
                 stall_counter = 0;
@@ -2112,10 +2355,23 @@ impl LshadeRspOptimizer {
         anyhow::Ok(stats)
     }
 
-    /// Saves LSHADE-RSP iteration statistics to a CSV file.
-    pub fn save_stats_to_csv(
+    /// Prints the per-iteration LSHADE-RSP summary line.
+    fn print_iteration_summary(&self, stat: &LshadeRspIterationStats, max_evals: usize) {
+        println!(
+            "LSHADE-RSP Iteration {}: Evals={}/{}, PopSize={}, Best={:.5}, Mean={:.5}, BestChromosome: {}",
+            stat.iteration,
+            stat.evaluations,
+            max_evals,
+            stat.population_size,
+            stat.best_fitness,
+            stat.mean_fitness,
+            self.best_chromosome_display(),
+        );
+    }
+
+    /// Creates (or truncates) the statistics CSV file and writes its header row.
+    fn initialize_stats_csv(
         &self,
-        stats: &[LshadeRspIterationStats],
         strategy_settings: &settings::StrategySettings,
     ) -> anyhow::Result<()> {
         let path = std::path::Path::new(&strategy_settings.exit_results_path)
@@ -2125,11 +2381,9 @@ impl LshadeRspOptimizer {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut wtr = csv::WriterBuilder::new()
-            .delimiter(b';')
-            .from_path(&path)?;
+        let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_path(&path)?;
 
-        wtr.write_record(&[
+        wtr.write_record([
             "strategy_name",
             "iteration",
             "best_fitness",
@@ -2139,23 +2393,36 @@ impl LshadeRspOptimizer {
             "evaluations",
         ])?;
 
-        for s in stats {
-            wtr.write_record(&[
-                &strategy_settings.strategy_name,
-                &s.iteration.to_string(),
-                &format!("{:.6}", s.best_fitness),
-                &format!("{:.6}", s.worst_fitness),
-                &format!("{:.6}", s.mean_fitness),
-                &s.population_size.to_string(),
-                &s.evaluations.to_string(),
-            ])?;
-        }
+        wtr.flush()?;
+        anyhow::Ok(())
+    }
+
+    /// Appends one iteration's statistics as a row to the statistics CSV file.
+    fn append_stats_csv(
+        &self,
+        stat: &LshadeRspIterationStats,
+        strategy_settings: &settings::StrategySettings,
+    ) -> anyhow::Result<()> {
+        let path = std::path::Path::new(&strategy_settings.exit_results_path)
+            .join("lshade_optimization_results.csv");
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_writer(file);
+
+        wtr.write_record([
+            &strategy_settings.strategy_name,
+            &stat.iteration.to_string(),
+            &format!("{:.6}", stat.best_fitness),
+            &format!("{:.6}", stat.worst_fitness),
+            &format!("{:.6}", stat.mean_fitness),
+            &stat.population_size.to_string(),
+            &stat.evaluations.to_string(),
+        ])?;
 
         wtr.flush()?;
-        println!(
-            "LSHADE-RSP statistics saved to {}",
-            path.display()
-        );
         anyhow::Ok(())
     }
 }
@@ -2191,12 +2458,12 @@ mod lshade_tests {
 
         OptimizationConfig::new()
             .with_strategy_params_ranges(strategy_params_ranges)
-            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![
-                Value::Number(serde_json::Number::from_f64(1.0).unwrap()),
-            ]))
-            .with_slippage_range(settings::ParamSpec::Discrete(vec![
-                Value::Number(serde_json::Number::from_f64(0.005).unwrap()),
-            ]))
+            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(1.0).unwrap(),
+            )]))
+            .with_slippage_range(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(0.005).unwrap(),
+            )]))
             .with_pos_sizer_name("mpr".to_string())
     }
 
@@ -2231,8 +2498,7 @@ mod lshade_tests {
     #[test]
     fn test_population_initialization() {
         let opt_config = make_test_opt_config();
-        let mut optimizer = LshadeRspOptimizer::new()
-            .with_optimization_config(opt_config);
+        let mut optimizer = LshadeRspOptimizer::new().with_optimization_config(opt_config);
 
         optimizer.create_initial_population(20);
 
@@ -2268,8 +2534,7 @@ mod lshade_tests {
     #[test]
     fn test_mutation_produces_valid_vector() {
         let opt_config = make_test_opt_config();
-        let mut optimizer = LshadeRspOptimizer::new()
-            .with_optimization_config(opt_config);
+        let mut optimizer = LshadeRspOptimizer::new().with_optimization_config(opt_config);
 
         optimizer.create_initial_population(10);
         optimizer.fitness_values = vec![0.0; 10];
@@ -2291,7 +2556,12 @@ mod lshade_tests {
                 .get(name)
                 .unwrap();
             // Every param must be a valid f64 number and present
-            assert!(val.is_number(), "mutant {} value {:?} is not a number", name, val);
+            assert!(
+                val.is_number(),
+                "mutant {} value {:?} is not a number",
+                name,
+                val
+            );
             match spec {
                 settings::ParamSpec::Range { start, end, .. } => {
                     let v = val.as_f64().unwrap();
@@ -2316,8 +2586,7 @@ mod lshade_tests {
     #[test]
     fn test_crossover_produces_valid_vector() {
         let opt_config = make_test_opt_config();
-        let mut optimizer = LshadeRspOptimizer::new()
-            .with_optimization_config(opt_config);
+        let mut optimizer = LshadeRspOptimizer::new().with_optimization_config(opt_config);
 
         // Use a larger population so mutate() can find distinct r1 / r2.
         optimizer.create_initial_population(10);
@@ -2338,7 +2607,12 @@ mod lshade_tests {
                 .get_strategy_params_ranges()
                 .get(name)
                 .unwrap();
-            assert!(val.is_number(), "crossover {} value {:?} is not a number", name, val);
+            assert!(
+                val.is_number(),
+                "crossover {} value {:?} is not a number",
+                name,
+                val
+            );
             match spec {
                 settings::ParamSpec::Range { start, end, .. } => {
                     let v = val.as_f64().unwrap();
@@ -2394,9 +2668,23 @@ mod lshade_tests {
         optimizer.eval_count = 1000;
         let size_end = optimizer.calculate_target_population_size();
 
-        assert!(size_mid < size_start, "size_mid={} should be < size_start={}", size_mid, size_start);
-        assert!(size_end < size_mid, "size_end={} should be < size_mid={}", size_end, size_mid);
-        assert!(size_end >= 4, "size_end={} should be >= min size 4", size_end);
+        assert!(
+            size_mid < size_start,
+            "size_mid={} should be < size_start={}",
+            size_mid,
+            size_start
+        );
+        assert!(
+            size_end < size_mid,
+            "size_end={} should be < size_mid={}",
+            size_end,
+            size_mid
+        );
+        assert!(
+            size_end >= 4,
+            "size_end={} should be >= min size 4",
+            size_end
+        );
     }
 
     // ─── Test 7 ────────────────────────────────────────────────────────
@@ -2423,6 +2711,305 @@ mod lshade_tests {
         }
         for &val in &optimizer.memory_f {
             assert!((val - 0.5).abs() < 1e-10, "memory_f value {} != 0.5", val);
+        }
+    }
+
+    // ─── Test 8 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_best_index_respects_fitness_direction() {
+        for (direction, expected_idx) in [("max", 2), ("min", 1)] {
+            let mut optimizer = LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size: 4,
+                    max_evaluations: 8,
+                    p_best: 0.1,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: direction.to_string(),
+                });
+
+            optimizer.create_initial_population(3);
+            optimizer.fitness_values = vec![1.0, -5.0, 10.0];
+
+            assert_eq!(
+                optimizer.best_index(),
+                expected_idx,
+                "direction={}",
+                direction
+            );
+            assert_eq!(
+                optimizer.best_chromosome_display(),
+                optimizer.population[expected_idx].format_for_display()
+            );
+        }
+    }
+
+    // ─── Test 9 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_evaluate_cached_reuses_cached_fitness() {
+        let opt_config = make_test_opt_config();
+        let optimizer = LshadeRspOptimizer::new().with_optimization_config(opt_config);
+        let bank = optimizer.chromosome_bank.clone();
+
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let evaluate = move |params: &ParameterSet| -> f64 {
+            counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            params
+                .get_strategy_params()
+                .iter()
+                .find(|(n, _)| n == "param_a")
+                .and_then(|(_, v)| v.as_f64())
+                .unwrap_or(0.0)
+        };
+
+        let make_params = |param_a: i64| {
+            ParameterSet::new()
+                .with_strategy_params(vec![(
+                    "param_a".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(param_a)),
+                )])
+                .with_pos_sizer_name("mpr".to_string())
+                .with_pos_sizer_value(1.0)
+                .with_slippage(0.005)
+        };
+        let first = make_params(1);
+        let second = make_params(2);
+
+        let fitness_first = LshadeRspOptimizer::evaluate_cached(&first, &bank, &evaluate);
+        let fitness_first_again = LshadeRspOptimizer::evaluate_cached(&first, &bank, &evaluate);
+        assert_eq!(fitness_first, fitness_first_again);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        LshadeRspOptimizer::evaluate_cached(&second, &bank, &evaluate);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(bank.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
+    }
+
+    // ─── Test 10 ───────────────────────────────────────────────────────
+
+    fn make_test_strategy_settings(exit_results_path: &str) -> settings::StrategySettings {
+        let escaped_path = exit_results_path.replace('\\', "\\\\");
+        let json = format!(
+            r#"{{
+                "threads": 2,
+                "strategy_name": "Test_Strategy",
+                "strategy_path": "unused.dylib",
+                "exit_results_path": "{}",
+                "strategy_weight": 1.0,
+                "slippage": [0.005],
+                "data": {{ "data_path": "unused", "timeframe": "1min" }},
+                "symbols": ["Si-3.23"],
+                "strategy_params": {{ "param_a": [0, 10, 1] }},
+                "pos_sizer_params": {{
+                    "pos_sizer_name": "mpr",
+                    "pos_sizer_params": {{}},
+                    "pos_sizer_value": [1.0]
+                }},
+                "margin_params": {{ "min_margin": 0.5, "margin_call_type": "close_deal" }},
+                "portfolio_settings_for_strategy": {{ "metrics_calculation_mode": "offline" }},
+                "optimizer_type": "Grid_Search"
+            }}"#,
+            escaped_path
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn test_run_writes_stats_csv_per_iteration_and_clears_bank() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("farukon_lshade_stats_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let strategy_settings = make_test_strategy_settings(&temp_dir.to_string_lossy());
+
+        let mut optimizer = LshadeRspOptimizer::new()
+            .with_optimization_config(make_test_opt_config())
+            .with_config(LshadeRspConfig {
+                population_size: 4,
+                max_evaluations: 8,
+                p_best: 0.1,
+                archive_rate: 1.0,
+                memory_size: 5,
+                fitness_metric: settings::FitnessValue::default(),
+                fitness_direction: "max".to_string(),
+            });
+
+        let evaluate = |params: &ParameterSet| -> f64 {
+            params
+                .get_strategy_params()
+                .iter()
+                .find(|(n, _)| n == "param_a")
+                .and_then(|(_, v)| v.as_f64())
+                .unwrap_or(0.0)
+        };
+
+        let stats = optimizer.run(&strategy_settings, evaluate).unwrap();
+        assert!(!stats.is_empty());
+        assert_eq!(stats[0].iteration, 1);
+
+        let csv_path = temp_dir.join("lshade_optimization_results.csv");
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        let rows: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            rows.len(),
+            stats.len() + 1,
+            "expected one header row plus one row per iteration, got {:?}",
+            rows
+        );
+        assert!(rows[0].starts_with("strategy_name;iteration;"));
+        assert!(rows[1].starts_with("Test_Strategy;1;"));
+        for (i, row) in rows[1..].iter().enumerate() {
+            assert_eq!(stats[i].iteration, i + 1);
+            assert!(row.starts_with(&format!("Test_Strategy;{};", i + 1)));
+        }
+
+        assert!(
+            optimizer
+                .chromosome_bank
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "chromosome bank must be released after run"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ─── Test 11 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_reduce_population_removes_worst_per_direction() {
+        // fitness_values: index 2 is the max (9.0), index 3 is the min (-2.0)
+        for (direction, worst_idx) in [("max", 3usize), ("min", 2usize)] {
+            let mut optimizer = LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size: 6,
+                    max_evaluations: 12,
+                    p_best: 0.1,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: direction.to_string(),
+                });
+
+            optimizer.create_initial_population(6);
+            optimizer.fitness_values = vec![3.0, 1.0, 9.0, -2.0, 5.0, 0.5];
+
+            let mut expected_fitness = optimizer.fitness_values.clone();
+            expected_fitness.remove(worst_idx);
+            let mut expected_population = optimizer.population.clone();
+            expected_population.remove(worst_idx);
+
+            optimizer.reduce_population();
+
+            assert_eq!(
+                optimizer.fitness_values, expected_fitness,
+                "direction={} removed the wrong fitness value",
+                direction
+            );
+            assert_eq!(
+                optimizer.population, expected_population,
+                "direction={} removed the wrong individual",
+                direction
+            );
+        }
+    }
+
+    // ─── Test 12 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pbest_index_respects_fitness_direction() {
+        let mut rng = rand::thread_rng();
+        // p_best = 0.05 with a population of 3 yields p_num = 1, so the pbest index
+        // is deterministically the fittest individual for the configured direction.
+        for (direction, expected_idx) in [("max", 2usize), ("min", 1usize)] {
+            let mut optimizer = LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size: 3,
+                    max_evaluations: 6,
+                    p_best: 0.05,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: direction.to_string(),
+                });
+
+            optimizer.create_initial_population(3);
+            optimizer.fitness_values = vec![1.0, -5.0, 10.0];
+
+            for _ in 0..20 {
+                assert_eq!(
+                    optimizer.pbest_index(&mut rng),
+                    expected_idx,
+                    "direction={}",
+                    direction
+                );
+            }
+        }
+    }
+
+    // ─── Test 13 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_stats_best_worst_respect_fitness_direction() {
+        for direction in ["max", "min"] {
+            let temp_dir = std::env::temp_dir().join(format!(
+                "farukon_lshade_direction_test_{}_{}",
+                direction,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let strategy_settings = make_test_strategy_settings(&temp_dir.to_string_lossy());
+
+            let mut optimizer = LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size: 4,
+                    max_evaluations: 8,
+                    p_best: 0.1,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: direction.to_string(),
+                });
+
+            let evaluate = |params: &ParameterSet| -> f64 {
+                params
+                    .get_strategy_params()
+                    .iter()
+                    .find(|(n, _)| n == "param_a")
+                    .and_then(|(_, v)| v.as_f64())
+                    .unwrap_or(0.0)
+            };
+
+            let stats = optimizer.run(&strategy_settings, evaluate).unwrap();
+            assert!(!stats.is_empty());
+
+            for stat in &stats {
+                if direction == "min" {
+                    assert!(
+                        stat.best_fitness <= stat.worst_fitness,
+                        "min direction: best {} > worst {}",
+                        stat.best_fitness,
+                        stat.worst_fitness
+                    );
+                } else {
+                    assert!(
+                        stat.best_fitness >= stat.worst_fitness,
+                        "max direction: best {} < worst {}",
+                        stat.best_fitness,
+                        stat.worst_fitness
+                    );
+                }
+            }
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
         }
     }
 }

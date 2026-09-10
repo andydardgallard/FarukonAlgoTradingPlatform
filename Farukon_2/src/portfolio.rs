@@ -697,6 +697,9 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
     }
 
     /// Calculates final performance metrics after the backtest ends.
+    ///
+    /// The equity timestamps are passed to `PerformanceManager::calculate_final`, so the
+    /// offline metrics include the `Max_Drawdown_DateTime` of the drawdown trough.
     fn calculate_final_performance(&mut self) {
         // Called after backtest ends to compute offline metrics.
         // Uses full equity curve for accurate drawdown and return calculations.
@@ -708,6 +711,8 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
                 .metrics_calculation_mode
             {
                 let equity_series = self.get_equity_capital_values();
+                let equity_datetimes: Vec<chrono::DateTime<chrono::Utc>> =
+                    self.equity_series.iter().map(|a| a.0).collect();
                 let start_date = holdings.datetime;
                 let end_date = self.get_latest_holdings().unwrap().datetime;
 
@@ -726,6 +731,7 @@ impl farukon_core::portfolio::PortfolioHandler for Portfolio {
 
                 self.performance_manager.calculate_final(
                     &equity_series,
+                    &equity_datetimes,
                     start_date,
                     end_date,
                     deals_count,

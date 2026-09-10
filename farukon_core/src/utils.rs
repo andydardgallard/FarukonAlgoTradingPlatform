@@ -320,7 +320,8 @@ fn aggregate_portfolio_equity(
 ///
 /// Metrics are computed from the summed equity curve using the same methodology as a
 /// single strategy (via `PerformanceManager::calculate_final`). `Deals_Count` is the
-/// weighted sum of per-strategy deal counts rounded to an integer.
+/// weighted sum of per-strategy deal counts rounded to an integer. The timestamps of the
+/// summed equity curve are forwarded as well, so `Max_Drawdown_DateTime` is populated.
 ///
 /// # Arguments
 /// * `strategy_inputs` - per strategy: (equity_csv_path, initial_capital, deals_count, strategy_weight).
@@ -356,7 +357,8 @@ pub fn export_portfolio_optimization_results_csv(
         reference_strategy_settings,
     );
     let capitals: Vec<f64> = summed.iter().map(|(_, c)| *c).collect();
-    pm.calculate_final(&capitals, start_date, end_date, weighted_deals);
+    let datetimes: Vec<chrono::DateTime<chrono::Utc>> = summed.iter().map(|(dt, _)| *dt).collect();
+    pm.calculate_final(&capitals, &datetimes, start_date, end_date, weighted_deals);
     let stats = pm.get_current_performance_metrics().to_stats_list();
 
     let mut names: Vec<String> = stats.iter().map(|(name, _)| name.clone()).collect();
@@ -881,6 +883,7 @@ mod tests {
             "Deals_Count",
             "Max_Drawdown",
             "Max_Drawdown_pct",
+            "Max_Drawdown_DateTime",
             "Recovery_Factor",
             "Total_Return",
             "Total_Return_%",

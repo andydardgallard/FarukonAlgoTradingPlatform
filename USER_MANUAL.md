@@ -275,7 +275,7 @@ Defines commission structures per exchange and type. Example structure:
 
 ## 7. Optimization
 
-The platform supports two optimization methods:
+The platform supports three optimization methods:
 
 ### Grid Search
 
@@ -290,6 +290,15 @@ The platform supports two optimization methods:
 *   **Configuration:** Set `"optimizer_type"` to `{ "Genetic": { "ga_params": { ... } } }`.
 *   **Usage:** Define `ga_params` (population size, mutation rate, crossover rate, generations) and the fitness metric in the JSON config.
 *   **Execution:** The `OptimizationRunner` will run the GA, evaluating parameter sets via backtests.
+
+### LSHADE-RSP
+
+*   **Purpose:** Adaptive Differential Evolution (SHADE) with Linear Population Size Reduction and rank-based selective pressure.
+*   **Configuration:** Set `"optimizer_type"` to `{ "LSHADE_RSP": { "lshade_params": { ... } } }`.
+*   **Usage:** Define `lshade_params` (population size, max evaluations, `p_best`, `archive_rate`, `memory_size`) and `fitness_params`. The `fitness_direction` (`"max"` / `"min"`) is honoured by selection, by the best/worst statistics and by the convergence check.
+*   **Execution:** The optimizer evaluates the population in parallel and appends one statistics row per iteration (iterations numbered from 1) to `lshade_optimization_results.csv` in the strategy's `exit_results_path`; the file is recreated with its header at the start of each run.
+
+All optimizers write the evaluated parameter sets and their metrics to `optimization_results.csv`. The metric columns include `Max_Drawdown_DateTime` (timestamp of the relative maximum-drawdown trough, formatted as `YYYY-MM-DD HH:MM:SS`) alongside `Max_Drawdown`; it is empty when no timestamp is available.
 
 ---
 

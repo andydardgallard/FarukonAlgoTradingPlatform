@@ -264,6 +264,13 @@ cargo build -p strategy_lib --release
 cargo run --release -- -c portfolios/lshade_si_25_apr_dd.json
 ```
 
+**Output:** Every iteration appends one row to `lshade_optimization_results.csv` in the
+strategy's `exit_results_path` (the file is recreated with its header at the start of each run,
+and iterations are numbered from 1); the evaluated parameter sets are written to
+`optimization_results.csv` as for the other optimizers. The configured `fitness_direction`
+(`"max"` / `"min"`) is honoured by selection, by the best/worst statistics and by the convergence
+check.
+
 > 💡 **Comparison Note:** LSHADE-RSP uses adaptive F/CR parameters (automatically tuned from historical memory) and Linear Population Size Reduction — the population shrinks during optimization, focusing evaluations on the most promising regions. This typically finds equal or better solutions than Genetic Algorithm in fewer evaluations.
 
 ## 📈 Why FlatBuffers + SOA + SIMD?

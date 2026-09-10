@@ -16,6 +16,7 @@ pub struct PerformanceMetrics {
     apr: f64,
     /// Maximum drawdown as a percentage of peak equity.
     max_drawdown: f64,
+    /// Maximum drawdown as an absolute amount in base currency (equity minus peak).
     max_drawdown_pct: f64,
     /// Ratio of APR to Max Drawdown (higher is better).
     apr_to_drawdown_ratio: f64,
@@ -23,6 +24,9 @@ pub struct PerformanceMetrics {
     recovery_factor: f64,
     /// Total number of trades executed.
     deals_count: usize,
+    /// Timestamp of the relative maximum drawdown (only available offline).
+    #[serde(default)]
+    max_drawdown_datetime: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl PerformanceMetrics {
@@ -37,6 +41,7 @@ impl PerformanceMetrics {
             apr_to_drawdown_ratio: 0.0,
             recovery_factor: 0.0,
             deals_count: 0,
+            max_drawdown_datetime: None,
         }
     }
 
@@ -56,6 +61,13 @@ impl PerformanceMetrics {
         stats.push((
             "Max_Drawdown".to_string(),
             format!("{:.5}", self.max_drawdown),
+        ));
+        // Timestamp of the relative `Max_Drawdown` trough, not of `Max_Drawdown_pct`.
+        stats.push((
+            "Max_Drawdown_DateTime".to_string(),
+            self.max_drawdown_datetime
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_default(),
         ));
         stats.push((
             "Max_Drawdown_pct".to_string(),
@@ -125,8 +137,14 @@ impl PerformanceMetrics {
         &self.max_drawdown
     }
 
+    /// Returns a reference to the maximum absolute drawdown (equity minus peak) in base currency.
     pub fn get_max_drawdown_pct(&self) -> &f64 {
         &self.max_drawdown_pct
+    }
+
+    /// Returns a reference to the timestamp of the maximum drawdown, if computed.
+    pub fn get_max_drawdown_datetime(&self) -> &Option<chrono::DateTime<chrono::Utc>> {
+        &self.max_drawdown_datetime
     }
 
     /// Returns a reference to the recovery factor as a percentage.
@@ -222,7 +240,7 @@ impl PerformanceManager {
         };
         self.max_drawdown_pct = self.max_drawdown_pct.min(dd);
 
-        self.update_metrics(start_date, end_date, deals_count);
+        self.update_metrics(start_date, end_date, deals_count, None);
     }
 
     /// Calculate metrics
@@ -231,6 +249,7 @@ impl PerformanceManager {
         start_date: chrono::DateTime<chrono::Utc>,
         end_date: chrono::DateTime<chrono::Utc>,
         deals_count: usize,
+        max_drawdown_datetime: Option<chrono::DateTime<chrono::Utc>>,
     ) {
         let days = (end_date - start_date).num_days() as f64;
         let years = days / 365.0;
@@ -268,6 +287,7 @@ impl PerformanceManager {
             apr_to_drawdown_ratio,
             recovery_factor,
             deals_count,
+            max_drawdown_datetime,
         }
     }
 
@@ -275,12 +295,14 @@ impl PerformanceManager {
     /// This is used when `metrics_calculation_mode` is `Offline`.
     /// # Arguments
     /// * `equity_series` - The full equity curve (capital over time).
+    /// * `equity_datetimes` - Timestamps parallel to `equity_series`.
     /// * `start_date` - The start date of the backtest.
     /// * `end_date` - The end date of the backtest.
     /// * `deals_count` - The total number of deals executed.
     pub fn calculate_final(
         &mut self,
         equity_series: &[f64],
+        equity_datetimes: &[chrono::DateTime<chrono::Utc>],
         start_date: chrono::DateTime<chrono::Utc>,
         end_date: chrono::DateTime<chrono::Utc>,
         deals_count: usize,
@@ -319,7 +341,9 @@ impl PerformanceManager {
         self.max_drawdown_pct = max_dd_pnct;
         self.drawdown_pct_curve = drawdow_calculation_results.3;
 
-        self.update_metrics(start_date, end_date, deals_count);
+        let max_drawdown_datetime = equity_datetimes.get(drawdow_calculation_results.4).copied();
+
+        self.update_metrics(start_date, end_date, deals_count, max_drawdown_datetime);
     }
 
     /// Returns a reference to the current performance metrics.
@@ -385,10 +409,15 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
     returns
 }
 
-fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
+/// Calculates the drawdown curves with SIMD.
+///
+/// Returns `(max_drawdown, max_drawdown_pct, drawdowns, drawdowns_pct, max_drawdown_index)`,
+/// where the index is the position of the maximum (most negative) relative drawdown in the
+/// equity series and is used to look up the corresponding timestamp.
+fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>, usize) {
     let n = equity.len();
     if n == 0 {
-        return (0.0, 0.0, vec![], vec![]);
+        return (0.0, 0.0, vec![], vec![], 0);
     }
 
     let mut drawdowns = vec![0.0; n];
@@ -396,6 +425,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
     let mut peak = equity[0];
     let mut max_dd = 0.0;
     let mut max_dd_pct = 0.0;
+    let mut max_dd_index = 0;
 
     if peak.is_nan() || peak.is_infinite() {
         let mut found_valid_peak = false;
@@ -407,7 +437,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
             }
         }
         if !found_valid_peak {
-            return (0.0, 0.0, vec![0.0; n], vec![0.0; n]);
+            return (0.0, 0.0, vec![0.0; n], vec![0.0; n], 0);
         }
     }
 
@@ -445,7 +475,8 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
         for j in 0..4 {
             let dd: f64 = dd_array[j];
             if dd < max_dd {
-                max_dd = dd
+                max_dd = dd;
+                max_dd_index = start + j;
             }
 
             let dd_pct = dd_pct_array[j];
@@ -470,6 +501,7 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
 
         if dd < max_dd {
             max_dd = dd;
+            max_dd_index = i;
         }
 
         if dd_pct < max_dd_pct {
@@ -477,12 +509,44 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>) {
         }
     }
 
-    (max_dd, max_dd_pct, drawdowns, drawdowns_pct)
+    (max_dd, max_dd_pct, drawdowns, drawdowns_pct, max_dd_index)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PerformanceMetrics;
+    use super::{PerformanceManager, PerformanceMetrics};
+    use crate::settings;
+
+    fn test_strategy_settings() -> settings::StrategySettings {
+        settings::StrategySettings {
+            threads: None,
+            strategy_name: "test".to_string(),
+            strategy_path: String::new(),
+            exit_results_path: String::new(),
+            strategy_weight: 1.0,
+            slippage: settings::ParamSpec::Discrete(vec![]),
+            data: settings::DataSettings {
+                data_path: String::new(),
+                timeframe: String::new(),
+            },
+            symbols: vec![],
+            strategy_params: std::collections::HashMap::new(),
+            pos_sizer_params: settings::PosSizer {
+                pos_sizer_name: "1".to_string(),
+                pos_sizer_params: std::collections::HashMap::new(),
+                pos_sizer_value: settings::ParamSpec::Discrete(vec![]),
+            },
+            margin_params: settings::MarginParams {
+                min_margin: 0.0,
+                margin_call_type: String::new(),
+            },
+            portfolio_settings_for_strategy: settings::PortfolioSettingsForStrategy {
+                metrics_calculation_mode: settings::MetricsMode::Offline,
+            },
+            optimizer_type: settings::OptimizerType::GridSearch,
+            commission_plans: None,
+        }
+    }
 
     #[test]
     fn composite_score_no_penalty() {
@@ -495,6 +559,7 @@ mod tests {
             apr_to_drawdown_ratio: 4.0,
             recovery_factor: 6.0,
             deals_count: 10,
+            max_drawdown_datetime: None,
         };
 
         let expected = 200.0 * 4.0 + (1.0_f64 + 6.0_f64).ln() / 10.0;
@@ -512,6 +577,7 @@ mod tests {
             apr_to_drawdown_ratio: 2.0,
             recovery_factor: 4.0,
             deals_count: 10,
+            max_drawdown_datetime: None,
         };
 
         let expected = 200.0 * 2.0 + (1.0_f64 + 4.0_f64).ln() / 10.0 - 3000.0;
@@ -529,9 +595,87 @@ mod tests {
             apr_to_drawdown_ratio: 4.0,
             recovery_factor: 6.0,
             deals_count: 10,
+            max_drawdown_datetime: None,
         };
 
         let stats = metrics.to_stats_list();
         assert!(stats.iter().any(|(key, _)| key == "Composite"));
+    }
+
+    #[test]
+    fn stats_list_contains_formatted_max_drawdown_datetime() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2025-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let mut metrics = PerformanceMetrics::default();
+        metrics.max_drawdown_datetime = Some(dt);
+
+        let value = metrics
+            .to_stats_list()
+            .into_iter()
+            .find(|(key, _)| key == "Max_Drawdown_DateTime")
+            .map(|(_, value)| value);
+        assert_eq!(value.as_deref(), Some("2025-01-02 03:04:05"));
+
+        let value = PerformanceMetrics::default()
+            .to_stats_list()
+            .into_iter()
+            .find(|(key, _)| key == "Max_Drawdown_DateTime")
+            .map(|(_, value)| value);
+        assert_eq!(value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn calculate_final_sets_max_drawdown_datetime() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+
+        let equity = [100.0, 80.0, 60.0, 90.0];
+        let base = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let datetimes: Vec<chrono::DateTime<chrono::Utc>> = (0..equity.len())
+            .map(|i| base + chrono::Duration::minutes(i as i64))
+            .collect();
+
+        pm.calculate_final(
+            &equity,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+
+        assert_eq!(
+            pm.get_current_performance_metrics()
+                .get_max_drawdown_datetime(),
+            &Some(datetimes[2])
+        );
+    }
+
+    #[test]
+    fn calculate_final_sets_max_drawdown_datetime_from_simd_chunk() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+
+        // n >= 6 so the trough (index 3) is found by the SIMD chunk loop.
+        let equity = [100.0, 200.0, 100.0, 40.0, 150.0, 180.0, 120.0, 175.0];
+        let base = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let datetimes: Vec<chrono::DateTime<chrono::Utc>> = (0..equity.len())
+            .map(|i| base + chrono::Duration::minutes(i as i64))
+            .collect();
+
+        pm.calculate_final(
+            &equity,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+
+        let metrics = pm.get_current_performance_metrics();
+        assert!((metrics.get_max_drawdown() - -0.8).abs() < 1e-9);
+        assert_eq!(metrics.get_max_drawdown_datetime(), &Some(datetimes[3]));
     }
 }

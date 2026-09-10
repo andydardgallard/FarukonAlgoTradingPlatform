@@ -555,6 +555,10 @@ impl OptimizationRunner {
     }
 
     /// Executes a LSHADE-RSP optimization.
+    ///
+    /// The optimizer evaluates the population in parallel and writes per-iteration statistics
+    /// to `lshade_optimization_results.csv` itself; the evaluated parameter sets are saved
+    /// with `save_grid_search_optimization_results`.
     pub fn run_lshade_rsp_search(
         self,
         lshade_params: &farukon_core::settings::LshadeRspParams,
@@ -580,7 +584,7 @@ impl OptimizationRunner {
         let all_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_results_clone = std::sync::Arc::clone(&all_results_shared);
 
-        let stats = lshade.run(&strategy_settings.clone(), move |params| {
+        lshade.run(&strategy_settings.clone(), move |params| {
             let mode = &common_settings.mode;
             let global_data_storage_mode = &common_settings.global_data_storage_mode;
             let test_settings = &farukon_core::utils::create_stratagy_settings_from_params(
@@ -624,12 +628,14 @@ impl OptimizationRunner {
 
         // Save results using existing method
         self.save_grid_search_optimization_results(&final_results)?;
-        lshade.save_stats_to_csv(&stats, &self.strategy_settings)?;
 
         anyhow::Ok(())
     }
 
     /// Calculates a scalar fitness score from performance metrics for LSHADE-RSP.
+    ///
+    /// Returns the raw metric value; the optimizer applies `fitness_direction` itself when
+    /// selecting, ranking and reporting individuals.
     fn calculate_fitness_score_lshade(
         metrics: &farukon_core::performance::PerformanceMetrics,
         lshade_config: &farukon_core::optimization::LshadeRspConfig,
@@ -649,13 +655,7 @@ impl OptimizationRunner {
             }
         };
 
-        let fitness = match lshade_config.get_fitness_direction().as_str() {
-            "max" => *raw_fitness,
-            "min" => -raw_fitness,
-            _ => *raw_fitness,
-        };
-
-        fitness
+        *raw_fitness
     }
 
     /// Saves the results of a Grid Search optimization to a CSV file.
