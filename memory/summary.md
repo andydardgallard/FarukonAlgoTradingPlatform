@@ -13,5 +13,9 @@
 - `Max_Drawdown_DateTime` (относительная просадка) добавлено в `optimization_results.csv` и портфельный CSV.
 - `python/optresults_handler.py` получил режим сравнения двух CSV (`-fc/--file_compare`, `-y set_cmp`).
 
+## Верификация
+- `cargo test --workspace` → 34 passed / 0 failed.
+- Полный end-to-end прогон LSHADE на реальных данных выполнен: `./target/release/Farukon_2 --config portfolios/lshade_si_25_apr_dd.json` → exit 0 (стратегия собрана под Linux: `target/release/libstrategy_lib.so`).
+
 ## Последняя история
-- 2026-09-10: LSHADE доработка + кэш + обработчики — success, 34 теста, review approve, v2.1.0.
+- 2026-09-10: LSHADE доработка + кэш + обработчики — success, 34 теста, e2e-прогон, review approve, v2.1.0.
