@@ -1,4 +1,4 @@
-<!-- code-factory-fingerprint: 590f259a122eb745fd94f77b6c62efeb8fffe48c9db47e70a40ba66b4d59ddb1 -->
+<!-- code-factory-fingerprint: c26a494011bd0133bc4e9b0535304be44fac242007d0f62daf6f90e7578d5608 content: 1b9b676b99294d714cbcc1bef87dc7d606240f814b2b6b6b480cf5eeb36341e6 -->
 # Farukon
 
 ## Project Overview
@@ -60,7 +60,9 @@ The repository is a Rust workspace plus Python tooling. There is no CI configura
 
 ```bash
 cargo build --release
-cargo test --workspace           # 25 tests in farukon_core, 0 elsewhere
+cargo test --workspace           # 34 tests in farukon_core, 0 elsewhere
+                                 # (31 pass; 3 settings::tests fail on Windows —
+                                 #  pre-existing JSON-escape fixtures, see Known Constraints)
 cargo build -p strategy_lib --release   # build the sample strategy cdylib
 cargo run --release -- --config portfolios/lshade_si_25_apr_dd.json
 ```
@@ -83,11 +85,21 @@ drives Optimize / Visual / Portfolio behavior.
 - `save_stats_to_csv` for LSHADE (`farukon_core/src/optimization.rs`) currently **truncates**
   (`WriterBuilder::from_path`) and is invoked only every 10 iterations, so per-iteration history is
   not reliably persisted.
-- LSHADE-RSP has **no** per-individual cache; the Genetic Algorithm has `chromosome_bank`
-  (a `HashMap<u64, f64>` keyed by `DefaultHasher`), which has collision risk and does not hash
-  `pos_sizer_name`.
-- `PerformanceMetrics` does not store the timestamp of max drawdown, so `Max_Drawdown_DateTime`
-  cannot currently be emitted to `optimization_results.csv`.
-- `python/optresults_handler.py` has no "compare two CSVs" mode (`select` mode is a stub), and its
-  Python dependencies are not declared anywhere.
+- Both LSHADE-RSP and the Genetic Algorithm keep an in-memory fitness cache (`HashMap<u64, f64>`
+  keyed by `DefaultHasher` — collision risk; the LSHADE key includes `pos_sizer_name`, the GA bank
+  does not). The LSHADE bank is cleared per run via `BankClearGuard`; the GA bank lives as long as
+  the optimizer instance.
+- `PerformanceMetrics` stores the timestamp of max drawdown: `Max_Drawdown_DateTime` is emitted to
+  `optimization_results.csv` and the portfolio CSV.
+- `python/optresults_handler.py` has a "compare two CSVs" mode (`-fc/--file_compare`, `-y set_cmp`);
+  its Python dependencies (pandas, numpy, matplotlib) are still not declared in any requirements file.
 - No CI, no `tests/` directory; tests are `#[cfg(test)]` modules inside `farukon_core/src`.
+- 3 `settings::tests` fail deterministically on Windows (unescaped `temp_dir()` backslashes in
+  inline JSON fixtures, around `settings.rs:699-767`).
+- **Thread scaling (review run 20260929-b81785fd):** backtest runtime stops scaling beyond ~8
+  threads on 1-3 minute timeframes (4-5 minute timeframes scale to 64 threads). Root cause:
+  per-candidate O(bars) memory footprint (unbounded `equity_series` + 3-4 copies, per-bar HashMap
+  clones, per-bar FFI symbol lookup + CString rebuild, no mimalloc) saturates cache/memory
+  bandwidth and the system allocator; in-process heap fragmentation causes "first wave fast, later
+  waves stall" on 1m data. A fix task exists (`.code-factory/fix_task.yaml` in the factory run
+  artifacts); until then prefer `arc` storage mode and ≤8 threads on 1-3m timeframes.

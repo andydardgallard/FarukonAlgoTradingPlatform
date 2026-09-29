@@ -1,9 +1,15 @@
 <!-- code-factory-memory: summary -->
+project: code
+repo_path: ../FarukonAlgoTradingPlatform/code
 
 # Farukon — сводка долгосрочной памяти
 
 ## Текущее состояние
-Проект Farukon (Rust workspace: `farukon_core` lib, `Farukon_2` bin, `strategy_lib` cdylib; Python-инструменты в `python/`). Версия `2.1.0`.
+Project Farukon (Rust workspace: `farukon_core` lib, `Farukon_2` bin, `strategy_lib` cdylib; Python tools in `python/`). Version `2.1.0` (review tasks do not bump the version).
+
+Latest run (2026-09-29, run_id 20260929-b81785fd, task_type review, DEGRADED accepted): thread-scaling investigation over 110 measured runs — root cause of the >8-thread degradation on 1-3m timeframes found (per-candidate O(bars) memory footprint + per-bar allocations + system allocator; first-wave effect = in-process heap fragmentation/page-fault debt). Deliverables: factory run artifacts (report, fix_task.yaml with 12 fix items + 10 major review findings, measurement/testing-error analyses). Test suite: 34 tests, 31 pass, 3 pre-existing Windows settings::tests failures. Open backlog: implement fix_task.yaml, then re-validate the 1m arc 16-thread benchmark.
+
+Previous run (2026-09-10):
 
 ## Ключевые решения (последний прогон, 2026-09-10)
 - LSHADE: лучшая особь определяется по `fitness_direction` («max»/«min»); `evaluate` возвращает сырой фитнес, направление применяется внутри `run`.
