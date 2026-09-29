@@ -24,14 +24,16 @@ pub struct PerformanceMetrics {
     recovery_factor: f64,
     /// Total number of trades executed.
     deals_count: usize,
-    /// Timestamp of the relative maximum drawdown (only available offline).
+    /// Timestamp of the relative maximum drawdown. `None` until `calculate_final` runs: the
+    /// incremental `RealTime` update has no timestamps, so the value is set for every metrics mode
+    /// only in the final calculation.
     #[serde(default)]
     max_drawdown_datetime: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl PerformanceMetrics {
+impl Default for PerformanceMetrics {
     /// Creates a new, empty PerformanceMetrics object with default values.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             total_return: 0.0,
             total_return_percent: 0.0,
@@ -44,7 +46,9 @@ impl PerformanceMetrics {
             max_drawdown_datetime: None,
         }
     }
+}
 
+impl PerformanceMetrics {
     /// Converts the performance metrics into a list of key-value pairs for display.
     pub fn to_stats_list(&self) -> Vec<(String, String)> {
         let mut stats = Vec::new();
@@ -292,7 +296,9 @@ impl PerformanceManager {
     }
 
     /// Calculates final performance metrics after the backtest is complete.
-    /// This is used when `metrics_calculation_mode` is `Offline`.
+    /// Called in every metrics mode (`Offline` and `RealTime`): the full equity curve is the only
+    /// source of the drawdown timestamp, while `RealTime` additionally keeps its incremental
+    /// per-bar updates during the run.
     /// # Arguments
     /// * `equity_series` - The full equity curve (capital over time).
     /// * `equity_datetimes` - Timestamps parallel to `equity_series`.
@@ -307,15 +313,14 @@ impl PerformanceManager {
         end_date: chrono::DateTime<chrono::Utc>,
         deals_count: usize,
     ) {
-        let series = Vec::from(equity_series);
-        let n = series.len();
+        let n = equity_series.len();
 
         if n < 2 {
             return;
         }
 
         // SIMD: returns
-        self.returns = calculate_returns_simd(&series);
+        self.returns = calculate_returns_simd(equity_series);
 
         // Cumulative equity curve
         self.equity_curve.clear();
@@ -331,7 +336,7 @@ impl PerformanceManager {
         }
 
         // Max drawdown
-        let drawdow_calculation_results = calculate_drawdowns_simd(&series);
+        let drawdow_calculation_results = calculate_drawdowns_simd(equity_series);
 
         let max_dd_percent = drawdow_calculation_results.0;
         self.max_drawdown = max_dd_percent;
@@ -608,8 +613,10 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
 
-        let mut metrics = PerformanceMetrics::default();
-        metrics.max_drawdown_datetime = Some(dt);
+        let metrics = PerformanceMetrics {
+            max_drawdown_datetime: Some(dt),
+            ..Default::default()
+        };
 
         let value = metrics
             .to_stats_list()

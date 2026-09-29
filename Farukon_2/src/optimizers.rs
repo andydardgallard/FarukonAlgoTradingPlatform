@@ -75,6 +75,56 @@ impl OptimizationRunner {
         &self.grid_search_optimizer
     }
 
+    /// Prints a prominent one-time warning when the configured thread count is above the
+    /// measured scaling knee on a high bar-count dataset.
+    ///
+    /// The knee is a measured runtime degradation (review run 20260929-b81785fd: backtests
+    /// stop scaling beyond ~8 threads on 1-3 minute timeframes because the per-candidate
+    /// memory footprint saturates memory bandwidth/cache), not a correctness issue. This is
+    /// guidance only: the run CONTINUES with the configured thread count, no cap is applied.
+    ///
+    /// All three optimizer entry points (`run_grid_search`, `run_genetic_search`,
+    /// `run_lshade_rsp_search`) call this once per run; the bar count comes from the loaded
+    /// `GlobalDataStore` (`get_combined_timeline().len()`), which is not visible inside
+    /// `farukon_core` where the GA/LSHADE pools are built.
+    fn warn_if_threads_exceed_scaling_knee(
+        strategy_settings: &farukon_core::settings::StrategySettings,
+        optimizer_kind: &str,
+        bars_per_candidate: usize,
+    ) {
+        /// Measured scaling knee: runtime stops scaling beyond ~8 threads on high
+        /// bar-count datasets (1-3 minute timeframes).
+        const SCALING_KNEE_THREADS: usize = 8;
+        /// Transparent heuristic for "high bar-count dataset": the number of bars of the
+        /// combined timeline every candidate backtests over.
+        const HIGH_BAR_COUNT: usize = 100_000;
+
+        let threads = strategy_settings.threads.unwrap_or(num_cpus::get());
+
+        if threads <= SCALING_KNEE_THREADS || bars_per_candidate < HIGH_BAR_COUNT {
+            return;
+        }
+
+        eprintln!("================================================================");
+        eprintln!(
+            "WARNING: {} runs with threads = {}, above the measured scaling knee (~{}).",
+            optimizer_kind, threads, SCALING_KNEE_THREADS
+        );
+        eprintln!(
+            "Heuristic: {} bars per candidate (timeframe \"{}\", threshold >= {} bars) = high bar-count dataset.",
+            bars_per_candidate, strategy_settings.data.timeframe, HIGH_BAR_COUNT
+        );
+        eprintln!("Measured result (thread-scaling review 2026-09-29): backtest runtime");
+        eprintln!("stops scaling at ~8 threads on high bar-count data and may DEGRADE");
+        eprintln!("above it, because the per-candidate memory footprint saturates memory");
+        eprintln!("bandwidth/cache. Consider fewer threads or the \"arc\" storage mode.");
+        eprintln!(
+            "The run continues with the configured {} threads - no cap is applied.",
+            threads
+        );
+        eprintln!("================================================================");
+    }
+
     /// Executes a Grid Search optimization.
     /// Evaluates all parameter combinations in parallel using Rayon.
     /// Each combination triggers a full backtest run.
@@ -93,7 +143,7 @@ impl OptimizationRunner {
         // Uses Atomic counter to track progress.
 
         self.grid_search_optimizer
-            .check_memory_limit(&self.grid_search_optimizer.get_config())
+            .check_memory_limit(self.grid_search_optimizer.get_config())
             .expect("Grid search memory limit exceeded");
 
         // Determine the number of threads to use for parallel execution.
@@ -101,6 +151,14 @@ impl OptimizationRunner {
         let threads = self.strategy_settings.threads.unwrap_or(num_cpus::get());
         let global_data_mode = self.common_settings.global_data_storage_mode.clone();
         let mode = self.common_settings.mode.clone();
+
+        // Guidance only: warns when the configured thread count is above the measured
+        // scaling knee for this dataset. The run continues unchanged (no cap).
+        Self::warn_if_threads_exceed_scaling_knee(
+            &self.strategy_settings,
+            "Grid Search",
+            global_data_store.get_combined_timeline().len(),
+        );
 
         if mode == "Debug" {
             println!("Starting grid search optimization:");
@@ -116,6 +174,9 @@ impl OptimizationRunner {
 
         // Shared atomic counter to track the number of completed evaluations.
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Throttles the two per-candidate prints of this run (see ProgressThrottle).
+        let progress_throttle =
+            std::sync::Arc::new(farukon_core::optimization::ProgressThrottle::new());
 
         let lib_path = &strategy_settings.strategy_path;
         let lib = std::sync::Arc::new(unsafe {
@@ -129,7 +190,8 @@ impl OptimizationRunner {
             .expect("Failed to create thread pool");
 
         // Execute the optimization within the thread pool.
-        let results = pool.install(|| {
+
+        pool.install(|| {
             self.grid_search_optimizer.run_optimization(
                 // The fitness function executed for each parameter set.
                 // It runs a backtest and returns an OptimizationResult.
@@ -140,21 +202,27 @@ impl OptimizationRunner {
                     let full_parameter_set = farukon_core::optimization::ParameterSet::new()
                         .with_strategy_params(params.get_strategy_params().clone())
                         .with_pos_sizer_name(params.get_pos_sizer_name().clone())
-                        .with_pos_sizer_value(params.get_pos_sizer_value().clone())
+                        .with_pos_sizer_value(*params.get_pos_sizer_value())
                         .with_pos_sizer_additional_params(
                             params.get_pos_sizer_additional_params().clone(),
                         )
-                        .with_slippage(params.get_slippage().clone());
+                        .with_slippage(*params.get_slippage());
 
                     // Increment the counter and get the current count for logging.
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    println!(
-                        "# {} from {} {}",
-                        current_count,
-                        total_combinations,
-                        full_parameter_set.format_for_display() // Human-readable representation of the parameters.
-                    );
+                    // Claimed once per candidate so its "start" and "is done" lines stay
+                    // together; at most one candidate per 2 seconds prints, plus the last.
+                    let print_progress =
+                        progress_throttle.claim(current_count, total_combinations as usize);
+                    if print_progress {
+                        println!(
+                            "# {} from {} {}",
+                            current_count,
+                            total_combinations,
+                            full_parameter_set.format_for_display() // Human-readable representation of the parameters.
+                        );
+                    }
 
                     // Create temporary strategy settings based on the current parameter set.
                     let test_settings = farukon_core::utils::create_stratagy_settings_from_params(
@@ -182,12 +250,14 @@ impl OptimizationRunner {
                         ),
                     };
 
-                    println!(
-                        "# {} from {} is done in {:.3} seconds.",
-                        current_count,
-                        total_combinations,
-                        start_time.elapsed().as_secs_f64()
-                    );
+                    if print_progress {
+                        println!(
+                            "# {} from {} is done in {:.3} seconds.",
+                            current_count,
+                            total_combinations,
+                            start_time.elapsed().as_secs_f64()
+                        );
+                    }
 
                     // Create an OptimizationResult object containing the parameters and the resulting performance metrics.
                     farukon_core::optimization::OptimizationResult::new()
@@ -195,11 +265,9 @@ impl OptimizationRunner {
                         .with_results(results)
                 },
                 threads, // Number of threads to use for the optimization.
-                &self.grid_search_optimizer.get_config(),
+                self.grid_search_optimizer.get_config(),
             )
-        });
-
-        results
+        })
     }
 
     /// Executes a single backtest run with a given set of strategy parameters.
@@ -389,6 +457,14 @@ impl OptimizationRunner {
         let strategy_instruments_info = self.strategy_instruments_info.clone();
         let ga_config_closure = ga_config.clone();
 
+        // Guidance only: warns when the configured thread count is above the measured
+        // scaling knee for this dataset. The run continues unchanged (no cap).
+        Self::warn_if_threads_exceed_scaling_knee(
+            &self.strategy_settings,
+            "Genetic Algorithm",
+            global_data_store.get_combined_timeline().len(),
+        );
+
         let all_ga_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_ga_results_clone = std::sync::Arc::clone(&all_ga_results_shared);
 
@@ -472,7 +548,7 @@ impl OptimizationRunner {
             }
             farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
             farukon_core::settings::FitnessValue::DealsCount => {
-                &(metrics.get_deals_count().clone() as f64)
+                &(*metrics.get_deals_count() as f64)
             }
             farukon_core::settings::FitnessValue::Composite {
                 metrics: composite_metrics,
@@ -484,13 +560,12 @@ impl OptimizationRunner {
 
         // Apply the fitness direction (maximize or minimize).
         // If direction is "min", the score is negated.
-        let fitness = match ga_config.get_fitness_direction().as_str() {
+
+        match ga_config.get_fitness_direction().as_str() {
             "max" => *raw_fitness,
             "min" => -raw_fitness,
             _ => *raw_fitness, // Default to "max" if direction is unknown.
-        };
-
-        fitness
+        }
     }
 
     /// Combines multiple performance metrics into a single composite fitness score.
@@ -518,31 +593,28 @@ impl OptimizationRunner {
                 "Total_Return_%" => *metrics.get_total_return_percent(),
                 "APR" => *metrics.get_apr(),
                 "max_DD_30%" => {
-                    let score = if *metrics.get_max_drawdown() < -0.3 {
+                    if *metrics.get_max_drawdown() < -0.3 {
                         -100.0
                     } else {
                         0.0
-                    };
-                    score
-                },
+                    }
+                }
                 "APR/DD_factor_3" => {
-                    let score = if *metrics.get_apr_to_drawdown_ratio() < 3.0 {
+                    if *metrics.get_apr_to_drawdown_ratio() < 3.0 {
                         0.0
                     } else {
                         *metrics.get_apr_to_drawdown_ratio() * 3.0
-                    };
-                    score
-                },
+                    }
+                }
                 "APR/DD_factor" => *metrics.get_apr_to_drawdown_ratio(),
                 "Recovery_Factor" => *metrics.get_recovery_factor(),
                 "Recovery_Factor_5" => {
-                    let score = if *metrics.get_recovery_factor() < 5.0 {
+                    if *metrics.get_recovery_factor() < 5.0 {
                         0.0
                     } else {
                         *metrics.get_recovery_factor() / 3.0
-                    };
-                    score
-                },
+                    }
+                }
                 "Deals_Count" => -((*metrics.get_deals_count() as f64) + 1.0).ln(), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
                 "Composite" => metrics.get_composite_score(),
                 _ => 0.0, // Default to 0 if the metric name is unknown.
@@ -564,7 +636,8 @@ impl OptimizationRunner {
         lshade_params: &farukon_core::settings::LshadeRspParams,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
     ) -> anyhow::Result<()> {
-        let lshade_config = farukon_core::optimization::LshadeRspConfig::from_settings(lshade_params);
+        let lshade_config =
+            farukon_core::optimization::LshadeRspConfig::from_settings(lshade_params);
         let opt_config = self.get_grid_search_optimizer().get_config();
         let mut lshade = farukon_core::optimization::LshadeRspOptimizer::new()
             .with_config(lshade_config.clone())
@@ -580,6 +653,14 @@ impl OptimizationRunner {
         let strategy_settings = self.strategy_settings.clone();
         let strategy_instruments_info = self.strategy_instruments_info.clone();
         let lshade_config_closure = lshade_config.clone();
+
+        // Guidance only: warns when the configured thread count is above the measured
+        // scaling knee for this dataset. The run continues unchanged (no cap).
+        Self::warn_if_threads_exceed_scaling_knee(
+            &self.strategy_settings,
+            "LSHADE-RSP",
+            global_data_store.get_combined_timeline().len(),
+        );
 
         let all_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_results_clone = std::sync::Arc::clone(&all_results_shared);
@@ -642,17 +723,21 @@ impl OptimizationRunner {
     ) -> f64 {
         let raw_fitness = match lshade_config.get_fitness_metric() {
             farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
-            farukon_core::settings::FitnessValue::TotalReturnPercent => metrics.get_total_return_percent(),
+            farukon_core::settings::FitnessValue::TotalReturnPercent => {
+                metrics.get_total_return_percent()
+            }
             farukon_core::settings::FitnessValue::APR => metrics.get_apr(),
             farukon_core::settings::FitnessValue::MaxDD => metrics.get_max_drawdown(),
-            farukon_core::settings::FitnessValue::AprDDFactor => metrics.get_apr_to_drawdown_ratio(),
+            farukon_core::settings::FitnessValue::AprDDFactor => {
+                metrics.get_apr_to_drawdown_ratio()
+            }
             farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
             farukon_core::settings::FitnessValue::DealsCount => {
-                &(metrics.get_deals_count().clone() as f64)
+                &(*metrics.get_deals_count() as f64)
             }
-            farukon_core::settings::FitnessValue::Composite { metrics: composite_metrics } => {
-                &Self::calculate_composite_score(metrics, composite_metrics)
-            }
+            farukon_core::settings::FitnessValue::Composite {
+                metrics: composite_metrics,
+            } => &Self::calculate_composite_score(metrics, composite_metrics),
         };
 
         *raw_fitness
@@ -700,8 +785,8 @@ impl OptimizationRunner {
         let mut strategy_params: Vec<String> = self
             .strategy_settings
             .strategy_params
-            .iter()
-            .map(|(key, _value)| key.clone())
+            .keys()
+            .cloned()
             .collect();
         strategy_params.sort();
 
@@ -711,8 +796,8 @@ impl OptimizationRunner {
             .strategy_settings
             .pos_sizer_params
             .pos_sizer_params
-            .iter()
-            .map(|(key, _value)| key.clone())
+            .keys()
+            .cloned()
             .collect();
         possizers_additional_params.sort();
 
@@ -729,62 +814,57 @@ impl OptimizationRunner {
                 .collect();
             names.sort();
             Some(names)
+        } else if !results.is_empty() {
+            let mut names: Vec<String> = results[0]
+                .get_results()
+                .to_stats_list()
+                .iter()
+                .map(|(key, _value)| key.clone())
+                .collect();
+            names.sort();
+            Some(names)
         } else {
-            if !results.is_empty() {
-                let mut names: Vec<String> = results[0]
-                    .get_results()
-                    .to_stats_list()
-                    .iter()
-                    .map(|(key, _value)| key.clone())
-                    .collect();
-                names.sort();
-                Some(names)
-            } else {
-                return anyhow::Ok(());
-            }
+            return anyhow::Ok(());
         };
 
         let mut file = std::fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .create(true)
             .open(&filename)?;
 
-        if !file_exist {
-            if let Some(ref names) = result_names {
-                // add Strategy name as first column
-                write!(file, "strategy_name;")?;
+        if !file_exist && let Some(ref names) = result_names {
+            // add Strategy name as first column
+            write!(file, "strategy_name;")?;
 
-                // --- 3.4: Write Strategy Parameter Column Names ---
-                // Writes the names of the strategy parameters to the file header, separated by semicolons.
-                for name in &strategy_params {
-                    write!(file, "{};", name)?;
-                }
-
-                // --- 3.5: Write Position Sizer Column Names ---
-                // Adds column names for the position sizing method name and its value.
-                write!(file, "pos_sizer_name;")?;
-                write!(file, "pos_sizer_value;")?;
-
-                // --- 3.6: Write Position Sizer Additional Parameter Column Names ---
-                // Writes the names of the position sizer's additional parameters to the header.
-                for name in &possizers_additional_params {
-                    write!(file, "{};", name)?;
-                }
-
-                // --- 3.7: Write Slippage Column Name ---
-                // Adds a column name for the slippage parameter used in the test.
-                write!(file, "slippage;")?;
-
-                // --- 3.8: Write Performance Metric Column Names ---
-                // Writes all performance metric names except the last one, followed by a semicolon.
-                // The last metric name is written with a newline character using `writeln!`.element
-                for name in &names[0..names.len() - 1] {
-                    write!(file, "{};", name)?;
-                }
-                // Write the last metric name and add a newline to complete the header row.
-                writeln!(file, "{:?}", names.last().unwrap())?;
+            // --- 3.4: Write Strategy Parameter Column Names ---
+            // Writes the names of the strategy parameters to the file header, separated by semicolons.
+            for name in &strategy_params {
+                write!(file, "{};", name)?;
             }
+
+            // --- 3.5: Write Position Sizer Column Names ---
+            // Adds column names for the position sizing method name and its value.
+            write!(file, "pos_sizer_name;")?;
+            write!(file, "pos_sizer_value;")?;
+
+            // --- 3.6: Write Position Sizer Additional Parameter Column Names ---
+            // Writes the names of the position sizer's additional parameters to the header.
+            for name in &possizers_additional_params {
+                write!(file, "{};", name)?;
+            }
+
+            // --- 3.7: Write Slippage Column Name ---
+            // Adds a column name for the slippage parameter used in the test.
+            write!(file, "slippage;")?;
+
+            // --- 3.8: Write Performance Metric Column Names ---
+            // Writes all performance metric names except the last one, followed by a semicolon.
+            // The last metric name is written with a newline character using `writeln!`.element
+            for name in &names[0..names.len() - 1] {
+                write!(file, "{};", name)?;
+            }
+            // Write the last metric name and add a newline to complete the header row.
+            writeln!(file, "{:?}", names.last().unwrap())?;
         }
 
         // --- 4. Write Data Rows ---
@@ -806,7 +886,7 @@ impl OptimizationRunner {
                 let strategy_params_values: Vec<serde_json::Value> = strategy_params
                     .iter()
                     .filter_map(|key| params_map.get(key))
-                    .map(|value| value.clone())
+                    .cloned()
                     .collect();
 
                 // --- 4.2: Write Strategy Parameter Values ---
@@ -834,7 +914,7 @@ impl OptimizationRunner {
                     possizers_additional_params
                         .iter()
                         .filter_map(|key| pos_sizer_additional_params_map.get(key))
-                        .map(|value| value.clone())
+                        .cloned()
                         .collect();
 
                 // --- 4.5: Write Position Sizer Additional Parameter Values ---
@@ -856,7 +936,7 @@ impl OptimizationRunner {
                 let performance_metrics_values: Vec<String> = names
                     .iter()
                     .filter_map(|key| performance_metrics_map.get(key))
-                    .map(|value| value.clone())
+                    .cloned()
                     .collect();
 
                 // --- 4.8: Write Performance Metric Values ---

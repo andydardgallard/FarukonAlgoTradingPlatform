@@ -18,6 +18,12 @@ pub struct MarketBar {
     volume: u64,
 }
 
+impl Default for MarketBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarketBar {
     pub fn new() -> Self {
         Self {
@@ -96,6 +102,12 @@ pub struct SOAData {
     volumes: Vec<u64>,
 }
 
+impl Default for SOAData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SOAData {
     pub fn new() -> Self {
         Self {
@@ -141,7 +153,7 @@ impl SOAData {
         }
     }
 
-    pub fn add_bar(&mut self, bar: &MarketBar) -> () {
+    pub fn add_bar(&mut self, bar: &MarketBar) {
         self.timestamps.push(bar.get_datetime());
         self.opens.push(bar.get_open());
         self.highs.push(bar.get_high());
@@ -201,6 +213,11 @@ impl SOAData {
 
     pub fn len(&self) -> usize {
         self.timestamps.len()
+    }
+
+    /// Returns `true` when this SOA block holds no bars.
+    pub fn is_empty(&self) -> bool {
+        self.timestamps.is_empty()
     }
 
     pub fn get_timestamps(&self) -> Option<&Vec<chrono::DateTime<chrono::Utc>>> {

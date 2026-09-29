@@ -1,4 +1,4 @@
-//! strategy_lib/src/lib.rs
+// MA_cross.rs — source of the MA-cross sample strategy dylib (included by a cdylib build wrapper).
 
 use farukon_core::{self, strategy::Strategy, utils};
 
@@ -16,8 +16,8 @@ pub struct MovingAverageCrossStrategy {
     strategy_instruments_info:
         std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
 
-    /// The event sender channel used to communicate signals to other components.
-    event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    /// The signal emitter of the host that loaded this strategy (host-owned, only borrowed here).
+    emitter: farukon_core::event::SignalEmitter,
 
     /// The window size for the short-term Simple Moving Average (SMA).
     short_window: usize,
@@ -28,14 +28,14 @@ pub struct MovingAverageCrossStrategy {
 
 impl MovingAverageCrossStrategy {
     /// Creates a new instance of the MovingAverageCrossStrategy.
-    /// Initializes the strategy with the provided mode, settings, instrument info, and event sender.
+    /// Initializes the strategy with the provided mode, settings, instrument info, and signal emitter.
     /// It also parses the required strategy parameters (`short_window`, `long_window`) from the settings.
     ///
     /// # Arguments
     /// * `mode` - The operational mode (e.g., "Debug", "Optimize").
     /// * `strategy_settings` - The settings for this strategy, loaded from the JSON config.
     /// * `strategy_instruments_info` - Instrument metadata for all symbols traded by this strategy.
-    /// * `event_sender` - The event sender channel used to communicate signals.
+    /// * `emitter` - The host's signal emitter, used to communicate signals.
     ///
     /// # Returns
     /// * `anyhow::Result<Self>` - A new instance of the strategy or an error if initialization fails.
@@ -46,7 +46,7 @@ impl MovingAverageCrossStrategy {
             String,
             farukon_core::instruments_info::InstrumentInfo,
         >,
-        event_sender: std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+        emitter: farukon_core::event::SignalEmitter,
     ) -> anyhow::Result<Self> {
         // Extract the short and long window sizes from the strategy settings.
         let short_window =
@@ -68,9 +68,9 @@ impl MovingAverageCrossStrategy {
             mode,
             strategy_settings,
             strategy_instruments_info,
-            short_window: short_window as usize,
-            long_window: long_window as usize,
-            event_sender,
+            short_window,
+            long_window,
+            emitter,
         })
     }
 }
@@ -80,12 +80,12 @@ impl MovingAverageCrossStrategy {
 impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
     /// Calculates trading signals based on market data and portfolio state.
     /// This function iterates through each symbol in the symbol list, calculates SMAs,
-    /// checks for crossovers, and sends appropriate signals (LONG, SHORT, EXIT) via the event channel.
+    /// checks for crossovers, and emits appropriate signals (LONG, SHORT, EXIT) to the host.
     ///
     /// # Arguments
     /// * `data_handler` - Interface to access market data (OHLCV, timestamps).
     /// * `current_positions` - Current position states for all symbols.
-    /// * `latest_equity_point` - The latest equity point (capital, blocked, cash).
+    /// * `all_holdings` - Holdings snapshot passed to the position sizer.
     /// * `symbol_list` - List of symbols to process signals for.
     ///
     /// # Returns
@@ -97,7 +97,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             String,
             farukon_core::portfolio::PositionState,
         >,
-        all_holdings: &Vec<farukon_core::portfolio::HoldingSnapshot>,
+        all_holdings: &[farukon_core::portfolio::HoldingSnapshot],
         symbol_list: &[String],
     ) -> anyhow::Result<()> {
         // Iterate through each symbol in the list.
@@ -161,7 +161,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         // EXIT LONG
                         if short_sma < long_sma {
                             self.close_by_market(
-                                &self.event_sender,
+                                &self.emitter,
                                 current_bar_datetime,
                                 symbol,
                                 signal_name,
@@ -171,7 +171,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         // EXIT by expiration
                         else if current_bar_datetime >= expiration_date_dt {
                             self.close_by_market(
-                                &self.event_sender,
+                                &self.emitter,
                                 current_bar_datetime,
                                 symbol,
                                 signal_name,
@@ -184,7 +184,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         // EXIT SHORT
                         if short_sma > long_sma {
                             self.close_by_market(
-                                &self.event_sender,
+                                &self.emitter,
                                 current_bar_datetime,
                                 symbol,
                                 signal_name,
@@ -194,7 +194,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         // EXIT by expiration
                         else if current_bar_datetime >= expiration_date_dt {
                             self.close_by_market(
-                                &self.event_sender,
+                                &self.emitter,
                                 current_bar_datetime,
                                 symbol,
                                 signal_name,
@@ -221,7 +221,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         );
 
                         self.open_by_limit(
-                            &self.event_sender,
+                            &self.emitter,
                             current_bar_datetime,
                             symbol,
                             signal_name,
@@ -249,7 +249,7 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
                         );
 
                         self.open_by_limit(
-                            &self.event_sender,
+                            &self.emitter,
                             current_bar_datetime,
                             symbol,
                             signal_name,
@@ -292,7 +292,13 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
 /// * `mode_cstr` - A C string representing the operational mode.
 /// * `strategy_settings_ptr` - A pointer to the strategy settings struct.
 /// * `strategy_instruments_info_ptr` - A pointer to the instrument info map.
-/// * `event_sender_ptr` - A pointer to the event sender channel.
+/// * `emitter_ctx` - Opaque host context, handed back unchanged on every emitted signal.
+/// * `emit_signal_cb` - The host callback that turns a signal into a host-allocated event.
+///
+/// Contract (kept in sync with `farukon_core::event::SignalEmitter`): the caller keeps
+/// `emitter_ctx`/`emit_signal_cb` valid for the whole lifetime of the returned strategy, and this
+/// library only stores them and passes them back on emit — it never dereferences, clones or drops
+/// host state, and no heap object crosses the boundary.
 ///
 /// # Returns
 /// * A raw pointer to the newly created MovingAverageCrossStrategy instance, or null on error.
@@ -304,16 +310,20 @@ pub extern "C" fn create_strategy(
         String,
         farukon_core::instruments_info::InstrumentInfo,
     >,
-    event_sender_ptr: *const std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
+    emitter_ctx: *const std::ffi::c_void,
+    emit_signal_cb: Option<farukon_core::event::EmitSignalFn>,
 ) -> *mut MovingAverageCrossStrategy {
     // Check for null pointers to prevent crashes.
     if mode_cstr.is_null()
         || strategy_settings_ptr.is_null()
-        || strategy_settings_ptr.is_null()
-        || event_sender_ptr.is_null()
+        || strategy_instruments_info_ptr.is_null()
+        || emitter_ctx.is_null()
     {
         return std::ptr::null_mut();
     }
+    let Some(emit_signal_cb) = emit_signal_cb else {
+        return std::ptr::null_mut();
+    };
     // Convert the C string to a Rust String.
     let mode = unsafe { std::ffi::CStr::from_ptr(mode_cstr) }
         .to_string_lossy()
@@ -321,14 +331,18 @@ pub extern "C" fn create_strategy(
     // Dereference the raw pointers to get the actual values.
     let strategy_settings_ref = unsafe { &*strategy_settings_ptr }.clone();
     let strategy_instruments_info_ref = unsafe { &*strategy_instruments_info_ptr }.clone();
-    let event_sender_ref = unsafe { &*event_sender_ptr }.clone();
+    // Host-owned pair kept for the lifetime of the strategy and only borrowed on emit.
+    let emitter = farukon_core::event::SignalEmitter {
+        ctx: emitter_ctx,
+        cb: emit_signal_cb,
+    };
 
     // Attempt to create a new strategy instance.
     match MovingAverageCrossStrategy::new(
         mode,
         strategy_settings_ref,
         strategy_instruments_info_ref,
-        event_sender_ref,
+        emitter,
     ) {
         // If successful, box the strategy and return a raw pointer to it.
         Ok(strategy) => Box::into_raw(Box::new(strategy)),
@@ -361,8 +375,8 @@ pub extern "C" fn destroy_strategy(strategy: *mut MovingAverageCrossStrategy) {
 /// * `strategy_ptr` - A raw pointer to the MovingAverageCrossStrategy instance.
 /// * `data_handler_vtable` - A pointer to the VTable for the DataHandler trait object.
 /// * `data_handler_ptr` - A pointer to the DataHandler trait object data.
-/// * `current_positions_ptr` - A pointer to the map of current positions.
-/// * `latest_equity_point_ptr` - A pointer to the latest equity point.
+/// * `current_positions_ptr` - A pointer to the map of current positions (read-only for this call).
+/// * `all_holdings_ptr` - A pointer to the holdings snapshot vector (read-only for this call).
 /// * `symbol_list_ptr` - A pointer to an array of C string pointers representing the symbol list.
 /// * `symbol_list_size` - The size of the symbol list array.
 ///
@@ -373,11 +387,11 @@ pub extern "C" fn calculate_signals(
     strategy_ptr: *mut std::ffi::c_void,
     data_handler_vtable: *const farukon_core::DataHandlerVTable,
     data_handler_ptr: *const (),
-    current_positions_ptr: *mut std::collections::HashMap<
+    current_positions_ptr: *const std::collections::HashMap<
         String,
         farukon_core::portfolio::PositionState,
     >,
-    all_holdings_ptr: *mut Vec<farukon_core::portfolio::HoldingSnapshot>,
+    all_holdings_ptr: *const Vec<farukon_core::portfolio::HoldingSnapshot>,
     symbol_list_ptr: *const *const std::os::raw::c_char,
     symbol_list_size: usize,
 ) -> i32 {
@@ -395,9 +409,10 @@ pub extern "C" fn calculate_signals(
         )
     };
 
-    // Get mutable references to the current positions and latest equity point.
-    let current_positions = unsafe { &mut *current_positions_ptr };
-    let all_holdings = unsafe { &mut *all_holdings_ptr };
+    // Shared references: the strategy only reads the portfolio state (position lookup, holdings
+    // passed to the position sizer), and the host itself only holds `&` to this data.
+    let current_positions = unsafe { &*current_positions_ptr };
+    let all_holdings = unsafe { &*all_holdings_ptr };
 
     // Convert the C string array to a Vec<String>.
     let symbols: Vec<String> = (0..symbol_list_size)

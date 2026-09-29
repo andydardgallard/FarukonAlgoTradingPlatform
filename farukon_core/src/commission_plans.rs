@@ -52,13 +52,13 @@ impl CommissionPlans {
     /// # Arguments
     /// * `self` - A reference to the global `CommissionPlans` loaded from `commission_plans.json`.
     /// * `settings` - A mutable reference to the main `Settings` object, which contains the map of all strategy configurations.
-    ///                The function modifies the `commission_plans` field within each strategy's settings.
+    ///   The function modifies the `commission_plans` field within each strategy's settings.
     /// * `instruments_info` - A reference to the `InstrumentsInfoRegistry` containing metadata for all known instruments.
-    ///                       Used to determine the exchange and commission type for each symbol traded by a strategy.
+    ///   Used to determine the exchange and commission type for each symbol traded by a strategy.
     ///
     /// # Returns
     /// * `anyhow::Result<()>` - `Ok(())` if the filtering and attachment process completes successfully.
-    ///                          Returns an `Err` if an instrument's info is missing for a symbol listed in a strategy's settings.
+    ///   Returns an `Err` if an instrument's info is missing for a symbol listed in a strategy's settings.
     fn add_commission_plans_to_settings(
         &self,                             // Reference to the loaded global commission plans
         settings: &mut settings::Settings, // Mutable reference to the main settings, to be updated
@@ -99,7 +99,7 @@ impl CommissionPlans {
                     // Get or create a map for this specific exchange in the filtered plans.
                     let filtered_plan_map = filtered_exchanges
                         .entry(exchange.clone()) // Use the exchange name as the key
-                        .or_insert_with(|| std::collections::HashMap::new()); // Initialize an empty map if the exchange wasn't present
+                        .or_default(); // Initialize an empty map if the exchange wasn't present
 
                     // Iterate through all available commission plans for this exchange in the global plans.
                     for (plan_name, plan_value) in exchange_plans {
@@ -108,7 +108,7 @@ impl CommissionPlans {
                             // Check if this plan object contains the specific commission type required by the strategy.
                             if let Some(amount) = obj.get(&commission_type) {
                                 // Verify that the commission amount is a floating-point number.
-                                if let Some(_) = amount.as_f64() {
+                                if amount.as_f64().is_some() {
                                     // Get or create an entry for this specific plan name within the exchange's map in the filtered plans.
                                     let plan_entry = filtered_plan_map
                                         .entry(plan_name.clone()) // Use the plan name (e.g., "default") as the key
@@ -172,10 +172,10 @@ impl CommissionPlans {
 
         // If the plan value is an object, look up the commission rate by instrument type.
         if let Some(obj) = plan_value.as_object() {
-            if let Some(amount) = obj.get(instrument_type) {
-                if let Some(value) = amount.as_f64() {
-                    return Some(value);
-                }
+            if let Some(amount) = obj.get(instrument_type)
+                && let Some(value) = amount.as_f64()
+            {
+                return Some(value);
             }
         } else if let Some(value) = plan_value.as_f64() {
             // If the plan value is a single number, use it as the commission rate.
@@ -241,23 +241,24 @@ pub fn calculate_forts_comission(
     if let Some(plans) = commission_plans_map {
         // Calculate the total commission rate by summing up all commission values for the specified commission type.
         let mut total_commission_rate = 0.0;
-        for (_plan_name, plan_value) in plans {
-            if let Some(obj) = plan_value.as_object() {
-                if let Some(currency_val) = obj.get(&commission_type) {
-                    if let Some(amount) = currency_val.as_f64() {
-                        total_commission_rate += amount / 100.0;
-                    }
-                }
+        for plan_value in plans.values() {
+            if let Some(obj) = plan_value.as_object()
+                && let Some(currency_val) = obj.get(&commission_type)
+                && let Some(amount) = currency_val.as_f64()
+            {
+                total_commission_rate += amount / 100.0;
             }
         }
 
         // If a valid commission rate was found, calculate the commission amount.
         if total_commission_rate > 0.0 {
+            // Without a price the commission cannot be derived: report "no commission" (the old
+            // `price.unwrap()` panicked here, although every caller currently passes `Some`).
+            let price = price?;
             // Calculate the cost of one step price in base currency.
             let cost_of_step_price = ((step_price / step) * 100_000.0).round() / 100_000.0;
             // Calculate the commission base (price * cost_of_step_price).
-            let commission_base =
-                (price.unwrap().abs() * cost_of_step_price * 100.0).round() / 100.0;
+            let commission_base = (price.abs() * cost_of_step_price * 100.0).round() / 100.0;
             // Calculate the final commission amount.
             let commission = (commission_base * total_commission_rate * 100.0).round() / 100.0;
 

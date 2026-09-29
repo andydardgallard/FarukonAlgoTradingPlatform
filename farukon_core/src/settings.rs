@@ -46,7 +46,7 @@ impl ParamSpec {
             ParamSpec::Range { start, end, step } => {
                 let mut values = Vec::new();
                 let mut current = *start;
-                while current <= *end + std::f64::EPSILON {
+                while current <= *end + f64::EPSILON {
                     values.push(serde_json::Value::Number(
                         serde_json::Number::from_f64(current).expect("Valid f64"),
                     ));
@@ -72,11 +72,11 @@ impl ParamSpec {
                 } else {
                     let min = *nums
                         .iter()
-                        .min_by(|a, b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal))
+                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap();
                     let max = *nums
                         .iter()
-                        .max_by(|a, b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal))
+                        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap();
                     (min, max)
                 }
@@ -123,8 +123,8 @@ impl ParamSpec {
                         count_f64
                     );
                 }
-                if count_f64 > std::u128::MAX as f64 {
-                    anyhow::Ok(std::u128::MAX)
+                if count_f64 > u128::MAX as f64 {
+                    anyhow::Ok(u128::MAX)
                 } else {
                     anyhow::Ok(count_f64 as u128)
                 }
@@ -148,6 +148,7 @@ pub enum OptimizerType {
 /// Type of fitness metric to optimize.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub enum FitnessValue {
     #[serde(rename = "Total_Return")]
     TotalReturn,
@@ -158,6 +159,7 @@ pub enum FitnessValue {
     #[serde(rename = "Max_Drawdown")]
     MaxDD,
     #[serde(rename = "APR/DD_factor")]
+    #[default]
     AprDDFactor,
     #[serde(rename = "Recovery_Factor")]
     RecoveryFactor,
@@ -165,12 +167,6 @@ pub enum FitnessValue {
     DealsCount,
     #[serde(rename = "Composite")]
     Composite { metrics: Vec<String> },
-}
-
-impl Default for FitnessValue {
-    fn default() -> Self {
-        FitnessValue::AprDDFactor
-    }
 }
 
 /// Parameters for the Genetic Algorithm optimizer.
@@ -331,18 +327,15 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
         for strategy_id in strategies_ids {
             let strategy_settings: &mut StrategySettings =
                 settings.portfolio.get_mut(&strategy_id).unwrap();
-            match strategy_settings.threads {
-                Some(threads) => {
-                    if threads == 0 {
-                        anyhow::bail!("Settings validation error: 'threads' cannot be zero.");
-                    } else if threads > 0 {
-                        let availiable_threads = num_cpus::get();
-                        if threads > availiable_threads {
-                            strategy_settings.threads = Some(availiable_threads);
-                        }
+            if let Some(threads) = strategy_settings.threads {
+                if threads == 0 {
+                    anyhow::bail!("Settings validation error: 'threads' cannot be zero.");
+                } else if threads > 0 {
+                    let availiable_threads = num_cpus::get();
+                    if threads > availiable_threads {
+                        strategy_settings.threads = Some(availiable_threads);
                     }
                 }
-                None => {}
             }
         }
     }
@@ -360,6 +353,19 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                 "Wrong global data mode setting! Use one of {:?}",
                 VALID_DATA_MODES
             );
+        }
+
+        // One prominent startup warning: 'deep' storage mode is valid but very expensive.
+        // check_args runs once per process (Settings::load), never per optimizer candidate.
+        if settings.common.global_data_storage_mode == "deep" {
+            eprintln!("================================================================");
+            eprintln!("WARNING: global_data_storage_mode = \"deep\"");
+            eprintln!("In this mode every optimization candidate deep-clones the entire");
+            eprintln!("dataset (see SOADataHandler::new in");
+            eprintln!("Farukon_2/src/data_engine/data_handler.rs), which destroys memory");
+            eprintln!("bandwidth at scale and stalls runs with many candidates/threads.");
+            eprintln!("For large datasets use \"global_data_storage_mode\": \"arc\" instead.");
+            eprintln!("================================================================");
         }
     }
 
@@ -408,41 +414,40 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                         }
 
                         // check fitness_value
-                        match &ga_params.fitness_params.fitness_value {
-                            FitnessValue::Composite { metrics } => {
-                                const VALID_COMPOSITE_METRICS: &[&str] = &[
-                                    "Total_Return",
-                                    "Total_Return_%",
-                                    "APR",
-                                    "max_DD",
-                                    "max_DD_30%",
-                                    "max_DD_%",
-                                    "APR/DD_factor",
-                                    "APR/DD_factor_3",
-                                    "Recovery_Factor",
-                                    "Recovery_Factor_5",
-                                    "Composite",
-                                    "Deals_Count",
-                                ];
+                        if let FitnessValue::Composite { metrics } =
+                            &ga_params.fitness_params.fitness_value
+                        {
+                            const VALID_COMPOSITE_METRICS: &[&str] = &[
+                                "Total_Return",
+                                "Total_Return_%",
+                                "APR",
+                                "max_DD",
+                                "max_DD_30%",
+                                "max_DD_%",
+                                "APR/DD_factor",
+                                "APR/DD_factor_3",
+                                "Recovery_Factor",
+                                "Recovery_Factor_5",
+                                "Composite",
+                                "Deals_Count",
+                            ];
 
-                                if metrics.is_empty() {
+                            if metrics.is_empty() {
+                                anyhow::bail!(
+                                    "Composite fitness must have at least one metric. One of {:?}",
+                                    VALID_COMPOSITE_METRICS
+                                );
+                            }
+
+                            for metric in metrics {
+                                if !VALID_COMPOSITE_METRICS.contains(&metric.as_str()) {
                                     anyhow::bail!(
-                                        "Composite fitness must have at least one metric. One of {:?}",
+                                        "Invalid composite metric '{}'. Must be one of: {:?}",
+                                        metric,
                                         VALID_COMPOSITE_METRICS
                                     );
                                 }
-
-                                for metric in metrics {
-                                    if !VALID_COMPOSITE_METRICS.contains(&metric.as_str()) {
-                                        anyhow::bail!(
-                                            "Invalid composite metric '{}'. Must be one of: {:?}",
-                                            metric,
-                                            VALID_COMPOSITE_METRICS
-                                        );
-                                    }
-                                }
                             }
-                            _ => {}
                         }
                     }
                     OptimizerType::LshadeRSP { lshade_params } => {
@@ -453,7 +458,9 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                             anyhow::bail!("LSHADE_RSP max_evaluations must be greater than 0");
                         }
                         if lshade_params.p_best <= 0.0 || lshade_params.p_best > 1.0 {
-                            anyhow::bail!("LSHADE_RSP p_best must be between 0.0 and 1.0 (exclusive 0)");
+                            anyhow::bail!(
+                                "LSHADE_RSP p_best must be between 0.0 and 1.0 (exclusive 0)"
+                            );
                         }
                         if lshade_params.archive_rate <= 0.0 {
                             anyhow::bail!("LSHADE_RSP archive_rate must be greater than 0");
@@ -467,32 +474,31 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                             anyhow::bail!("fitness_direction must be 'max' or 'min'");
                         }
                         // check fitness_value
-                        match &lshade_params.fitness_params.fitness_value {
-                            FitnessValue::Composite { metrics } => {
-                                const VALID_COMPOSITE_METRICS: &[&str] = &[
-                                    "Total_Return",
-                                    "Total_Return_%",
-                                    "APR",
-                                    "max_DD",
-                                    "max_DD_30%",
-                                    "max_DD_%",
-                                    "APR/DD_factor",
-                                    "APR/DD_factor_3",
-                                    "Recovery_Factor",
-                                    "Recovery_Factor_5",
-                                    "Composite",
-                                    "Deals_Count",
-                                ];
-                                if metrics.is_empty() {
-                                    anyhow::bail!("Composite fitness must have at least one metric.");
-                                }
-                                for metric in metrics {
-                                    if !VALID_COMPOSITE_METRICS.contains(&metric.as_str()) {
-                                        anyhow::bail!("Invalid composite metric '{}'.", metric);
-                                    }
+                        if let FitnessValue::Composite { metrics } =
+                            &lshade_params.fitness_params.fitness_value
+                        {
+                            const VALID_COMPOSITE_METRICS: &[&str] = &[
+                                "Total_Return",
+                                "Total_Return_%",
+                                "APR",
+                                "max_DD",
+                                "max_DD_30%",
+                                "max_DD_%",
+                                "APR/DD_factor",
+                                "APR/DD_factor_3",
+                                "Recovery_Factor",
+                                "Recovery_Factor_5",
+                                "Composite",
+                                "Deals_Count",
+                            ];
+                            if metrics.is_empty() {
+                                anyhow::bail!("Composite fitness must have at least one metric.");
+                            }
+                            for metric in metrics {
+                                if !VALID_COMPOSITE_METRICS.contains(&metric.as_str()) {
+                                    anyhow::bail!("Invalid composite metric '{}'.", metric);
                                 }
                             }
-                            _ => {}
                         }
                     }
                     OptimizerType::GridSearch => {}
@@ -550,10 +556,10 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                                 );
                             }
                             for value in values {
-                                if let Some(num) = value.as_f64() {
-                                    if num < 0.0 {
-                                        anyhow::bail!("Pos sizer values must be positive!")
-                                    }
+                                if let Some(num) = value.as_f64()
+                                    && num < 0.0
+                                {
+                                    anyhow::bail!("Pos sizer values must be positive!")
                                 }
                             }
                         }
@@ -580,10 +586,10 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                             anyhow::bail!("Slippage vector cannot be empty!");
                         }
                         for value in values {
-                            if let Some(num) = value.as_f64() {
-                                if num < 0.0 {
-                                    anyhow::bail!("Slipage values must be positive!")
-                                }
+                            if let Some(num) = value.as_f64()
+                                && num < 0.0
+                            {
+                                anyhow::bail!("Slipage values must be positive!")
                             }
                         }
                     }
@@ -620,13 +626,13 @@ fn check_args(settings: &mut Settings) -> anyhow::Result<()> {
                                             param_name
                                         );
                                     }
-                                } else if let Some(num) = value.as_i64() {
-                                    if num <= 0 {
-                                        anyhow::bail!(
-                                            "Strategy parameter '{}' must have positive values!",
-                                            param_name
-                                        );
-                                    }
+                                } else if let Some(num) = value.as_i64()
+                                    && num <= 0
+                                {
+                                    anyhow::bail!(
+                                        "Strategy parameter '{}' must have positive values!",
+                                        param_name
+                                    );
                                 }
                             }
                         }
@@ -682,6 +688,8 @@ mod tests {
             .join("farukon_core_portfolio_mode_test")
             .to_string_lossy()
             .to_string();
+        // Windows paths use backslashes, which are not valid JSON escapes.
+        let escaped_path = exit_results_path.replace('\\', "\\\\");
         format!(
             r#"{{
                 "common": {{
@@ -724,7 +732,7 @@ mod tests {
                     }}
                 }}
             }}"#,
-            mode, exit_results_path, optimizer_type
+            mode, escaped_path, optimizer_type
         )
     }
 

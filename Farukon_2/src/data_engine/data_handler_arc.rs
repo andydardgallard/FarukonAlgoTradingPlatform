@@ -40,7 +40,7 @@ impl SOADataHandlerArc {
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
     ) -> Self {
         // Check if the combined timeline has any data points to determine the initial continue_backtest flag.
-        let continue_backtest = global_data_store.get_combined_timeline().len() > 0;
+        let continue_backtest = !global_data_store.get_combined_timeline().is_empty();
         Self {
             global_data_store,
             current_index: 0,
@@ -109,11 +109,7 @@ impl farukon_core::data_handler::DataHandler for SOADataHandlerArc {
         symbol: &str,
         n: usize,
     ) -> Option<farukon_core::data_handler::SOAData> {
-        let soa_data = if let Some(data) = self.global_data_store.get_soa_data_for_symbol(symbol) {
-            data
-        } else {
-            return None;
-        };
+        let soa_data = self.global_data_store.get_soa_data_for_symbol(symbol)?;
 
         let start_index = if self.current_index as i64 - n as i64 <= 0 {
             0

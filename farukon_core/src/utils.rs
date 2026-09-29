@@ -23,7 +23,7 @@ use crate::settings;
 /// # Returns
 /// * `anyhow::Result<chrono::DateTime<chrono::Utc>>` - The parsed UTC date-time on success, or an error if parsing fails.
 pub fn string_to_date_time(
-    string: &String,
+    string: &str,
     format: &str,
 ) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
     // Format "%Y-%m-%d %H:%M:%S"
@@ -168,12 +168,12 @@ pub fn export_equity_to_csv(
 ///
 /// # Arguments
 /// * `filename` - The base filename (no directory) for the output file, e.g. `equity_series.csv`.
-/// let equity_series = vec![(datetime1, 10000.0), (datetime2, 9900.0), (datetime3, 9950.0)];
-/// export_equity_drawdowns_to_csv(&drawdowns, &drawdowns_pct, &equity_series, &strategy_settings, "equity_series.csv")?;
-/// Creates: {exit_results_path}/{filename}
+///   let equity_series = vec![(datetime1, 10000.0), (datetime2, 9900.0), (datetime3, 9950.0)];
+///   export_equity_drawdowns_to_csv(&drawdowns, &drawdowns_pct, &equity_series, &strategy_settings, "equity_series.csv")?;
+///   Creates: {exit_results_path}/{filename}
 pub fn export_equity_drawdowns_to_csv(
-    drawdowns: &Vec<f64>,
-    drawdowns_pct: &Vec<f64>,
+    drawdowns: &[f64],
+    drawdowns_pct: &[f64],
     equity_series: &[(chrono::DateTime<chrono::Utc>, f64)],
     strategy_settings: &settings::StrategySettings,
     filename: &str,
@@ -283,8 +283,8 @@ fn aggregate_portfolio_equity(
             if datetime_str.is_empty() || capital_str.is_empty() {
                 continue;
             }
-            let datetime = string_to_date_time(&datetime_str.to_string(), "%Y-%m-%d %H:%M:%S")
-                .with_context(|| {
+            let datetime =
+                string_to_date_time(datetime_str, "%Y-%m-%d %H:%M:%S").with_context(|| {
                     format!("Failed to parse datetime '{}' in '{}'", datetime_str, path)
                 })?;
             let capital: f64 = capital_str.parse().with_context(|| {
@@ -698,12 +698,7 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "width_channel".to_string(),
-            ParamSpec::Discrete(
-                values
-                    .into_iter()
-                    .map(serde_json::Value::from)
-                    .collect(),
-            ),
+            ParamSpec::Discrete(values.into_iter().map(serde_json::Value::from).collect()),
         );
         map
     }
