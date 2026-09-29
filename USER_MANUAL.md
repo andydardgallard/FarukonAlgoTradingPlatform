@@ -28,7 +28,7 @@ The **Farukon Algo Trading Platform** is a high-performance, event-driven framew
 *   **SIMD-Optimized Calculations:** Employs SIMD instructions for performance-critical operations like indicator calculations and performance metric computations.
 *   **Multi-Strategy & Multi-Asset Support:** Can run multiple independent strategies simultaneously on different assets within a single backtest run.
 *   **Dynamic Strategy Loading:** Strategies are compiled as separate dynamic libraries (`.so` on Linux, `.dylib` on macOS) and loaded at runtime, enabling hot-swapping of logic without recompiling the core engine. Strategy libraries are built against a versioned signal ABI (see [§8](#8-extending-with-strategies)): **v3.0.0 replaced the channel-based ABI with a host emission callback, so every strategy library must be rebuilt against the current `farukon_core`** — loading a library built for the old ABI crashes the engine.
-*   **Advanced Optimization:** Includes Grid Search (exhaustive), Genetic Algorithm (evolutionary), and LSHADE-RSP optimizers for hyperparameter tuning, with runtime warnings and throttled progress output on large runs (see [§7](#7-optimization)).
+*   **Advanced Optimization:** Includes Grid Search (exhaustive), Genetic Algorithm (evolutionary), and LSHADE-RSP optimizers for hyperparameter tuning, with runtime warnings on large runs (see [§7](#7-optimization)).
 *   **Risk Management:** Implements margin checking, position sizing (e.g., MPR - Maximum Possible Risk), and margin call monitoring.
 *   **Modular Core:** Core logic is separated into the `farukon_core` library, making it reusable and easier to maintain.
 
@@ -74,7 +74,7 @@ This section details the main modules within `farukon_core` and `Farukon_2_0`.
 *   **`execution`:** Defines the `ExecutionHandler` trait for simulating trade execution.
 *   **`indicators`:** Contains basic technical indicators (e.g., `sma`) that strategies can use.
 *   **`performance`:** Calculates performance metrics (`Total Return`, `APR`, `Max Drawdown`, `Recovery Factor`, etc.) using SIMD for speed.
-*   **`optimization`:** Contains the `GridSearchOptimizer`, `GeneticAlgorythm`, and LSHADE-RSP implementations, plus `ProgressThrottle` (time-based throttling of the per-candidate progress prints).
+*   **`optimization`:** Contains the `GridSearchOptimizer`, `GeneticAlgorythm`, and LSHADE-RSP implementations.
 *   **`instruments_info`:** Manages instrument metadata (margin, step, step_price, expiration, etc.) loaded from `instruments_info.json`.
 *   **`commission_plans`:** Manages commission structures loaded from `commission_plans.json` and calculates fees.
 *   **`index`:** Defines structures for FlatBuffer indexing (used by data handlers).
@@ -320,7 +320,7 @@ All optimizers write the evaluated parameter sets and their metrics to `optimiza
 
 *   **Deep data storage warning:** when `common.global_data_storage_mode` is `"deep"`, the process prints a one-time `WARNING: global_data_storage_mode = "deep"` block at startup (once per process, never per candidate) explaining that every candidate deep-clones the dataset and recommending `"arc"`. The run continues.
 *   **Thread-scaling knee warning:** Grid Search, Genetic Algorithm, and LSHADE-RSP each print a one-time warning when the configured `threads` exceed 8 **and** the combined timeline reaches 100 000 bars per candidate (a "high bar-count dataset"). The warning states the measured scaling knee (~8 threads on 1-3 minute timeframes, where runtime stops improving and may degrade); it is guidance only — **no cap is applied**, the run continues with the configured thread count.
-*   **Throttled progress output:** the per-candidate prints (`# N from M <params>` and `# N from M is done in X seconds`) are throttled to at most one candidate roughly every 2 seconds per evaluation batch. The last candidate of a batch always prints, so the final state of every generation/iteration stays visible. The printed text itself is unchanged.
+*   **Per-candidate progress output:** every candidate prints two lines — `# N from M <params>` at start and `# N from M is done in X seconds` (with the fitness value for GA/LSHADE) on completion — so the whole batch is visible live in stdout.
 
 ---
 

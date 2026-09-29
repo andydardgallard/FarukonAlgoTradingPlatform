@@ -16,72 +16,6 @@ use crate::performance;
 use crate::settings;
 use crate::utils;
 
-/// Time-based throttle for the per-candidate progress prints.
-///
-/// Every candidate used to print two lines ("# N from M <params>" and
-/// "# N from M is done in X seconds"), which floods stdout on large runs. One
-/// `ProgressThrottle` is shared through an `Arc` by all rayon workers of an evaluation
-/// batch, so at most one candidate per `INTERVAL_MS` prints. The candidate with the
-/// highest 1-based count (the last one of the batch) always prints, so the final state
-/// stays visible. The printed text itself is unchanged.
-#[derive(Debug)]
-pub struct ProgressThrottle {
-    /// Reference point for the monotonic time source.
-    start: std::time::Instant,
-    /// Milliseconds since `start` at which the last candidate claimed the print slot.
-    last_print_ms: std::sync::atomic::AtomicU64,
-}
-
-impl ProgressThrottle {
-    /// Minimum time between two printing candidates.
-    const INTERVAL_MS: u64 = 2_000;
-
-    /// Creates a throttle whose time window starts now.
-    pub fn new() -> Self {
-        Self {
-            start: std::time::Instant::now(),
-            last_print_ms: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    /// Returns `true` if the candidate with the 1-based `current_count` (out of `total`)
-    /// should print its progress lines.
-    ///
-    /// Thread-safe: the print slot is claimed with a compare-and-swap on the shared
-    /// timestamp, so concurrent workers do not all print when a window elapses. The
-    /// batch's last candidate always returns `true`.
-    pub fn claim(&self, current_count: usize, total: usize) -> bool {
-        if current_count >= total {
-            return true;
-        }
-
-        let now_ms = self.start.elapsed().as_millis() as u64;
-        let mut last_ms = self
-            .last_print_ms
-            .load(std::sync::atomic::Ordering::Relaxed);
-        loop {
-            if now_ms.saturating_sub(last_ms) < Self::INTERVAL_MS {
-                return false;
-            }
-            match self.last_print_ms.compare_exchange_weak(
-                last_ms,
-                now_ms,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => last_ms = actual,
-            }
-        }
-    }
-}
-
-impl Default for ProgressThrottle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Represents the result of evaluating a single parameter set.
 /// Contains the parameters used and the resulting performance metrics.
 #[derive(Debug, Clone)]
@@ -888,8 +822,6 @@ impl GeneticAlgorythm {
 
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let total_evaluations = population.len();
-        // Throttles the two per-candidate prints of this generation (see ProgressThrottle).
-        let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -903,18 +835,13 @@ impl GeneticAlgorythm {
                     let start_time = std::time::Instant::now();
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    // Claimed once per candidate so its "start" and "is done" lines stay
-                    // together; at most one candidate per 2 seconds prints.
-                    let print_progress = progress_throttle.claim(current_count, total_evaluations);
 
-                    if print_progress {
-                        println!(
-                            "# {} from {} {}",
-                            current_count,
-                            total_evaluations,
-                            params.format_for_display()
-                        );
-                    }
+                    println!(
+                        "# {} from {} {}",
+                        current_count,
+                        total_evaluations,
+                        params.format_for_display()
+                    );
 
                     let hash = hash_parameter_set(params);
 
@@ -924,15 +851,13 @@ impl GeneticAlgorythm {
                     };
 
                     let fitness = if let Some(cahed_f) = cached_fitness {
-                        if print_progress {
-                            println!(
-                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                                current_count,
-                                total_evaluations,
-                                start_time.elapsed().as_secs_f64(),
-                                cahed_f
-                            );
-                        }
+                        println!(
+                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                            current_count,
+                            total_evaluations,
+                            start_time.elapsed().as_secs_f64(),
+                            cahed_f
+                        );
                         cahed_f
                     } else {
                         let calculated_f = evaluate(params);
@@ -940,15 +865,13 @@ impl GeneticAlgorythm {
                         bank.insert(hash, calculated_f);
                         drop(bank);
 
-                        if print_progress {
-                            println!(
-                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                                current_count,
-                                total_evaluations,
-                                start_time.elapsed().as_secs_f64(),
-                                calculated_f
-                            );
-                        }
+                        println!(
+                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                            current_count,
+                            total_evaluations,
+                            start_time.elapsed().as_secs_f64(),
+                            calculated_f
+                        );
                         calculated_f
                     };
                     (params.clone(), fitness)
@@ -2305,8 +2228,6 @@ impl LshadeRspOptimizer {
             .num_threads(threads)
             .build()?;
         let chromosome_bank = self.chromosome_bank.clone();
-        // Throttles the two per-candidate prints of the initial batch.
-        let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
         self.fitness_values = pool.install(|| {
             self.population
                 .par_iter()
@@ -2314,25 +2235,20 @@ impl LshadeRspOptimizer {
                     let start_time = std::time::Instant::now();
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    let print_progress = progress_throttle.claim(current_count, batch_size);
-                    if print_progress {
-                        println!(
-                            "# {} from {} {}",
-                            current_count,
-                            batch_size,
-                            ps.format_for_display()
-                        );
-                    }
+                    println!(
+                        "# {} from {} {}",
+                        current_count,
+                        batch_size,
+                        ps.format_for_display()
+                    );
                     let fitness = Self::evaluate_cached(ps, &chromosome_bank, &evaluate);
-                    if print_progress {
-                        println!(
-                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                            current_count,
-                            batch_size,
-                            start_time.elapsed().as_secs_f64(),
-                            fitness
-                        );
-                    }
+                    println!(
+                        "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                        current_count,
+                        batch_size,
+                        start_time.elapsed().as_secs_f64(),
+                        fitness
+                    );
                     fitness
                 })
                 .collect()
@@ -2373,8 +2289,6 @@ impl LshadeRspOptimizer {
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let batch_size = pop_size_before;
             let chromosome_bank = self.chromosome_bank.clone();
-            // Throttles the two per-candidate prints of this iteration's batch.
-            let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
             let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> =
                 pool.install(|| {
                     (0..pop_size_before)
@@ -2407,26 +2321,21 @@ impl LshadeRspOptimizer {
                             let start_time = std::time::Instant::now();
                             let current_count =
                                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                            let print_progress = progress_throttle.claim(current_count, batch_size);
-                            if print_progress {
-                                println!(
-                                    "# {} from {} {}",
-                                    current_count,
-                                    batch_size,
-                                    trial.format_for_display()
-                                );
-                            }
+                            println!(
+                                "# {} from {} {}",
+                                current_count,
+                                batch_size,
+                                trial.format_for_display()
+                            );
                             let trial_fitness =
                                 Self::evaluate_cached(&trial, &chromosome_bank, &evaluate);
-                            if print_progress {
-                                println!(
-                                    "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                                    current_count,
-                                    batch_size,
-                                    start_time.elapsed().as_secs_f64(),
-                                    trial_fitness
-                                );
-                            }
+                            println!(
+                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                                current_count,
+                                batch_size,
+                                start_time.elapsed().as_secs_f64(),
+                                trial_fitness
+                            );
 
                             let ordering = trial_fitness.partial_cmp(&self.fitness_values[i]);
                             let is_better = if max_is_best {

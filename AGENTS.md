@@ -1,4 +1,4 @@
-<!-- code-factory-fingerprint: ea2581e9033f10980db6efadc37c5ce773f21e6617880dd7bbfe2e0f79947608 content: 8045b1bc684e9823c9cb93584427664d44af8426d5168b6671b1b51363621a09 -->
+<!-- code-factory-fingerprint: c0f43ebf53e41a6d4117742a04f814dbdbea8c2fe8fd8401827d9f6db5f89c74 content: cd8c3cf7d730ab7684de6b3b1fb3fa5faa8a568292735a5e237f84cc00b60884 -->
 <!-- code-factory-version: 3.0.0 -->
 # Farukon
 
@@ -133,11 +133,9 @@ drives Optimize / Visual / Portfolio behavior.
   `Farukon_2/src`.
 - **Thread scaling (fixed in v3.0.0, run 20260929-f24b5e53)**: runtime used to stop scaling beyond
   ~8 threads on 1-3 minute timeframes. After the fix (FFI caching, snapshot-clone removal, mimalloc,
-  allocator-safe ABI, throttled prints): 1m arc 16 threads 44185 s → 7202 s (6.1x), 2m arc 32 threads
+  allocator-safe ABI): 1m arc 16 threads 44185 s → 7202 s (6.1x), 2m arc 32 threads
   15316 s → 1264 s (12.1x), with exact business-metric parity. The startup warnings remain:
   `global_data_storage_mode: deep` (per-candidate dataset clone — prefer `arc`) and threads above the
   ~8-thread scaling knee on high bar-count datasets (advisory, no cap).
-- **Per-candidate stdout progress is throttled** (~every 2 s; the final candidate always prints), so
-  stdout no longer carries every candidate's timing line.
 - Every strategy dll must be built against the current `farukon_core` (v3.0.0 ABI). The repo's
   `Strategies/MA_cross.dylib` is pre-v3.0.0 and incompatible.

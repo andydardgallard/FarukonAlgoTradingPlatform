@@ -174,9 +174,6 @@ impl OptimizationRunner {
 
         // Shared atomic counter to track the number of completed evaluations.
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        // Throttles the two per-candidate prints of this run (see ProgressThrottle).
-        let progress_throttle =
-            std::sync::Arc::new(farukon_core::optimization::ProgressThrottle::new());
 
         let lib_path = &strategy_settings.strategy_path;
         let lib = std::sync::Arc::new(unsafe {
@@ -211,18 +208,12 @@ impl OptimizationRunner {
                     // Increment the counter and get the current count for logging.
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    // Claimed once per candidate so its "start" and "is done" lines stay
-                    // together; at most one candidate per 2 seconds prints, plus the last.
-                    let print_progress =
-                        progress_throttle.claim(current_count, total_combinations as usize);
-                    if print_progress {
-                        println!(
-                            "# {} from {} {}",
-                            current_count,
-                            total_combinations,
-                            full_parameter_set.format_for_display() // Human-readable representation of the parameters.
-                        );
-                    }
+                    println!(
+                        "# {} from {} {}",
+                        current_count,
+                        total_combinations,
+                        full_parameter_set.format_for_display() // Human-readable representation of the parameters.
+                    );
 
                     // Create temporary strategy settings based on the current parameter set.
                     let test_settings = farukon_core::utils::create_stratagy_settings_from_params(
@@ -250,14 +241,12 @@ impl OptimizationRunner {
                         ),
                     };
 
-                    if print_progress {
-                        println!(
-                            "# {} from {} is done in {:.3} seconds.",
-                            current_count,
-                            total_combinations,
-                            start_time.elapsed().as_secs_f64()
-                        );
-                    }
+                    println!(
+                        "# {} from {} is done in {:.3} seconds.",
+                        current_count,
+                        total_combinations,
+                        start_time.elapsed().as_secs_f64()
+                    );
 
                     // Create an OptimizationResult object containing the parameters and the resulting performance metrics.
                     farukon_core::optimization::OptimizationResult::new()
