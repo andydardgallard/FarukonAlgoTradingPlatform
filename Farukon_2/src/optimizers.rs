@@ -75,56 +75,6 @@ impl OptimizationRunner {
         &self.grid_search_optimizer
     }
 
-    /// Prints a prominent one-time warning when the configured thread count is above the
-    /// measured scaling knee on a high bar-count dataset.
-    ///
-    /// The knee is a measured runtime degradation (review run 20260929-b81785fd: backtests
-    /// stop scaling beyond ~8 threads on 1-3 minute timeframes because the per-candidate
-    /// memory footprint saturates memory bandwidth/cache), not a correctness issue. This is
-    /// guidance only: the run CONTINUES with the configured thread count, no cap is applied.
-    ///
-    /// All three optimizer entry points (`run_grid_search`, `run_genetic_search`,
-    /// `run_lshade_rsp_search`) call this once per run; the bar count comes from the loaded
-    /// `GlobalDataStore` (`get_combined_timeline().len()`), which is not visible inside
-    /// `farukon_core` where the GA/LSHADE pools are built.
-    fn warn_if_threads_exceed_scaling_knee(
-        strategy_settings: &farukon_core::settings::StrategySettings,
-        optimizer_kind: &str,
-        bars_per_candidate: usize,
-    ) {
-        /// Measured scaling knee: runtime stops scaling beyond ~8 threads on high
-        /// bar-count datasets (1-3 minute timeframes).
-        const SCALING_KNEE_THREADS: usize = 8;
-        /// Transparent heuristic for "high bar-count dataset": the number of bars of the
-        /// combined timeline every candidate backtests over.
-        const HIGH_BAR_COUNT: usize = 100_000;
-
-        let threads = strategy_settings.threads.unwrap_or(num_cpus::get());
-
-        if threads <= SCALING_KNEE_THREADS || bars_per_candidate < HIGH_BAR_COUNT {
-            return;
-        }
-
-        eprintln!("================================================================");
-        eprintln!(
-            "WARNING: {} runs with threads = {}, above the measured scaling knee (~{}).",
-            optimizer_kind, threads, SCALING_KNEE_THREADS
-        );
-        eprintln!(
-            "Heuristic: {} bars per candidate (timeframe \"{}\", threshold >= {} bars) = high bar-count dataset.",
-            bars_per_candidate, strategy_settings.data.timeframe, HIGH_BAR_COUNT
-        );
-        eprintln!("Measured result (thread-scaling review 2026-09-29): backtest runtime");
-        eprintln!("stops scaling at ~8 threads on high bar-count data and may DEGRADE");
-        eprintln!("above it, because the per-candidate memory footprint saturates memory");
-        eprintln!("bandwidth/cache. Consider fewer threads or the \"arc\" storage mode.");
-        eprintln!(
-            "The run continues with the configured {} threads - no cap is applied.",
-            threads
-        );
-        eprintln!("================================================================");
-    }
-
     /// Executes a Grid Search optimization.
     /// Evaluates all parameter combinations in parallel using Rayon.
     /// Each combination triggers a full backtest run.
@@ -151,14 +101,6 @@ impl OptimizationRunner {
         let threads = self.strategy_settings.threads.unwrap_or(num_cpus::get());
         let global_data_mode = self.common_settings.global_data_storage_mode.clone();
         let mode = self.common_settings.mode.clone();
-
-        // Guidance only: warns when the configured thread count is above the measured
-        // scaling knee for this dataset. The run continues unchanged (no cap).
-        Self::warn_if_threads_exceed_scaling_knee(
-            &self.strategy_settings,
-            "Grid Search",
-            global_data_store.get_combined_timeline().len(),
-        );
 
         if mode == "Debug" {
             println!("Starting grid search optimization:");
@@ -446,14 +388,6 @@ impl OptimizationRunner {
         let strategy_instruments_info = self.strategy_instruments_info.clone();
         let ga_config_closure = ga_config.clone();
 
-        // Guidance only: warns when the configured thread count is above the measured
-        // scaling knee for this dataset. The run continues unchanged (no cap).
-        Self::warn_if_threads_exceed_scaling_knee(
-            &self.strategy_settings,
-            "Genetic Algorithm",
-            global_data_store.get_combined_timeline().len(),
-        );
-
         let all_ga_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_ga_results_clone = std::sync::Arc::clone(&all_ga_results_shared);
 
@@ -642,14 +576,6 @@ impl OptimizationRunner {
         let strategy_settings = self.strategy_settings.clone();
         let strategy_instruments_info = self.strategy_instruments_info.clone();
         let lshade_config_closure = lshade_config.clone();
-
-        // Guidance only: warns when the configured thread count is above the measured
-        // scaling knee for this dataset. The run continues unchanged (no cap).
-        Self::warn_if_threads_exceed_scaling_knee(
-            &self.strategy_settings,
-            "LSHADE-RSP",
-            global_data_store.get_combined_timeline().len(),
-        );
 
         let all_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_results_clone = std::sync::Arc::clone(&all_results_shared);

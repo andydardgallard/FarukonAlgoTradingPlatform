@@ -319,7 +319,6 @@ All optimizers write the evaluated parameter sets and their metrics to `optimiza
 ### Runtime Warnings and Progress Output
 
 *   **Deep data storage warning:** when `common.global_data_storage_mode` is `"deep"`, the process prints a one-time `WARNING: global_data_storage_mode = "deep"` block at startup (once per process, never per candidate) explaining that every candidate deep-clones the dataset and recommending `"arc"`. The run continues.
-*   **Thread-scaling knee warning:** Grid Search, Genetic Algorithm, and LSHADE-RSP each print a one-time warning when the configured `threads` exceed 8 **and** the combined timeline reaches 100 000 bars per candidate (a "high bar-count dataset"). The warning states the measured scaling knee (~8 threads on 1-3 minute timeframes, where runtime stops improving and may degrade); it is guidance only — **no cap is applied**, the run continues with the configured thread count.
 *   **Per-candidate progress output:** every candidate prints two lines — `# N from M <params>` at start and `# N from M is done in X seconds` (with the fitness value for GA/LSHADE) on completion — so the whole batch is visible live in stdout.
 
 ---
@@ -1200,7 +1199,7 @@ benchmarks with exact business-metric parity.
 
 *   **Zero-Copy Data:** Using FlatBuffers with `mmap` is crucial for performance.
 *   **SIMD:** Performance metrics and some indicators leverage SIMD for speed.
-*   **Parallelism:** Grid Search, Genetic Algorithm, and LSHADE-RSP run evaluations in parallel using Rayon. Configure `threads` in your strategy settings (see the thread-scaling knee warning in [§7](#7-optimization)).
+*   **Parallelism:** Grid Search, Genetic Algorithm, and LSHADE-RSP run evaluations in parallel using Rayon. Configure `threads` in your strategy settings. Measured on high bar-count data (1-minute timeframe, ~2.2M bars per candidate, v3.0.0): 16 threads → 7202 s, 64 threads → 4615 s for the same 93-candidate grid — scaling is positive but sublinear (more threads still help, with diminishing per-thread efficiency).
 *   **Allocator:** the host binary `Farukon_2` and the strategy library both register `mimalloc` as their global allocator (rayon-parallel backtesting churns many small allocations per candidate, where the system allocator's locks become the bottleneck). The two sides keep **separate** allocators, which is why no heap object ever crosses the FFI boundary — signals are marshalled as plain arguments and the host allocates the event.
 *   **Per-candidate hot path:** the FFI entry points (`calculate_signals`) and the symbol-list C buffers are resolved/built **once per strategy instance**, and immutable instrument metadata (expiration/trade-from dates) is parsed once at strategy creation; neither is repeated per bar.
 *   **Dynamic Loading:** Allows strategy hot-swapping without recompiling the core engine. Only libraries built against the current strategy ABI may be loaded (see [§8](#8-extending-with-strategies)).
