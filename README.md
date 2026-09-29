@@ -19,6 +19,20 @@ The platform supports dynamic strategy loading via `.dylib`/`.so` libraries, gri
 * ✅ **Margin & Risk Management**: Automatic position sizing, margin call detection, and forced liquidation.
 * ✅ **JSON Configuration**: All settings are externally configurable — ideal for automated experimentation.
 
+## 🎯 Design Philosophy: Fast & Event-Driven
+
+1. **Event-driven correctness model.** The engine makes a single FIFO pass over a unified,
+   pre-resampled timeline: a new bar on any symbol is a MARKET event that triggers the
+   strategy's `calculate_signals`, then SIGNAL → ORDER → FILL → portfolio update
+   (`Farukon_2/src/backtest.rs`). Strategies are bar-event handlers: they see every bar of
+   every symbol in order and react to any instrument at any moment. This model is fixed —
+   changes must preserve event semantics.
+2. **Speed as a constraint, not an afterthought.** Zero-copy SOA data access, SIMD metrics,
+   per-candidate isolation, rayon-parallel optimizers. The per-bar hot path must stay
+   allocation-light (no per-bar heap churn, no repeated FFI symbol resolution, no re-parsing
+   of immutable metadata). Performance work must never convert the event model into a
+   batch/vectorized one — optimize inside the event semantics, not around them.
+
 ## 📦 Project Structure
 ```
 FarukonAlgoTradingPlatform/

@@ -36,6 +36,13 @@ The **Farukon Algo Trading Platform** is a high-performance, event-driven framew
 
 ## 2. Architecture
 
+> **Design philosophy: fast and event-driven.** One FIFO pass over a unified, pre-resampled
+> timeline; a new bar on any symbol triggers the strategy (`calculate_signals`), then
+> SIGNAL → ORDER → FILL → portfolio update. Strategies are bar-event handlers, not batch
+> transforms. Speed is a first-class constraint: zero-copy SOA data, SIMD metrics,
+> per-candidate isolation, parallel optimizers — but the per-bar hot path must stay
+> allocation-light, and performance work must never sacrifice event semantics.
+
 The platform is structured as a Rust workspace containing several crates:
 
 *   **`Farukon_2_0`:** The main application executable. Orchestrates the backtesting process, handles command-line arguments, and manages the lifecycle of other components. It receives events from a central `GlobalDataStore` via a shared event channel.

@@ -1,4 +1,4 @@
-<!-- code-factory-fingerprint: c26a494011bd0133bc4e9b0535304be44fac242007d0f62daf6f90e7578d5608 content: 1b9b676b99294d714cbcc1bef87dc7d606240f814b2b6b6b480cf5eeb36341e6 -->
+<!-- code-factory-fingerprint: 780a4c4023c17bc3e9e031626c9bc12761bd382f2c9995e0f64892f6585eaeb7 content: c9ff3d0ce10d2a584b5d3082bb2b800f354244d743c2b94fe024e721d385094e -->
 # Farukon
 
 ## Project Overview
@@ -23,6 +23,22 @@ The repository is a Rust workspace plus Python tooling. There is no CI configura
 
 ## Architecture Overview
 
+**Design philosophy: fast, event-driven.**
+
+- **Event-driven core** (`Farukon_2/src/backtest.rs:182-190`): one FIFO pass over a unified,
+  pre-resampled timeline. A new bar on any symbol is a MARKET event that triggers the strategy
+  (`calculate_signals` across the FFI boundary), then SIGNAL → ORDER → FILL → portfolio update.
+  Strategies are bar-event handlers, not batch/vectorized transforms. This model is fixed:
+  any change must preserve event semantics and per-bar trigger behavior.
+- **Speed is a first-class constraint**: market data is loaded once per process into SOA arrays
+  and accessed zero-copy in `arc` mode; indicators and performance metrics use SIMD; optimizer
+  candidates run in dedicated rayon thread pools. The hot path (per bar, per candidate) must
+  stay allocation-light: no per-bar heap churn, no repeated FFI symbol resolution, no
+  re-parsing of immutable metadata. (Current violations and the fix task: see Known
+  Constraints & Limitations.)
+- **Isolation per candidate**: every backtest candidate gets its own strategy instance, data
+  handler, portfolio and execution handler; shared mutable state (fitness caches, result
+  sinks) is explicit and lock-guarded.
 - `Farukon_2` (binary, entry point `Farukon_2/src/main.rs:17`) — CLI (clap), backtest engine,
   portfolio handling, execution, strategy loader, data engine, and the optimizer orchestration
   layer (`Farukon_2/src/optimizers.rs`).
