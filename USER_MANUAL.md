@@ -1081,10 +1081,15 @@ By focusing primarily on the `calculate_signals` function, you can implement the
 
 ### 8.4 `SYMI_Ch_SMA_up_lmt` Strategy
 
-`SYMI_Ch_SMA_up_lmt` (source: `strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs`) is a channel-based
-strategy. It builds a price channel from moving averages of highs and lows, computes the channel
-width, and enters LONG/SHORT positions when the current bar breaks the channel boundary, the
-channel width is below the `width_channel` threshold, and the SMA confirms the direction.
+`SYMI_Ch_SMA_up_lmt` is a channel-based strategy. It builds a price channel from moving averages
+of highs and lows, computes the channel width, and enters LONG/SHORT positions when the current
+bar breaks the channel boundary, the channel width is below the `width_channel` threshold, and
+the SMA confirms the direction.
+
+The strategy source does not live in this repository — it is part of the measurement test stand
+(`../Strategies/time_tests/SYMI_Ch_SMA_up_lmt.rs`, together with its variant
+`SYMI_Ch_prct_SMA_up_lmt.rs`). The in-repo reference strategy is the MA-cross sample in
+`strategy_lib/src/lib.rs`, which follows the same structure and the current ABI.
 
 #### 8.4.1 Strategy Parameters
 
@@ -1118,35 +1123,59 @@ scale-independent by design.
 
 #### 8.4.3 Building the Strategy Library
 
-`SYMI_Ch_SMA_up_lmt` is not part of the default workspace build; compile it manually into a
-`cdylib` after building the workspace release:
+`SYMI_Ch_SMA_up_lmt` is not part of the workspace build. It is compiled through a small `cdylib`
+crate scaffold (the test stand keeps one per strategy at
+`../Strategies/time_tests/dll_build/<strategy_name>/`):
 
-```sh
-cargo build --release
-rustc --edition 2024 --crate-type cdylib \
-  --extern farukon_core=target/release/libfarukon_core.rlib \
-  --extern anyhow=$(ls target/release/deps/libanyhow-*.rlib | head -1) \
-  --extern chrono=$(ls target/release/deps/libchrono-*.rlib | head -1) \
-  -L dependency=target/release/deps \
-  -o target/release/SYMI_Ch_SMA_Up.so \
-  strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs
+```toml
+[package]
+name = "SYMI_Ch_SMA_up_lmt"
+version = "3.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0.99"
+serde_json = "1.0.143"
+farukon_core = { path = "<path-to-repo>/farukon_core" }
+chrono = { version = "0.4.41", features = ["serde"] }
+mimalloc = "0.1.52"
 ```
 
-Then point `strategy_path` in the portfolio config to `target/release/SYMI_Ch_SMA_Up.so`.
+```rust
+// src/lib.rs — build wrapper around the strategy source.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#### 8.4.4 Automated Business Test
-
-`python/biztest_symi.py` verifies the strategy works on both instrument types:
-
-1. Rebuilds the strategy library.
-2. Runs the CNY grid search (`width_channel` 0.05..1.505) and asserts that more than 2 unique
-   result variants are produced (different thresholds → different outcomes).
-3. Runs the Si grid search and asserts results are identical to the pre-fix baseline
-   (`.code-factory/logs/pre-fix/Si_before_fix.csv`).
+include!("../../../SYMI_Ch_SMA_up_lmt.rs");
+```
 
 ```sh
-python3 python/biztest_symi.py
+cargo build --release   # produces target/release/SYMI_Ch_SMA_up_lmt.dll (or .so/.dylib)
 ```
+
+Two requirements are mandatory since v3.0.0:
+
+- **mimalloc as the dll's global allocator** — the host binary allocates with mimalloc, and the
+  allocator kind must match on both sides of the FFI boundary.
+- **The current strategy ABI** — `create_strategy` takes the emission callback pair
+  (`emitter_ctx`, `emit_signal_cb`) and the strategy stores `SignalEmitter { ctx, cb }`
+  (see §8.1 and `farukon_core/src/event.rs`). A dll built against an older `farukon_core` will
+  crash the new binary.
+
+Then point `strategy_path` in the portfolio config at the produced library file.
+
+#### 8.4.4 Validation
+
+There is no automated business test for this strategy inside the repository. It is validated
+through the measurement test stand: the optimizer configs under
+`../Strategies/time_tests/portfolios/` (e.g. `SYMI_Ch_SMA_up_lmt_mpr_optimize_arc_2min_threads_*.json`
+and the `SYMI_Ch_prct_SMA_up_lmt_..._1min_...` series) run full grid searches on real Si data, and
+the produced `optimization_results.csv` can be compared against earlier runs for metric parity.
+The v3.0.0 release was validated this way on the 1-minute (16 threads) and 2-minute (32 threads)
+benchmarks with exact business-metric parity.
 
 ---
 
