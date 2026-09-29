@@ -16,12 +16,84 @@ use crate::performance;
 use crate::settings;
 use crate::utils;
 
+/// Time-based throttle for the per-candidate progress prints.
+///
+/// Every candidate used to print two lines ("# N from M <params>" and
+/// "# N from M is done in X seconds"), which floods stdout on large runs. One
+/// `ProgressThrottle` is shared through an `Arc` by all rayon workers of an evaluation
+/// batch, so at most one candidate per `INTERVAL_MS` prints. The candidate with the
+/// highest 1-based count (the last one of the batch) always prints, so the final state
+/// stays visible. The printed text itself is unchanged.
+#[derive(Debug)]
+pub struct ProgressThrottle {
+    /// Reference point for the monotonic time source.
+    start: std::time::Instant,
+    /// Milliseconds since `start` at which the last candidate claimed the print slot.
+    last_print_ms: std::sync::atomic::AtomicU64,
+}
+
+impl ProgressThrottle {
+    /// Minimum time between two printing candidates.
+    const INTERVAL_MS: u64 = 2_000;
+
+    /// Creates a throttle whose time window starts now.
+    pub fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            last_print_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Returns `true` if the candidate with the 1-based `current_count` (out of `total`)
+    /// should print its progress lines.
+    ///
+    /// Thread-safe: the print slot is claimed with a compare-and-swap on the shared
+    /// timestamp, so concurrent workers do not all print when a window elapses. The
+    /// batch's last candidate always returns `true`.
+    pub fn claim(&self, current_count: usize, total: usize) -> bool {
+        if current_count >= total {
+            return true;
+        }
+
+        let now_ms = self.start.elapsed().as_millis() as u64;
+        let mut last_ms = self
+            .last_print_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            if now_ms.saturating_sub(last_ms) < Self::INTERVAL_MS {
+                return false;
+            }
+            match self.last_print_ms.compare_exchange_weak(
+                last_ms,
+                now_ms,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => last_ms = actual,
+            }
+        }
+    }
+}
+
+impl Default for ProgressThrottle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Represents the result of evaluating a single parameter set.
 /// Contains the parameters used and the resulting performance metrics.
 #[derive(Debug, Clone)]
 pub struct OptimizationResult {
     parameters: ParameterSet,
     results: performance::PerformanceMetrics,
+}
+
+impl Default for OptimizationResult {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OptimizationResult {
@@ -69,6 +141,12 @@ pub struct ParameterSet {
     pos_sizer_additional_params: Vec<(String, serde_json::Value)>,
     /// Slippage value to apply during execution (percentage of price).
     slippage: f64,
+}
+
+impl Default for ParameterSet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ParameterSet {
@@ -167,7 +245,7 @@ impl ParameterSet {
                 .map(|(k, v)| format!("'{}': {}", k, v))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}", params_str)
+            params_str.to_string()
         };
 
         let pos_sizer_str = format!(
@@ -231,6 +309,12 @@ pub struct OptimizationConfig {
     pos_sizer_name: String,
     /// Maps position sizer additional params
     pos_sizer_additional_params: std::collections::HashMap<String, settings::ParamSpec>,
+}
+
+impl Default for OptimizationConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OptimizationConfig {
@@ -313,6 +397,7 @@ impl OptimizationConfig {
     ///
     /// Each `ParameterSet` contains:
     /// - Strategy parameters (e.g., `short_window`, `long_window`).
+    ///
     /// An iterator that yields `ParameterSet` objects.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
         let strategy_params_names: Vec<String> =
@@ -407,6 +492,12 @@ pub struct GridSearchOptimizer {
     config: OptimizationConfig,
 }
 
+impl Default for GridSearchOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GridSearchOptimizer {
     /// Creates a new GridSearchOptimizer.
     pub fn new() -> Self {
@@ -486,11 +577,11 @@ impl GridSearchOptimizer {
             return anyhow::Ok(());
         }
 
-        if total_combinations > std::usize::MAX as u128 {
+        if total_combinations > usize::MAX as u128 {
             anyhow::bail!(
                 "Total combinations ({}) exceed maximum possible value ({}).",
                 total_combinations,
-                std::usize::MAX
+                usize::MAX
             );
         }
 
@@ -501,7 +592,7 @@ impl GridSearchOptimizer {
             ParameterSet::new().aproximate_size_in_bytes()
         };
         let total_combinations_u64 = total_combinations as u64;
-        let estimated_bytes = total_combinations_u64 as u64 * aprox_size_per_set as u64;
+        let estimated_bytes = total_combinations_u64 * aprox_size_per_set as u64;
 
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
@@ -567,6 +658,12 @@ pub struct GAStatsPerGeneration {
     generation: usize,
 }
 
+impl Default for GAStatsPerGeneration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GAStatsPerGeneration {
     /// Creates a new, empty GAStatsPerGeneration.
     pub fn new() -> Self {
@@ -630,6 +727,12 @@ pub struct GAConfig {
     std_stop: f64,
 }
 
+impl Default for GAConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GAConfig {
     /// Creates a new, empty GAConfig.
     pub fn new() -> Self {
@@ -676,6 +779,12 @@ pub struct GeneticAlgorythm {
     optimization_config: OptimizationConfig,
     chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
     populations: Vec<Vec<ParameterSet>>,
+}
+
+impl Default for GeneticAlgorythm {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GeneticAlgorythm {
@@ -779,6 +888,8 @@ impl GeneticAlgorythm {
 
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let total_evaluations = population.len();
+        // Throttles the two per-candidate prints of this generation (see ProgressThrottle).
+        let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -792,13 +903,18 @@ impl GeneticAlgorythm {
                     let start_time = std::time::Instant::now();
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    // Claimed once per candidate so its "start" and "is done" lines stay
+                    // together; at most one candidate per 2 seconds prints.
+                    let print_progress = progress_throttle.claim(current_count, total_evaluations);
 
-                    println!(
-                        "# {} from {} {}",
-                        current_count,
-                        total_evaluations,
-                        params.format_for_display()
-                    );
+                    if print_progress {
+                        println!(
+                            "# {} from {} {}",
+                            current_count,
+                            total_evaluations,
+                            params.format_for_display()
+                        );
+                    }
 
                     let hash = hash_parameter_set(params);
 
@@ -808,13 +924,15 @@ impl GeneticAlgorythm {
                     };
 
                     let fitness = if let Some(cahed_f) = cached_fitness {
-                        println!(
-                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                            current_count,
-                            total_evaluations,
-                            start_time.elapsed().as_secs_f64(),
-                            cahed_f
-                        );
+                        if print_progress {
+                            println!(
+                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                                current_count,
+                                total_evaluations,
+                                start_time.elapsed().as_secs_f64(),
+                                cahed_f
+                            );
+                        }
                         cahed_f
                     } else {
                         let calculated_f = evaluate(params);
@@ -822,13 +940,15 @@ impl GeneticAlgorythm {
                         bank.insert(hash, calculated_f);
                         drop(bank);
 
-                        println!(
-                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                            current_count,
-                            total_evaluations,
-                            start_time.elapsed().as_secs_f64(),
-                            calculated_f
-                        );
+                        if print_progress {
+                            println!(
+                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                                current_count,
+                                total_evaluations,
+                                start_time.elapsed().as_secs_f64(),
+                                calculated_f
+                            );
+                        }
                         calculated_f
                     };
                     (params.clone(), fitness)
@@ -1236,8 +1356,8 @@ impl GeneticAlgorythm {
             .elite_size
             .min(self.ga_config.population_size);
         let mut elite = Vec::with_capacity(elite_count);
-        for i in 0..elite_count {
-            let elite_individ = sorted_results[i].0.clone();
+        for sorted_result in &sorted_results[..elite_count] {
+            let elite_individ = sorted_result.0.clone();
             next_gen.push(elite_individ.clone());
             elite.push(elite_individ);
         }
@@ -1269,7 +1389,7 @@ impl GeneticAlgorythm {
         // 3. tournament selection
         let remaining_slots = self.ga_config.population_size - next_gen.len();
         let elite_set: std::collections::HashSet<u64> =
-            elite.iter().map(|p| hash_parameter_set(p)).collect();
+            elite.iter().map(hash_parameter_set).collect();
         let mut seen_hashes = std::collections::HashSet::new();
         let mut uniqe_other_results = Vec::new();
         for (params, fitness) in &sorted_results {
@@ -1314,13 +1434,13 @@ impl GeneticAlgorythm {
             let parent_b = match self.ga_config.fitness_direction.as_str() {
                 "max" => tournament_contestants
                     .iter()
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)),
                 "min" => tournament_contestants
                     .iter()
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+                    .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)),
                 _ => tournament_contestants
                     .iter()
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)),
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)),
             };
             if let Some((params_b, _)) = parent_b {
                 let child = self.crossover_mutation(&elite_parent, params_b);
@@ -1363,7 +1483,6 @@ impl GeneticAlgorythm {
         let file_exist = path.exists();
 
         let mut file = std::fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .create(true)
             .open(&filename)?;
@@ -1380,7 +1499,7 @@ impl GeneticAlgorythm {
             for header in headers {
                 write!(file, "{}", header)?;
             }
-            let _ = writeln!(file, "");
+            let _ = writeln!(file);
         }
 
         for stat in stats {
@@ -1599,6 +1718,12 @@ pub struct LshadeRspConfig {
     fitness_direction: String,
 }
 
+impl Default for LshadeRspConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LshadeRspConfig {
     pub fn new() -> Self {
         Self {
@@ -1676,6 +1801,12 @@ pub struct LshadeRspOptimizer {
     memory_f: Vec<f64>,
     memory_index: usize,
     eval_count: usize,
+}
+
+impl Default for LshadeRspOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LshadeRspOptimizer {
@@ -2174,6 +2305,8 @@ impl LshadeRspOptimizer {
             .num_threads(threads)
             .build()?;
         let chromosome_bank = self.chromosome_bank.clone();
+        // Throttles the two per-candidate prints of the initial batch.
+        let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
         self.fitness_values = pool.install(|| {
             self.population
                 .par_iter()
@@ -2181,20 +2314,25 @@ impl LshadeRspOptimizer {
                     let start_time = std::time::Instant::now();
                     let current_count =
                         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    println!(
-                        "# {} from {} {}",
-                        current_count,
-                        batch_size,
-                        ps.format_for_display()
-                    );
+                    let print_progress = progress_throttle.claim(current_count, batch_size);
+                    if print_progress {
+                        println!(
+                            "# {} from {} {}",
+                            current_count,
+                            batch_size,
+                            ps.format_for_display()
+                        );
+                    }
                     let fitness = Self::evaluate_cached(ps, &chromosome_bank, &evaluate);
-                    println!(
-                        "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                        current_count,
-                        batch_size,
-                        start_time.elapsed().as_secs_f64(),
-                        fitness
-                    );
+                    if print_progress {
+                        println!(
+                            "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                            current_count,
+                            batch_size,
+                            start_time.elapsed().as_secs_f64(),
+                            fitness
+                        );
+                    }
                     fitness
                 })
                 .collect()
@@ -2235,6 +2373,8 @@ impl LshadeRspOptimizer {
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let batch_size = pop_size_before;
             let chromosome_bank = self.chromosome_bank.clone();
+            // Throttles the two per-candidate prints of this iteration's batch.
+            let progress_throttle = std::sync::Arc::new(ProgressThrottle::new());
             let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> =
                 pool.install(|| {
                     (0..pop_size_before)
@@ -2267,21 +2407,26 @@ impl LshadeRspOptimizer {
                             let start_time = std::time::Instant::now();
                             let current_count =
                                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                            println!(
-                                "# {} from {} {}",
-                                current_count,
-                                batch_size,
-                                trial.format_for_display()
-                            );
+                            let print_progress = progress_throttle.claim(current_count, batch_size);
+                            if print_progress {
+                                println!(
+                                    "# {} from {} {}",
+                                    current_count,
+                                    batch_size,
+                                    trial.format_for_display()
+                                );
+                            }
                             let trial_fitness =
                                 Self::evaluate_cached(&trial, &chromosome_bank, &evaluate);
-                            println!(
-                                "# {} from {} is done in {:.3} seconds, fitnesss= {}",
-                                current_count,
-                                batch_size,
-                                start_time.elapsed().as_secs_f64(),
-                                trial_fitness
-                            );
+                            if print_progress {
+                                println!(
+                                    "# {} from {} is done in {:.3} seconds, fitnesss= {}",
+                                    current_count,
+                                    batch_size,
+                                    start_time.elapsed().as_secs_f64(),
+                                    trial_fitness
+                                );
+                            }
 
                             let ordering = trial_fitness.partial_cmp(&self.fitness_values[i]);
                             let is_better = if max_is_best {
@@ -2514,7 +2659,7 @@ mod lshade_tests {
             // "param_a" in range [0, 10]
             let a_val = param_a.1.as_f64().unwrap();
             assert!(
-                a_val >= 0.0 && a_val <= 10.0,
+                (0.0..=10.0).contains(&a_val),
                 "param_a value {} out of [0, 10]",
                 a_val
             );

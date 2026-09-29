@@ -10,7 +10,7 @@
 //! Currently supported position sizers:
 //! - `"1"`: Fixed-size lot (default: 1 contract).
 //! - `"mpr"`: Maximum Percent Risk — sizes positions so that the potential loss
-//!            (including commissions) does not exceed a user-defined percentage of capital.
+//!   (including commissions) does not exceed a user-defined percentage of capital.
 //! - `"poe"`: (Planned) Percent of Equity — sizes positions as a percentage of total equity.
 //!
 //! Commission handling is exchange-specific. As of now, only FORTS exchange commissions
@@ -19,8 +19,8 @@
 
 use crate::commission_plans;
 use crate::instruments_info;
-use crate::settings;
 use crate::portfolio;
+use crate::settings;
 
 /// Calculates the position size using the "MPR" (Maximum Possible Risk) method.
 /// # Arguments
@@ -34,7 +34,7 @@ use crate::portfolio;
 /// * An optional `f64` representing the quantity to trade.
 fn mpr(
     mode: &String,
-    holdings: &Vec<portfolio::HoldingSnapshot>,
+    holdings: &[portfolio::HoldingSnapshot],
     entry_price: f64,
     exit_price: f64,
     strategy_settings: &settings::StrategySettings,
@@ -75,7 +75,10 @@ fn mpr(
         _ => None,
     };
 
-    let current_capital = holdings.last().expect("No data in latest HoldingSnapshot").capital;
+    let current_capital = holdings
+        .last()
+        .expect("No data in latest HoldingSnapshot")
+        .capital;
     let risk_per_deal_in_points = (exit_price - entry_price).abs();
     let point_value = ((strategy_instruments_info_for_symbol.step_price
         / strategy_instruments_info_for_symbol.step)
@@ -102,7 +105,7 @@ fn mpr(
     Some(
         ((max_percent_risk / risk_per_deal_in_value_gross) * 10.0_f64.powi(points_from_zero))
             .floor()
-            / 10.0_f64.powi(points_from_zero)
+            / 10.0_f64.powi(points_from_zero),
     )
 }
 
@@ -145,7 +148,7 @@ fn plain_pos_sizer(
 /// # Arguments
 /// * `mode` - Operational mode (Debug, Optimize, etc.).
 /// * `pnl` - Current pnl of strategy.
-/// 
+///
 /// * `entry_price` - Entry price for the trade.
 /// * `exit_price` - Exit price for the trade.
 /// * `strategy_settings` - Strategy settings.
@@ -154,7 +157,7 @@ fn plain_pos_sizer(
 /// * An optional `f64` representing the quantity to trade.
 fn fixed_ratio(
     mode: &String,
-    holdings: &Vec<portfolio::HoldingSnapshot>,
+    holdings: &[portfolio::HoldingSnapshot],
     strategy_settings: &settings::StrategySettings,
     strategy_instruments_info_for_symbol: &instruments_info::InstrumentInfo,
 ) -> Option<f64> {
@@ -174,7 +177,10 @@ fn fixed_ratio(
     };
 
     let initial_capital = holdings.first().expect("No data in Holdings").capital;
-    let current_capital = holdings.last().expect("No data in latest HoldingSnapshot").capital;
+    let current_capital = holdings
+        .last()
+        .expect("No data in latest HoldingSnapshot")
+        .capital;
     let pnl = current_capital - initial_capital;
 
     let points_from_zero = strategy_instruments_info_for_symbol.contract_precision as i32;
@@ -184,20 +190,15 @@ fn fixed_ratio(
     if mode == "Debug" {
         println!(
             "initial_capital: {}, current_capital: {}, common_pnl: {}, fixed_ratio: {}",
-            initial_capital,
-            current_capital,
-            pnl,
-            fixed_ratio
+            initial_capital, current_capital, pnl, fixed_ratio
         );
     }
 
-    Some(
-        if pnl <= 0.0 {
-            1.0
-        } else {
-            (ratio * 10.0_f64.powi(points_from_zero)).floor() / 10.0_f64.powi(points_from_zero)
-        }
-    )
+    Some(if pnl <= 0.0 {
+        1.0
+    } else {
+        (ratio * 10.0_f64.powi(points_from_zero)).floor() / 10.0_f64.powi(points_from_zero)
+    })
 }
 
 /// Calculates the position size based on the strategy settings.
@@ -212,7 +213,7 @@ fn fixed_ratio(
 /// * An optional `f64` representing the quantity to trade.
 pub fn get_pos_sizer_from_settings(
     mode: &String,
-    holdings: &Vec<portfolio::HoldingSnapshot>,
+    holdings: &[portfolio::HoldingSnapshot],
     entry_price: Option<f64>,
     exit_price: Option<f64>,
     strategy_settings: &settings::StrategySettings,
@@ -224,7 +225,7 @@ pub fn get_pos_sizer_from_settings(
     };
 
     if is_single_value {
-        let quantity = match strategy_settings.pos_sizer_params.pos_sizer_name.as_str() {
+        match strategy_settings.pos_sizer_params.pos_sizer_name.as_str() {
             "1" => plain_pos_sizer(
                 mode,
                 entry_price?,
@@ -243,13 +244,11 @@ pub fn get_pos_sizer_from_settings(
                 mode,
                 holdings,
                 strategy_settings,
-                strategy_instruments_info_for_symbol
+                strategy_instruments_info_for_symbol,
             ),
             "poe" => None, // TODO
             _ => None,
-        };
-
-        quantity
+        }
     } else {
         None
     }

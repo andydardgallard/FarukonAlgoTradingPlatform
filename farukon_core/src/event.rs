@@ -25,6 +25,12 @@ pub trait Event: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub struct MarketEvent;
 
+impl Default for MarketEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarketEvent {
     /// Creates a new MarketEvent.
     pub fn new() -> Self {
@@ -114,6 +120,132 @@ impl Event for SignalEvent {
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         None
     }
+}
+
+// --- SIGNAL EMISSION ACROSS THE FFI BOUNDARY ---
+
+/// Signature of the host-side signal emission callback.
+///
+/// A strategy shared library must neither allocate the event nor touch a channel endpoint: the host
+/// (`Farukon_2`) and the library are separate compilation units with their own allocators (the host
+/// links mimalloc), so any heap object or `mpsc::Sender` value crossing the boundary would be freed
+/// or used through the wrong allocator. `create_strategy` therefore receives a [`SignalEmitter`]
+/// (opaque host context + this callback), and every `SIGNAL` is marshalled into these plain,
+/// copyable arguments and executed by the host, which allocates the `SignalEvent` itself.
+///
+/// Arguments:
+/// * `ctx` - opaque host value, handed back unchanged (the host keeps its event `Sender` there).
+/// * `datetime_ns` - bar timestamp as nanoseconds since the Unix epoch ([`datetime_to_nanos`]).
+/// * `symbol`, `signal_name`, `order_kind` - NUL-terminated UTF-8 C strings, valid for the call.
+/// * `quantity`, `limit_price` - `f64::NAN` encodes `None` ([`optional_to_nan`]).
+///
+/// Returns 0 on success, a non-zero error code on failure (mapped back to an `anyhow::Error`).
+pub type EmitSignalFn = unsafe extern "C" fn(
+    ctx: *const std::ffi::c_void,
+    datetime_ns: i64,
+    symbol: *const std::os::raw::c_char,
+    signal_name: *const std::os::raw::c_char,
+    order_kind: *const std::os::raw::c_char,
+    quantity: f64,
+    limit_price: f64,
+) -> i32;
+
+/// The host's signal channel as seen from a strategy shared library.
+///
+/// Both fields belong to the host and are only borrowed here: `ctx` points at host state that stays
+/// alive for the whole strategy lifetime (see the `create_strategy` `# Safety` contract on both
+/// sides), and `cb` is the host callback. The library never allocates, clones or drops either.
+///
+/// The raw pointer keeps `SignalEmitter` neither `Send` nor `Sync` on purpose: it is only valid on
+/// the thread the host created the strategy on, and everything that stores it (the strategy struct,
+/// moved across threads as an opaque `*mut c_void`) needs no `Send`/`Sync` bound.
+#[derive(Clone, Copy)]
+pub struct SignalEmitter {
+    /// Opaque host context, passed back to `cb` unchanged.
+    pub ctx: *const std::ffi::c_void,
+    /// Host callback that turns these arguments into a host-allocated `SignalEvent`.
+    pub cb: EmitSignalFn,
+}
+
+impl SignalEmitter {
+    /// Emits one signal through the host callback.
+    ///
+    /// Converts the Rust-side values into the wire format described by [`EmitSignalFn`] (C strings
+    /// for the three text fields, nanoseconds for the timestamp, NaN for absent options) and maps a
+    /// non-zero return code to an `anyhow::Error`, preserving the error propagation the previous
+    /// channel-based implementation had.
+    pub fn emit(
+        &self,
+        datetime: chrono::DateTime<chrono::Utc>,
+        symbol: &str,
+        signal_name: &str,
+        order_kind: &str,
+        quantity: Option<f64>,
+        limit_price: Option<f64>,
+    ) -> anyhow::Result<()> {
+        let datetime_ns = datetime_to_nanos(datetime).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Bar datetime {} is outside the nanosecond range of the signal FFI",
+                datetime
+            )
+        })?;
+        // A string containing an interior NUL byte cannot be represented as a C string; the old
+        // implementation sent it into the channel, which would have produced a broken symbol anyway.
+        let symbol_c = std::ffi::CString::new(symbol)?;
+        let signal_name_c = std::ffi::CString::new(signal_name)?;
+        let order_kind_c = std::ffi::CString::new(order_kind)?;
+
+        // SAFETY: `self` was built by `create_strategy` from the host's own context/callback pair,
+        // so `ctx` is the live host context and `cb` a valid callback that the host keeps for the
+        // whole strategy lifetime (see the `create_strategy` `# Safety` sections on both sides).
+        // Each string pointer refers to a local `CString` that outlives the call, and the callback
+        // only reads all of its arguments.
+        let result = unsafe {
+            (self.cb)(
+                self.ctx,
+                datetime_ns,
+                symbol_c.as_ptr(),
+                signal_name_c.as_ptr(),
+                order_kind_c.as_ptr(),
+                optional_to_nan(quantity),
+                optional_to_nan(limit_price),
+            )
+        };
+
+        match result {
+            0 => anyhow::Ok(()),
+            code => Err(anyhow::anyhow!(
+                "Signal emission callback failed with code: {}",
+                code
+            )),
+        }
+    }
+}
+
+/// Encodes a UTC timestamp for the FFI as nanoseconds since the Unix epoch.
+///
+/// Returns `None` when the timestamp does not fit into `i64` nanoseconds (roughly 1677-2262), so
+/// callers can report an error instead of panicking across the FFI boundary.
+pub fn datetime_to_nanos(datetime: chrono::DateTime<chrono::Utc>) -> Option<i64> {
+    datetime.timestamp_nanos_opt()
+}
+
+/// Decodes the FFI wire format back into a `DateTime<Utc>`; exact inverse of [`datetime_to_nanos`].
+pub fn nanos_to_datetime(nanos: i64) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::from_timestamp(
+        nanos.div_euclid(1_000_000_000),
+        nanos.rem_euclid(1_000_000_000) as u32,
+    )
+}
+
+/// Encodes an optional `f64` for the FFI: `None` becomes NaN, the wire value for "absent".
+pub fn optional_to_nan(value: Option<f64>) -> f64 {
+    value.unwrap_or(f64::NAN)
+}
+
+/// Decodes [`optional_to_nan`]: NaN means `None`, every other value means `Some(value)`.
+pub fn nan_to_optional(value: f64) -> Option<f64> {
+    if value.is_nan() { None } else { Some(value) }
 }
 
 // --- ORDER EVENT ---
@@ -222,6 +354,9 @@ impl FillEvent {
     /// * `execution_price` - The execution price of the trade.
     /// * `commission` - The commission charged for the trade.
     /// * `signal_name` - The name of the signal that triggered the order.
+    // One parameter per `FillEvent` field: the constructor is a plain field-by-field initializer,
+    // so bundling arguments into a struct would only move the same data around.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         timeindex: chrono::DateTime<chrono::offset::Utc>,
         symbol: String,
@@ -260,5 +395,35 @@ impl Event for FillEvent {
 
     fn get_fill_event_params(&self) -> Option<&FillEvent> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The timestamp wire format must round-trip exactly, including pre-epoch and sub-second values.
+    #[test]
+    fn timestamp_nanos_roundtrip_is_exact() {
+        let datetimes = [
+            chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+            chrono::DateTime::from_timestamp(-1, 999_999_999).unwrap(),
+            chrono::DateTime::from_timestamp(4_102_444_800, 1).unwrap(),
+        ];
+
+        for datetime in datetimes {
+            let nanos = datetime_to_nanos(datetime).expect("timestamp fits into i64 nanoseconds");
+            assert_eq!(nanos_to_datetime(nanos), Some(datetime));
+        }
+    }
+
+    /// NaN is the wire encoding of `None`; all other values survive the round-trip unchanged.
+    #[test]
+    fn optional_f64_roundtrip_uses_nan_for_none() {
+        assert!(optional_to_nan(None).is_nan());
+        assert_eq!(nan_to_optional(optional_to_nan(None)), None);
+        assert_eq!(nan_to_optional(optional_to_nan(Some(0.0))), Some(0.0));
+        assert_eq!(nan_to_optional(optional_to_nan(Some(-1.5))), Some(-1.5));
     }
 }

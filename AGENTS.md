@@ -1,4 +1,5 @@
-<!-- code-factory-fingerprint: 780a4c4023c17bc3e9e031626c9bc12761bd382f2c9995e0f64892f6585eaeb7 content: c9ff3d0ce10d2a584b5d3082bb2b800f354244d743c2b94fe024e721d385094e -->
+<!-- code-factory-fingerprint: ea2581e9033f10980db6efadc37c5ce773f21e6617880dd7bbfe2e0f79947608 content: 8045b1bc684e9823c9cb93584427664d44af8426d5168b6671b1b51363621a09 -->
+<!-- code-factory-version: 3.0.0 -->
 # Farukon
 
 ## Project Overview
@@ -17,9 +18,14 @@ The repository is a Rust workspace plus Python tooling. There is no CI configura
 - Crates: `farukon_core` (library), `Farukon_2` (binary), `strategy_lib` (cdylib).
 - Key Rust dependencies: `rayon` (parallel evaluation), `rand`/`rand_distr`, `serde`/`serde_json`,
   `csv`, `clap`, `chrono`, `wide` (SIMD), `memmap2`, `flatbuffers`, `bincode`, `libloading`,
-  `num_cpus`, `anyhow`, `itertools`, `sysinfo`, `futures`.
+  `num_cpus`, `anyhow`, `itertools`, `sysinfo`, `futures`, `mimalloc` (global allocator, since v3.0.0).
 - **Python 3.12** tooling for visualization: `pandas`, `numpy`, `matplotlib` (not declared in any
   requirements file; a Windows venv is expected at `python/VM`).
+- **Versioning**: `VERSION` is the single source of truth (currently 3.0.0), mirrored into
+  `[workspace.package] version` in `Cargo.toml`.
+- **Windows/MSVC build note**: `~/.cargo/config.toml` sets `CXXFLAGS`/`CL` to `-utf-8` — required
+  because `libmimalloc-sys` emits absolute non-ASCII `#include` paths that cl.exe cannot read
+  under a non-UTF-8 code page.
 
 ## Architecture Overview
 
@@ -34,20 +40,30 @@ block from README after any regeneration.)
   any change must preserve event semantics and per-bar trigger behavior.
 - **Speed is a first-class constraint**: market data is loaded once per process into SOA arrays
   and accessed zero-copy in `arc` mode; indicators and performance metrics use SIMD; optimizer
-  candidates run in dedicated rayon thread pools. The hot path (per bar, per candidate) must
-  stay allocation-light: no per-bar heap churn, no repeated FFI symbol resolution, no
-  re-parsing of immutable metadata. (Current violations and the fix task: see Known
-  Constraints & Limitations.)
+  candidates run in dedicated rayon thread pools. The hot path (per bar, per candidate) is
+  allocation-light: the `calculate_signals` FFI symbol and the symbol-list CString buffers are
+  resolved/built once per strategy instance, snapshot HashMap clones are removed, parsed
+  instrument dates are memoized in the strategy struct, and the process runs on mimalloc.
+- **Allocator-safe strategy ABI (breaking, v3.0.0)**: strategies never allocate channel objects.
+  `create_strategy` receives an emission callback pair (`emitter_ctx`, `emit_signal_cb`) and
+  strategies store `farukon_core::event::SignalEmitter { ctx, cb }`; signals cross the boundary
+  as POD (nanosecond timestamp, C strings, f64 with NaN = None) and the HOST allocates the
+  `SignalEvent` box. Every strategy dll/source MUST be rebuilt against the new
+  `farukon_core` — old dlls crash the new binary (allocator mismatch). Reference
+  implementation: `strategy_lib/src/lib.rs`; contract: `farukon_core/src/event.rs` ("SIGNAL
+  EMISSION ACROSS THE FFI BOUNDARY").
 - **Isolation per candidate**: every backtest candidate gets its own strategy instance, data
   handler, portfolio and execution handler; shared mutable state (fitness caches, result
-  sinks) is explicit and lock-guarded.
-- `Farukon_2` (binary, entry point `Farukon_2/src/main.rs:17`) — CLI (clap), backtest engine,
+  sinks) is explicit and lock-guarded. `DynamicStratagy`'s `unsafe impl Send/Sync` is sound
+  only under this invariant (no concurrent calls on one instance) — documented in
+  `Farukon_2/src/strategy_loader.rs`.
+- `Farukon_2` (binary, entry point `Farukon_2/src/main.rs`) — CLI (clap), backtest engine,
   portfolio handling, execution, strategy loader, data engine, and the optimizer orchestration
   layer (`Farukon_2/src/optimizers.rs`).
 - `farukon_core` (library) — core algorithms and domain types. The most important file is
   `farukon_core/src/optimization.rs` (~2400 lines) which contains Grid Search, the Genetic
   Algorithm, and LSHADE-RSP. Other modules: `performance.rs` (metrics), `settings.rs`,
-  `pos_sizers.rs`, `indicators.rs`, `strategy.rs`, `data_handler.rs`, `utils.rs`.
+  `pos_sizers.rs`, `indicators.rs`, `strategy.rs`, `data_handler.rs`, `utils.rs`, `event.rs`.
 - `strategy_lib` (cdylib) — a sample MA-cross strategy compiled as a shared library and loaded at
   runtime via `libloading`.
 - Dispatch: `main.rs` maps `OptimizerType::{GridSearch, Genetic, LshadeRSP}` to
@@ -62,25 +78,26 @@ block from README after any regeneration.)
 - `python/` — visualization/analysis scripts (`optresults_handler.py`, `visual.py`,
   `plot_portfolio_*.py`).
 - `portfolios/` — portfolio JSON configs (e.g. `lshade_si_25_apr_dd.json`).
-- `Strategies/` — prebuilt strategy shared libraries (e.g. `MA_cross.dylib`).
+- `Strategies/` — prebuilt strategy shared libraries (e.g. `MA_cross.dylib` — **stale, pre-v3.0.0
+  ABI; source of truth is `Strategies/rs/MA_cross.rs`, nothing in this repo builds it**).
 - `Tickers_fbs/` — market data in flatbuffers/SOA format.
 - `commission_plans.json`, `instruments_info.json` — static config data.
 
 ## Key Configuration Files
 
-- `Cargo.toml` (workspace) and per-crate `Cargo.toml`.
+- `Cargo.toml` (workspace, `[workspace.package] version` = 3.0.0) and per-crate `Cargo.toml`.
+- `VERSION` — single source of truth for the version.
 - `portfolios/*.json` — portfolio/optimizer configuration. `exit_results_path` inside each config
   determines the `opt_results/<name>` output directory.
 - `commission_plans.json`, `instruments_info.json` — commission and instrument metadata.
-- `.gitignore` — excludes build artifacts and `opt_results/**`, `python/VM/**`, etc.
+- `.gitignore` — excludes build artifacts and `opt_results/**`, `python/VM/**`, `Cargo.lock`, etc.
 
 ## Build & Run Instructions
 
 ```bash
 cargo build --release
-cargo test --workspace           # 34 tests in farukon_core, 0 elsewhere
-                                 # (31 pass; 3 settings::tests fail on Windows —
-                                 #  pre-existing JSON-escape fixtures, see Known Constraints)
+cargo test --workspace           # 39 tests (38 farukon_core + 1 Farukon_2), all green on Windows
+cargo clippy --workspace         # 0 errors / 0 warnings (gate)
 cargo build -p strategy_lib --release   # build the sample strategy cdylib
 cargo run --release -- --config portfolios/lshade_si_25_apr_dd.json
 ```
@@ -94,8 +111,8 @@ drives Optimize / Visual / Portfolio behavior.
 - `farukon_core`: `wide, rand, csv, futures, rayon, anyhow, itertools, sysinfo, num_cpus,
   rand_distr, serde_json, chrono, serde`.
 - `Farukon_2`: `clap, csv, wide, rayon, memmap2, bincode, anyhow, libloading, num_cpus,
-  serde_json, flatbuffers, farukon_core, chrono, serde`.
-- `strategy_lib`: `anyhow, serde_json, farukon_core, chrono` (crate-type `cdylib`).
+  serde_json, flatbuffers, farukon_core, chrono, serde, mimalloc`.
+- `strategy_lib`: `anyhow, serde_json, farukon_core, chrono, mimalloc` (crate-type `cdylib`).
 - Python scripts read the CSVs produced by the Rust binary (`;`-delimited) using pandas.
 
 ## Known Constraints & Limitations
@@ -108,16 +125,19 @@ drives Optimize / Visual / Portfolio behavior.
   does not). The LSHADE bank is cleared per run via `BankClearGuard`; the GA bank lives as long as
   the optimizer instance.
 - `PerformanceMetrics` stores the timestamp of max drawdown: `Max_Drawdown_DateTime` is emitted to
-  `optimization_results.csv` and the portfolio CSV.
+  `optimization_results.csv` (all three optimizers, all metrics modes since v3.0.0) and the
+  portfolio CSV.
 - `python/optresults_handler.py` has a "compare two CSVs" mode (`-fc/--file_compare`, `-y set_cmp`);
   its Python dependencies (pandas, numpy, matplotlib) are still not declared in any requirements file.
-- No CI, no `tests/` directory; tests are `#[cfg(test)]` modules inside `farukon_core/src`.
-- 3 `settings::tests` fail deterministically on Windows (unescaped `temp_dir()` backslashes in
-  inline JSON fixtures, around `settings.rs:699-767`).
-- **Thread scaling (review run 20260929-b81785fd):** backtest runtime stops scaling beyond ~8
-  threads on 1-3 minute timeframes (4-5 minute timeframes scale to 64 threads). Root cause:
-  per-candidate O(bars) memory footprint (unbounded `equity_series` + 3-4 copies, per-bar HashMap
-  clones, per-bar FFI symbol lookup + CString rebuild, no mimalloc) saturates cache/memory
-  bandwidth and the system allocator; in-process heap fragmentation causes "first wave fast, later
-  waves stall" on 1m data. A fix task exists (`.code-factory/fix_task.yaml` in the factory run
-  artifacts); until then prefer `arc` storage mode and ≤8 threads on 1-3m timeframes.
+- No CI, no `tests/` directory; tests are `#[cfg(test)]` modules inside `farukon_core/src` and
+  `Farukon_2/src`.
+- **Thread scaling (fixed in v3.0.0, run 20260929-f24b5e53)**: runtime used to stop scaling beyond
+  ~8 threads on 1-3 minute timeframes. After the fix (FFI caching, snapshot-clone removal, mimalloc,
+  allocator-safe ABI, throttled prints): 1m arc 16 threads 44185 s → 7202 s (6.1x), 2m arc 32 threads
+  15316 s → 1264 s (12.1x), with exact business-metric parity. The startup warnings remain:
+  `global_data_storage_mode: deep` (per-candidate dataset clone — prefer `arc`) and threads above the
+  ~8-thread scaling knee on high bar-count datasets (advisory, no cap).
+- **Per-candidate stdout progress is throttled** (~every 2 s; the final candidate always prints), so
+  stdout no longer carries every candidate's timing line.
+- Every strategy dll must be built against the current `farukon_core` (v3.0.0 ABI). The repo's
+  `Strategies/MA_cross.dylib` is pre-v3.0.0 and incompatible.

@@ -78,6 +78,13 @@ impl data_handler::DataHandler for DataHandlerVTable {
 }
 
 impl DataHandlerVTable {
+    /// Reconstructs a `&DataHandlerVTable` from the raw parts of a `dyn DataHandler` trait object.
+    ///
+    /// # Safety
+    /// * `vtable` must point to a valid, live `DataHandlerVTable` (the vtable half of a
+    ///   `dyn DataHandler` trait object) that stays alive and unmodified for the returned `'a`.
+    /// * `_data` is the data half of that trait object; it is ignored because the vtable entries
+    ///   already receive the data pointer on every call.
     pub unsafe fn from_raw_parts<'a>(vtable: *const Self, _data: *const ()) -> &'a Self {
         unsafe { &*vtable }
     }

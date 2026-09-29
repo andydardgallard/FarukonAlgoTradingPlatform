@@ -1,4 +1,5 @@
 # 🚀 Farukon Algo Trading Platform
+<!-- code-factory-version: 3.0.0 -->
 
 **Ultra-Fast, Low-Latency, Event-Driven Algorithmic Trading Engine**
 

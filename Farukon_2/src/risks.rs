@@ -1,12 +1,10 @@
 //! Farukon_2_0/src/risks.rs
 
-use farukon_core;
-
 /// Checks if sufficient capital exists to execute a signal.
 /// Used during SIGNAL → ORDER conversion.
 /// # Arguments
 /// * `quantity` - The quantity to trade.
-/// * `latest_equity_point` - The latest equity point.
+/// * `latest_holdings` - The latest holdings snapshot (capital, cash, blocked).
 /// * `signal_event` - The signal event.
 /// * `instrument_info` - The instrument metadata.
 /// # Returns
@@ -46,7 +44,7 @@ pub fn margin_call_control_for_signal(
 /// Checks if current portfolio has sufficient equity to maintain open positions.
 /// Triggers margin call if capital < min_margin * total_position_value.
 /// # Arguments
-/// * `latest_equity_point` - The latest equity point.
+/// * `latest_holdings` - The latest holdings snapshot (capital, cash, blocked).
 /// * `current_positions` - The current positions.
 /// * `strategy_settings` - The strategy settings.
 /// * `strategy_instruments_info` - The instrument metadata.

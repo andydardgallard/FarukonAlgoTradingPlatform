@@ -178,15 +178,20 @@ mod tests {
     fn sma_on_fractional_values_keeps_precision() {
         // Prices of a "cheap" fractional instrument (e.g., CNY ~11.7).
         // sma takes the LAST n bars.
-        let prices = vec![11.70, 11.71, 11.72, 11.71, 11.70, 11.69, 11.70];
+        let prices = [11.70, 11.71, 11.72, 11.71, 11.70, 11.69, 11.70];
         let sma = sma(prices.iter(), 4).expect("sma should compute");
         let expected = (11.71 + 11.70 + 11.69 + 11.70) / 4.0;
-        assert!((sma - expected).abs() < 1e-12, "sma={} expected={}", sma, expected);
+        assert!(
+            (sma - expected).abs() < 1e-12,
+            "sma={} expected={}",
+            sma,
+            expected
+        );
     }
 
     #[test]
     fn sma_insufficient_data_returns_none() {
-        let prices = vec![1.0_f64, 2.0, 3.0];
+        let prices = [1.0_f64, 2.0, 3.0];
         assert!(sma(prices.iter(), 5).is_none());
         assert!(sma(prices.iter(), 0).is_none());
     }

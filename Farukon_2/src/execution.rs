@@ -186,8 +186,20 @@ impl farukon_core::execution::ExecutionHandler for SimulatedExecutionHandler {
             instruments_info,      // Pass the instrument information.
             strategy_settings,     // Pass the strategy settings.
         );
+        // `None` means no commission plan matched the exchange/commission_type pair or its rate is
+        // zero. Fail loudly instead of panicking on `unwrap`: such a trade would otherwise be
+        // backtested with a silently wrong (or missing) cost.
+        let commission = commission.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No commission plan found for exchange '{}' / commission_type '{}' (symbol '{}') \
+                 — check commission_plans.json",
+                exchange,
+                instruments_info.commission_type,
+                symbol
+            )
+        })?;
         // Calculate the total commission by multiplying the commission per unit by the quantity of contracts.
-        let total_commission = Some(commission.unwrap() * event.quantity);
+        let total_commission = Some(commission * event.quantity);
 
         // Create a FillEvent with the details of the executed order.
         let fill_event = farukon_core::event::FillEvent::new(

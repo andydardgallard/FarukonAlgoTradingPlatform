@@ -210,7 +210,7 @@ fn resample_data(
     }
 
     // Iterate through the pre-computed timestamps for the target timeframe.
-    for (_window_idx, &resampled_timestamp) in resampled_timestamps.iter().enumerate() {
+    for &resampled_timestamp in resampled_timestamps.iter() {
         let window_start_timestamp = resampled_timestamp;
         let window_end_timestamp = resampled_timestamp + resample_timeframe_sec - 1;
 
@@ -226,14 +226,14 @@ fn resample_data(
 
             let mut has_data = false;
             let mut agg_open: Option<f64> = None;
-            let mut agg_high = std::f64::NEG_INFINITY;
-            let mut agg_low = std::f64::INFINITY;
+            let mut agg_high = f64::NEG_INFINITY;
+            let mut agg_low = f64::INFINITY;
             let mut agg_close: Option<f64> = None;
             let mut agg_volume = 0u64;
 
             // SIMD variables for efficient max/min aggregation.
-            let mut simd_max = wide::f64x4::splat(std::f64::NEG_INFINITY);
-            let mut simd_min = wide::f64x4::splat(std::f64::INFINITY);
+            let mut simd_max = wide::f64x4::splat(f64::NEG_INFINITY);
+            let mut simd_min = wide::f64x4::splat(f64::INFINITY);
 
             let mut i = start_idx;
             // Ensure we don't go out of bounds of the raw slices.
@@ -395,8 +395,7 @@ fn copy_raw_data_without_resampling(
 
     // Convert raw timestamps (u64) to DateTime<chrono::Utc>.
     let mut timestamps = Vec::with_capacity(min_len);
-    for i in 0..min_len {
-        let ts = raw_timestamps[i];
+    for &ts in &raw_timestamps[..min_len] {
         let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(ts as i64, 0)
             .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {}", ts))?;
         timestamps.push(datetime);
@@ -471,6 +470,12 @@ fn process_symbol(
     anyhow::Ok((symbol.to_string(), resampled_soa_data, sorted_timeline))
 }
 
+/// Resampled SOA data per symbol (wrapped in `Arc` for sharing) plus each symbol's own timeline.
+type ResampledSymbolData = (
+    std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
+    Vec<Vec<chrono::DateTime<chrono::Utc>>>,
+);
+
 /// Loads raw SOA FlatBuffer data for all symbols and performs resampling in parallel.
 /// Each symbol is processed independently in its own Rayon thread.
 /// This function orchestrates the parallel loading and resampling phase.
@@ -488,10 +493,7 @@ pub fn load_and_resample(
     symbol_list: &[String],
     fbs_dir: &str,
     resample_timeframe_sec: u64,
-) -> anyhow::Result<(
-    std::collections::HashMap<String, std::sync::Arc<farukon_core::data_handler::SOAData>>,
-    Vec<Vec<chrono::DateTime<chrono::Utc>>>,
-)> {
+) -> anyhow::Result<ResampledSymbolData> {
     pool.install(|| {
         let results: anyhow::Result<Vec<_>> = symbol_list
             .par_iter()
@@ -531,20 +533,14 @@ pub fn create_combined_timeline(
         let all_datetimes: std::collections::HashSet<chrono::DateTime<chrono::Utc>> =
             partial_timelines
                 .par_iter()
-                .fold(
-                    || std::collections::HashSet::new(),
-                    |mut acc, timeline| {
-                        acc.extend(timeline.iter().copied());
-                        acc
-                    },
-                )
-                .reduce(
-                    || std::collections::HashSet::new(),
-                    |mut set1, set2| {
-                        set1.extend(set2);
-                        set1
-                    },
-                );
+                .fold(std::collections::HashSet::new, |mut acc, timeline| {
+                    acc.extend(timeline.iter().copied());
+                    acc
+                })
+                .reduce(std::collections::HashSet::new, |mut set1, set2| {
+                    set1.extend(set2);
+                    set1
+                });
 
         let mut combined_timeline: Vec<chrono::DateTime<chrono::Utc>> =
             all_datetimes.into_iter().collect();
@@ -568,10 +564,10 @@ fn create_bar_from_source(
 ) -> farukon_core::data_handler::MarketBar {
     farukon_core::data_handler::MarketBar::new()
         .with_datetime(datetime)
-        .with_open(*soa_data.get_open(source_idx).unwrap_or(&std::f64::NAN))
-        .with_high(*soa_data.get_high(source_idx).unwrap_or(&std::f64::NAN))
-        .with_low(*soa_data.get_low(source_idx).unwrap_or(&std::f64::NAN))
-        .with_close(*soa_data.get_close(source_idx).unwrap_or(&std::f64::NAN))
+        .with_open(*soa_data.get_open(source_idx).unwrap_or(&f64::NAN))
+        .with_high(*soa_data.get_high(source_idx).unwrap_or(&f64::NAN))
+        .with_low(*soa_data.get_low(source_idx).unwrap_or(&f64::NAN))
+        .with_close(*soa_data.get_close(source_idx).unwrap_or(&f64::NAN))
         .with_volume(*soa_data.get_volume(source_idx).unwrap_or(&0))
 }
 
@@ -588,10 +584,10 @@ fn create_nan_bar(
 ) -> farukon_core::data_handler::MarketBar {
     farukon_core::data_handler::MarketBar::new()
         .with_datetime(datetime)
-        .with_open(std::f64::NAN)
-        .with_high(std::f64::NAN)
-        .with_low(std::f64::NAN)
-        .with_close(std::f64::NAN)
+        .with_open(f64::NAN)
+        .with_high(f64::NAN)
+        .with_low(f64::NAN)
+        .with_close(f64::NAN)
         .with_volume(0)
 }
 
@@ -625,7 +621,7 @@ fn align_symbol_data(
     let mut last_valid_index: Option<usize> = None;
 
     for &target_datetime in combined_timeline {
-        let is_trading_started = first_trade_date.map_or(false, |first| target_datetime >= first);
+        let is_trading_started = first_trade_date.is_some_and(|first| target_datetime >= first);
         if let Some(&source_idx) = source_map.get(&target_datetime) {
             last_valid_index = Some(source_idx);
             let bar = create_bar_from_source(soa_data, source_idx, target_datetime);

@@ -44,3 +44,34 @@ unfinished:
     reason: validation of the fix; requires the fix first (~2.5 h run)
     severity: warning
     follow_up: true
+
+## 2026-09-29 — Thread-scaling fix: hot-path allocations, allocator-safe signal ABI, v3.0.0
+
+title: Fix backtest thread-scaling degradation (hot-path allocations, per-candidate copies, adaptive thread guidance) | project: code | timestamp: 2026-09-29T04:30:00+0300
+run_id: 20260929-f24b5e53
+branch: feature/fix-thread-scaling-20260929
+task_type: implement
+goal: Implement fix_task.yaml (items 1-12) from review run 20260929-b81785fd: eliminate per-bar FFI/clone overhead, wire mimalloc, warnings for deep mode and the ~8-thread knee, clippy/unsafe fixes, 3 Windows settings tests, Max_Drawdown_DateTime for Grid/GA; validate on the 1m/2m benchmarks with exact business-metric parity.
+changed_files: 26 source files across farukon_core (event.rs, strategy.rs, performance.rs, portfolio.rs, settings.rs, optimization.rs, commission_plans.rs, pos_sizers.rs, utils.rs, data_handler.rs, indicators.rs, lib.rs), Farukon_2 (strategy_loader.rs, portfolio.rs, optimizers.rs, execution.rs, backtest.rs, main.rs, risks.rs, data_engine/*), strategy_lib (lib.rs, Cargo.toml), Strategies/rs/MA_cross.rs, Cargo.toml, VERSION, AGENTS.md, README.md, USER_MANUAL.md
+created_files: .code-factory/scripts_run/bench_check.py (deterministic benchmark checker)
+results: SUCCESS — acceptance 12/12 verify criteria MET, regression pass (38+1 tests green, baseline was 31/3-fail; the 3 settings tests fixed) [verified: .code-factory/state/acceptance.md exit 0, logs/test-results.md]; clippy 0/0 (was 8 deny errors + ~156 warnings) [verified: logs/test-results.md]; code review iteration 1 request_changes (1 major: MA_cross.rs ABI migration) -> rework -> iteration 2 approve, 6/6 quotes verified [verified: logs/code-review.md]; business test 1 (1m arc 16thr, 93 combos): 7202 s vs pre-fix 44185 s = 6.13x, wave gap 0.15x (pre-fix 2.4x), metric parity exact on 18 shared columns 93/93, Max_Drawdown_DateTime populated 93/93 [verified: bench_check.py 1m exit 0, tests_results/results_1m_arc_thread_16_postfix_20260929.txt]; business test 2 (2m arc 32thr): 1264 s vs 15316 s = 12.12x, wave gap 0.20x, parity exact on distinct row sets [verified: bench_check.py 2m exit 0].
+decisions: mimalloc kept per user decision; E1 segfault (mimalloc exe + any pre-existing dll) root-caused by bisection (cross-allocator free of dll-allocated boxed events; rebuilding dlls with mimalloc REFUTED empirically — two static copies = two heaps) and fixed by task_13: allocator-safe signal ABI — SignalEmitter {ctx, cb} callback, host allocates SignalEvent, only POD crosses the boundary [verified: logs/errors.md E1+CORRECTION, probe EXIT=0 1169.9 s]; snapshot HashMaps now empty in snapshots (grep-verified no readers; types unchanged) [verified: logs/code-review.md]; calculate_final_performance runs for every metrics mode so Max_Drawdown_DateTime is populated for Grid/GA/realtime [verified: task_12 e2e in logs/test-results.md]; version 2.1.0 -> 3.0.0 = MAJOR (breaking strategy ABI), reviewer-validated [verified: logs/code-review.md version_type]; version_manager.py validate is factory-repo-shaped (README title/footer/CHANGELOG/.agents markers) and does not apply to this target repo — VERSION file + workspace Cargo.toml synced manually [inferred].
+assumptions: metric parity compared on the 18 columns shared with the pre-fix CSVs (they predate the Max_Drawdown_DateTime column); pre-fix 2m CSV holds two appended runs (186 rows) — distinct-row-set comparison; stand dll build scaffold lives in the commit-excluded test stand (time_tests/dll_build/).
+models_used: main=primary(kimi-code/k3); analyzer=primary(kimi-code/k3); coder=deepseek-flash; reviewer=primary(kimi-code/k3, matrix names kimi-k3 — alias unconfigured); documenter=deepseek-flash
+factory_version: 12.12.1
+
+unfinished:
+  - item: USER_MANUAL.md §8.4 documents strategy_lib/src/SYMI_Ch_SMA_up_lmt.rs and python/biztest_symi.py, neither of which exists in the tree (pre-existing staleness)
+    reason: owner decision needed (restore sources or delete the section); out of this run's scope
+    severity: warning
+    follow_up: false
+  - item: Strategies/MA_cross.dylib is a stale pre-v3.0.0 artifact (source migrated; nothing in the repo builds the dylib)
+    reason: macOS artifact; needs a rebuild on macOS from Strategies/rs/MA_cross.rs before any host can load it
+    severity: warning
+    follow_up: false
+
+closed:
+  - item: Implement the fixes (fix_task.yaml items 1-12: hot-path allocations, equity_series copies, mimalloc, deep-mode warning, adaptive thread guidance, clippy/unsafe/commission.unwrap, 3 Windows settings tests, 2min arc config paths)
+    evidence: acceptance SUCCESS 12/12 (verify_acceptance exit 0, .code-factory/state/acceptance.md); review approve iteration 2 (logs/code-review.md); note: the 2min arc config paths item was removed from the task by the user before this run
+  - item: Re-run the 1m arc 16-thread benchmark after the fix to validate the improvement vs the 44185 s baseline
+    evidence: bench_check.py 1m exit 0 — 7202 s (6.13x), wave gap 0.15x, metric parity 93/93 rows (tests_results/results_1m_arc_thread_16_postfix_20260929.txt)
