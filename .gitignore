@@ -9,6 +9,7 @@ Cargo.lock
 .venv
 SYMI*
 /Tickers*
+/materials
 
 # --- Code Factory runtime (auto-added by prepare_factory.sh) ---
 /.code-factory
@@ -40,3 +41,17 @@ __pycache__/
 *.env
 *.pem
 *.key
+
+# --- Code Factory (auto-added by prepare_factory.ps1) ---
+.agents/
+.code-factory/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.env
+*.pem
+*.key
+task.yaml
+start.cmd
+start.sh
