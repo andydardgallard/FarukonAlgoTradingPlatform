@@ -72,15 +72,24 @@ def two_dimensions(args) -> None:
     print("in TODO list")
     pass
 
-def prepare_data(args) -> dict:
-    data_path = f"{args.file}"
-    with open(data_path, 'r+') as fin:
-        plot_data = pd.read_csv(
+def read_optimization_csv(data_path):
+    """Open an optimization-results CSV for reading only.
+
+    Visualization never modifies the results, so the file is opened with mode ``'r'``:
+    a read-only results directory must still be usable.
+    """
+    with open(data_path, 'r') as fin:
+        return pd.read_csv(
             fin,
             header= 0,
             sep= ';',
         )
-    
+
+
+def prepare_data(args) -> dict:
+    data_path = f"{args.file}"
+    plot_data = read_optimization_csv(data_path)
+
     strategies = set(plot_data["strategy_name"])
     result = {}
     for stratagy in strategies:

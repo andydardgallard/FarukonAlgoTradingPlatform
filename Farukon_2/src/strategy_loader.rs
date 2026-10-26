@@ -140,12 +140,22 @@ impl DynamicStratagy {
         event_sender: &std::sync::mpsc::Sender<Box<dyn farukon_core::event::Event>>,
         library: std::sync::Arc<libloading::Library>,
     ) -> anyhow::Result<Self> {
+        // Resolve every symbol and build the C buffers *before* creating the strategy instance:
+        // once `create_strategy` has returned a pointer, no later step may fail, otherwise the
+        // instance would leak (its `destroy_strategy` is only reachable through the struct).
         let create_strategy: libloading::Symbol<CreateStrategyFn> =
             unsafe { library.get(b"create_strategy")? };
 
         let destroy_strategy: libloading::Symbol<DestroyStrategyFn> =
             unsafe { library.get(b"destroy_strategy")? };
+        let calculate_signals_fn: libloading::Symbol<'static, CalculateSignalsFn> = unsafe {
+            std::mem::transmute(library.get::<CalculateSignalsFn>(b"calculate_signals")?)
+        };
         let mode_c = std::ffi::CString::new(mode)?;
+
+        // `symbols` is immutable for the whole backtest, so the C buffer is built once.
+        let (symbol_c_strings, symbol_c_ptrs) =
+            Self::build_symbol_buffers(&strategy_settings.symbols)?;
 
         // SAFETY: the three pointers come from values that are alive for the call (`mode_c` and the
         // caller-provided references); the strategy clones what it needs and retains neither. The
@@ -170,14 +180,6 @@ impl DynamicStratagy {
 
         let destroy_fn: libloading::Symbol<'static, DestroyStrategyFn> =
             unsafe { std::mem::transmute(destroy_strategy) };
-
-        let calculate_signals_fn: libloading::Symbol<'static, CalculateSignalsFn> = unsafe {
-            std::mem::transmute(library.get::<CalculateSignalsFn>(b"calculate_signals")?)
-        };
-
-        // `symbols` is immutable for the whole backtest, so the C buffer is built once.
-        let (symbol_c_strings, symbol_c_ptrs) =
-            Self::build_symbol_buffers(&strategy_settings.symbols)?;
 
         anyhow::Ok(DynamicStratagy {
             _lib: std::sync::Arc::clone(&library),
@@ -204,12 +206,20 @@ impl DynamicStratagy {
         let lib_path = &strategy_settings.strategy_path;
         let lib = unsafe { libloading::Library::new(lib_path)? };
 
+        // Same ordering as `new_from_library`: everything that can fail is resolved before
+        // `create_strategy` hands back an instance that only `destroy_strategy` could release.
         let create_strategy: libloading::Symbol<CreateStrategyFn> =
             unsafe { lib.get(b"create_strategy")? };
 
         let destroy_strategy: libloading::Symbol<DestroyStrategyFn> =
             unsafe { lib.get(b"destroy_strategy")? };
+        let calculate_signals_fn: libloading::Symbol<'static, CalculateSignalsFn> =
+            unsafe { std::mem::transmute(lib.get::<CalculateSignalsFn>(b"calculate_signals")?) };
         let mode_c = std::ffi::CString::new(mode)?;
+
+        // `symbols` is immutable for the whole backtest, so the C buffer is built once.
+        let (symbol_c_strings, symbol_c_ptrs) =
+            Self::build_symbol_buffers(&strategy_settings.symbols)?;
 
         // SAFETY: the three pointers come from values that are alive for the call (`mode_c` and the
         // caller-provided references); the strategy clones what it needs and retains neither. The
@@ -230,13 +240,6 @@ impl DynamicStratagy {
 
         let destroy_fn: libloading::Symbol<'static, DestroyStrategyFn> =
             unsafe { std::mem::transmute(destroy_strategy) };
-
-        let calculate_signals_fn: libloading::Symbol<'static, CalculateSignalsFn> =
-            unsafe { std::mem::transmute(lib.get::<CalculateSignalsFn>(b"calculate_signals")?) };
-
-        // `symbols` is immutable for the whole backtest, so the C buffer is built once.
-        let (symbol_c_strings, symbol_c_ptrs) =
-            Self::build_symbol_buffers(&strategy_settings.symbols)?;
 
         anyhow::Ok(DynamicStratagy {
             _lib: std::sync::Arc::new(lib),
@@ -387,3 +390,58 @@ unsafe impl Send for DynamicStratagy {}
 // interleaved access to the host's portfolio and channel — UB. Any future change that shares one
 // instance between threads must wrap it in a lock instead of relying on these impls.
 unsafe impl Sync for DynamicStratagy {}
+
+#[cfg(test)]
+mod tests {
+    /// The constructors call `create_strategy` only after *every* fallible step has succeeded.
+    ///
+    /// This is the vaccination for the review finding "missing calculate_signals export leaks the
+    /// created strategy": once `create_strategy` has returned a non-null pointer, no later step may
+    /// fail, because `destroy_strategy` is only reachable through the `DynamicStratagy` that would
+    /// never be built. The ordering is what guarantees it — a `Drop` guard would be dead weight —
+    /// so the invariant is asserted on the source itself: in every constructor, the
+    /// `calculate_signals` resolution and the symbol-buffer build precede the `create_strategy`
+    /// call.
+    ///
+    /// The needles are matched with their leading indentation so that the type alias,
+    /// `b"create_strategy"` string literals and doc comments cannot satisfy them. They are also
+    /// split across `concat!` pieces so this test's own source text cannot match them.
+    #[test]
+    fn every_fallible_step_precedes_create_strategy() {
+        let source = include_str!("strategy_loader.rs");
+
+        let calculate_signals_needle =
+            concat!("get::<CalculateSignalsFn>(b\"calculate", "_signals\")");
+        let symbol_buffer_needle = concat!("build_symbol_buffers(&strategy_settings.sym", "bols)");
+
+        let create_calls: Vec<usize> = source
+            .match_indices("\n            create_strategy(")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            create_calls.len(),
+            2,
+            "expected one create_strategy call in new_from_library and one in _load_from_path"
+        );
+
+        for &create_call in &create_calls {
+            // Restrict the search to the constructor that contains this call, so the two
+            // constructors are checked independently of their relative order in the file.
+            let constructor_start = source[..create_call]
+                .rfind("\n    pub fn ")
+                .expect("every create_strategy call lives inside a constructor");
+            let constructor_prefix = &source[constructor_start..create_call];
+
+            assert!(
+                constructor_prefix.contains(calculate_signals_needle),
+                "calculate_signals must be resolved before create_strategy, otherwise a missing \
+                 export leaks the created strategy"
+            );
+            assert!(
+                constructor_prefix.contains(symbol_buffer_needle),
+                "the symbol buffers must be built before create_strategy, otherwise a symbol with \
+                 an interior NUL leaks the created strategy"
+            );
+        }
+    }
+}

@@ -10,7 +10,7 @@
         "Strategy_1": {
             "threads": 8,
             "strategy_name": "MA_cross_1",
-            "strategy_path": "target/release/libstrategy_lib.so",
+            "strategy_path": "target/release/strategy_lib.dll",
             "exit_results_path": "opt_results/lshade_si25_apr_dd",
             "strategy_weight": 1,
             "slippage": [

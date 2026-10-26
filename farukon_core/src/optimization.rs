@@ -334,11 +334,44 @@ impl OptimizationConfig {
     ///
     /// An iterator that yields `ParameterSet` objects.
     fn generate_all_combinations_iter(&self) -> impl Iterator<Item = ParameterSet> + '_ {
-        let strategy_params_names: Vec<String> =
-            self.strategy_params_ranges.keys().cloned().collect();
-        let pos_sizer_name = self.pos_sizer_name.clone();
-        let pos_sizer_additional_params_names: Vec<String> =
-            self.pos_sizer_additional_params.keys().cloned().collect();
+        // Strategy parameters and additional position-sizer parameters form one Cartesian
+        // product: every value of every parameter is part of the search, so the number of
+        // produced sets matches `calculate_total_combinations`.
+        let mut combination_names: Vec<String> = Vec::new();
+        let mut combination_ranges: Vec<Vec<serde_json::Value>> = Vec::new();
+
+        for (name, spec) in &self.strategy_params_ranges {
+            let values = spec.expand();
+            if values.is_empty() {
+                // An empty spec contributes no axis, exactly like the count of 1 used by
+                // `calculate_total_combinations`.
+                continue;
+            }
+            combination_names.push(name.clone());
+            combination_ranges.push(values);
+        }
+        let strategy_param_count = combination_names.len();
+
+        for (name, spec) in &self.pos_sizer_additional_params {
+            let values = spec.expand();
+            if values.is_empty() {
+                continue;
+            }
+            combination_names.push(name.clone());
+            combination_ranges.push(values);
+        }
+
+        let pos_sizer_values_raw: Vec<f64> = self
+            .pos_sizer_value_range
+            .expand()
+            .into_iter()
+            .filter_map(|v| v.as_f64())
+            .collect();
+        let pos_sizer_values = if pos_sizer_values_raw.is_empty() {
+            vec![0.0]
+        } else {
+            pos_sizer_values_raw
+        };
 
         let slippage_values: Vec<f64> = self
             .slippage_range
@@ -347,73 +380,47 @@ impl OptimizationConfig {
             .filter_map(|v| v.as_f64())
             .collect();
 
-        slippage_values.into_iter().flat_map({
+        let pos_sizer_name = self.pos_sizer_name.clone();
+
+        slippage_values.into_iter().flat_map(move |slippage| {
             let pos_sizer_name = pos_sizer_name.clone();
-            let pos_sizer_additional_params_names = pos_sizer_additional_params_names.clone();
-            move |slippage| {
-                let pos_sizer_values_raw: Vec<f64> = self
-                    .pos_sizer_value_range
-                    .expand()
-                    .into_iter()
-                    .filter_map(|v| v.as_f64())
-                    .collect();
-                let pos_sizer_values = if pos_sizer_values_raw.is_empty() {
-                    vec![0.0]
-                } else {
-                    pos_sizer_values_raw
-                };
-
-                pos_sizer_values.into_iter().flat_map({
+            let combination_names = combination_names.clone();
+            let combination_ranges = combination_ranges.clone();
+            pos_sizer_values
+                .clone()
+                .into_iter()
+                .flat_map(move |pos_sizer_val| {
                     let pos_sizer_name = pos_sizer_name.clone();
-                    let pos_sizer_additional_params_names =
-                        pos_sizer_additional_params_names.clone();
-                    let value = strategy_params_names.clone();
-                    move |pos_sizer_val| {
-                        let strategy_ranges: Vec<Vec<serde_json::Value>> = self
-                            .strategy_params_ranges
-                            .values()
-                            .map(|spec| spec.expand())
-                            .collect();
-
-                        strategy_ranges.into_iter().multi_cartesian_product().map({
-                            let pos_sizer_name = pos_sizer_name.clone();
-                            let pos_sizer_additional_params_names =
-                                pos_sizer_additional_params_names.clone();
-                            let value = value.clone();
-                            move |strategy_values| {
-                                let strategy_params = value
-                                    .clone()
+                    let combination_names = combination_names.clone();
+                    combination_ranges
+                        .clone()
+                        .into_iter()
+                        .multi_cartesian_product()
+                        .map(move |values| {
+                            let mut values = values.into_iter();
+                            let strategy_params: Vec<(String, serde_json::Value)> =
+                                combination_names
                                     .iter()
-                                    .zip(strategy_values)
+                                    .take(strategy_param_count)
+                                    .zip(values.by_ref())
+                                    .map(|(name, value)| (name.clone(), value))
+                                    .collect();
+                            let pos_sizer_additional_params: Vec<(String, serde_json::Value)> =
+                                combination_names
+                                    .iter()
+                                    .skip(strategy_param_count)
+                                    .zip(values)
                                     .map(|(name, value)| (name.clone(), value))
                                     .collect();
 
-                                let pos_sizer_additional_params: Vec<(String, serde_json::Value)> =
-                                    pos_sizer_additional_params_names
-                                        .iter()
-                                        .map(|name| {
-                                            let spec =
-                                                self.pos_sizer_additional_params.get(name).unwrap();
-                                            let val = spec
-                                                .expand()
-                                                .into_iter()
-                                                .next()
-                                                .unwrap_or(serde_json::Value::Null);
-                                            (name.clone(), val)
-                                        })
-                                        .collect();
-
-                                ParameterSet::new()
-                                    .with_strategy_params(strategy_params)
-                                    .with_pos_sizer_name(pos_sizer_name.clone())
-                                    .with_pos_sizer_additional_params(pos_sizer_additional_params)
-                                    .with_pos_sizer_value(pos_sizer_val)
-                                    .with_slippage(slippage)
-                            }
+                            ParameterSet::new()
+                                .with_strategy_params(strategy_params)
+                                .with_pos_sizer_name(pos_sizer_name.clone())
+                                .with_pos_sizer_additional_params(pos_sizer_additional_params)
+                                .with_pos_sizer_value(pos_sizer_val)
+                                .with_slippage(slippage)
                         })
-                    }
                 })
-            }
         })
     }
 }
@@ -457,7 +464,7 @@ impl GridSearchOptimizer {
             .config
             .strategy_params_ranges
             .values()
-            .map(|spec| spec.count_expanded_values())
+            .map(|spec| spec.count_expanded_values().map(|count| count.max(1)))
             .collect::<anyhow::Result<Vec<u128>>>()?
             .into_iter()
             .product::<u128>()
@@ -467,7 +474,7 @@ impl GridSearchOptimizer {
             .config
             .pos_sizer_additional_params
             .values()
-            .map(|spec| spec.count_expanded_values())
+            .map(|spec| spec.count_expanded_values().map(|count| count.max(1)))
             .collect::<anyhow::Result<Vec<u128>>>()?
             .into_iter()
             .product::<u128>()
@@ -705,6 +712,35 @@ impl GAConfig {
     pub fn get_fitness_direction(&self) -> &String {
         &self.fitness_direction
     }
+
+    /// Validates the population settings before a run starts.
+    ///
+    /// The tournament selection needs at least one elite individual (the first parent is
+    /// always drawn from the elite pool) and at least one non-elite individual (the second
+    /// parent is drawn from the rest of the population), so a population of one or an empty
+    /// elite pool can never work.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.population_size < 2 {
+            anyhow::bail!(
+                "GA population_size must be at least 2 (got {}).",
+                self.population_size
+            );
+        }
+        if self.elite_size == 0 {
+            anyhow::bail!("GA elite_size must be at least 1 (got 0).");
+        }
+        if self.elite_size >= self.population_size {
+            anyhow::bail!(
+                "GA elite_size ({}) must be smaller than population_size ({}).",
+                self.elite_size,
+                self.population_size
+            );
+        }
+        if self.max_generations == 0 {
+            anyhow::bail!("GA max_generations must be at least 1 (got 0).");
+        }
+        anyhow::Ok(())
+    }
 }
 
 /// The main Genetic Algorithm optimizer.
@@ -761,6 +797,7 @@ impl GeneticAlgorythm {
         F: Fn(&ParameterSet) -> f64 + Send + Sync + Clone + 'static,
     {
         let threads = initial_strategy_settings.threads.unwrap_or(num_cpus::get());
+        self.ga_config.validate()?;
         let mut stats = Vec::new();
         let total_population = self.ga_config.population_size;
         self.create_initial_population(total_population);
@@ -1277,13 +1314,20 @@ impl GeneticAlgorythm {
         let elite_count = self
             .ga_config
             .elite_size
-            .min(self.ga_config.population_size);
+            .min(self.ga_config.population_size)
+            .min(sorted_results.len());
         let mut elite = Vec::with_capacity(elite_count);
         for sorted_result in &sorted_results[..elite_count] {
             let elite_individ = sorted_result.0.clone();
             next_gen.push(elite_individ.clone());
             elite.push(elite_individ);
         }
+        // Defensive fallback: the caller validates the configuration, but selection must
+        // stay total even if the incoming results are empty.
+        let fallback_elite = elite
+            .first()
+            .cloned()
+            .or_else(|| sorted_results.first().map(|(params, _)| params.clone()));
 
         // 2. add random individs
         let random_count = (self.ga_config.population_size as f64).sqrt() as usize;
@@ -1310,7 +1354,12 @@ impl GeneticAlgorythm {
         }
 
         // 3. tournament selection
-        let remaining_slots = self.ga_config.population_size - next_gen.len();
+        // `saturating_sub` guards against the elite plus random individuals already filling
+        // (or exceeding) the population; the result is truncated below.
+        let remaining_slots = self
+            .ga_config
+            .population_size
+            .saturating_sub(next_gen.len());
         let elite_set: std::collections::HashSet<u64> =
             elite.iter().map(hash_parameter_set).collect();
         let mut seen_hashes = std::collections::HashSet::new();
@@ -1325,8 +1374,14 @@ impl GeneticAlgorythm {
         }
 
         for _ in 0..remaining_slots {
-            // choose parant_a randomly from elite
-            let elite_parent = elite[rng.gen_range(0..elite.len())].clone();
+            // choose parant_a randomly from elite (fall back to any evaluated individual)
+            let elite_parent = match elite.as_slice() {
+                [] => match &fallback_elite {
+                    Some(params) => params.clone(),
+                    None => break,
+                },
+                elite_pool => elite_pool[rng.gen_range(0..elite_pool.len())].clone(),
+            };
             let other_results = &uniqe_other_results;
 
             if other_results.is_empty() {
@@ -1338,9 +1393,8 @@ impl GeneticAlgorythm {
                 let fallback_parent = if !non_elite_in_next_gen.is_empty() {
                     non_elite_in_next_gen[rng.gen_range(0..non_elite_in_next_gen.len())].clone()
                 } else {
-                    other_results[rng.gen_range(0..other_results.len())]
-                        .0
-                        .clone()
+                    // No non-elite candidate at all: mutate a copy of the elite parent.
+                    elite_parent.clone()
                 };
 
                 let child = self.crossover_mutation(&elite_parent, &fallback_parent);
@@ -1375,6 +1429,9 @@ impl GeneticAlgorythm {
             }
         }
 
+        // Keep the population size exactly as configured (the elite and random individuals
+        // may overshoot it for very small populations).
+        next_gen.truncate(self.ga_config.population_size);
         next_gen.shuffle(&mut rng);
         next_gen
     }
@@ -1678,6 +1735,41 @@ impl LshadeRspConfig {
     pub fn get_fitness_direction(&self) -> &String {
         &self.fitness_direction
     }
+
+    /// Validates the LSHADE-RSP settings together with the parameter search space.
+    ///
+    /// The DE operators pick three mutually distinct population members (`target`, `r1`,
+    /// `r2`) plus the `pbest` individual, and LPSR never shrinks the population below four
+    /// individuals, so a population smaller than four can never satisfy those constraints.
+    /// An empty strategy parameter map leaves nothing to evolve and an empty memory makes
+    /// the F/CR sampling panic.
+    pub fn validate(&self, optimization_config: &OptimizationConfig) -> anyhow::Result<()> {
+        if self.population_size < 4 {
+            anyhow::bail!(
+                "LSHADE-RSP population_size must be at least 4 (got {}).",
+                self.population_size
+            );
+        }
+        if self.max_evaluations < self.population_size {
+            anyhow::bail!(
+                "LSHADE-RSP max_evaluations ({}) must be at least population_size ({}).",
+                self.max_evaluations,
+                self.population_size
+            );
+        }
+        if self.memory_size == 0 {
+            anyhow::bail!("LSHADE-RSP memory_size must be at least 1 (got 0).");
+        }
+        if !(self.p_best > 0.0 && self.p_best <= 1.0) {
+            anyhow::bail!("LSHADE-RSP p_best must be in (0, 1] (got {}).", self.p_best);
+        }
+        if optimization_config.strategy_params_ranges.is_empty() {
+            anyhow::bail!(
+                "LSHADE-RSP needs at least one optimizable strategy parameter (got none)."
+            );
+        }
+        anyhow::Ok(())
+    }
 }
 
 /// Statistics for one iteration of LSHADE-RSP.
@@ -1707,6 +1799,65 @@ impl Drop for BankClearGuard {
         let mut bank = self.bank.lock().unwrap_or_else(|e| e.into_inner());
         bank.clear();
         bank.shrink_to_fit();
+    }
+}
+
+/// One numeric component of an LSHADE-RSP vector.
+///
+/// The DE operators evolve every optimizable parameter as a single flat vector: the strategy
+/// parameters, the position-sizer value, the slippage and the additional position-sizer
+/// parameters are all part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeComponent {
+    Strategy(String),
+    PosSizerValue,
+    Slippage,
+    PosSizerAdditional(String),
+}
+
+/// Snaps a raw numeric value to the closest value allowed by `spec`.
+///
+/// The DE arithmetic is unconstrained, so every mutated or crossovered value has to be mapped
+/// back into its parameter domain: a `Range` value is clamped to `[start, end]` and moved onto
+/// the step grid, a `Discrete` value becomes the nearest allowed entry (the original JSON value
+/// is kept, so non-numeric discrete values survive).
+fn snap_to_spec(spec: &settings::ParamSpec, raw: f64) -> serde_json::Value {
+    match spec {
+        settings::ParamSpec::Discrete(values) => {
+            let mut best: Option<(f64, &serde_json::Value)> = None;
+            if raw.is_finite() {
+                for value in values {
+                    if let Some(candidate) = value.as_f64() {
+                        let distance = (candidate - raw).abs();
+                        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+                            best = Some((distance, value));
+                        }
+                    }
+                }
+            }
+            match best {
+                Some((_, value)) => value.clone(),
+                // Empty list or non-numeric values only: fall back to the first entry.
+                None => values.first().cloned().unwrap_or(serde_json::Value::Null),
+            }
+        }
+        settings::ParamSpec::Range { start, end, step } => {
+            let value = if raw.is_finite() {
+                let mut value = raw.clamp(*start, *end);
+                if *step > 0.0 {
+                    // The grid is anchored at `start` (as `ParamSpec::expand` does), not at
+                    // zero: start=1, step=2 must allow 1, 3, 5, ... and not 2, 4, ...
+                    value = (*start + ((value - start) / step).round() * step).clamp(*start, *end);
+                }
+                value
+            } else {
+                *start
+            };
+            serde_json::Value::Number(
+                serde_json::Number::from_f64(value)
+                    .unwrap_or_else(|| serde_json::Number::from_f64(*start).unwrap()),
+            )
+        }
     }
 }
 
@@ -1857,51 +2008,170 @@ impl LshadeRspOptimizer {
         self.memory_index = 0;
     }
 
+    /// Builds the ordered layout of the DE vector.
+    ///
+    /// The vector holds every optimizable strategy parameter (sorted by name for a
+    /// deterministic order), the position-sizer value, the slippage and every additional
+    /// position-sizer parameter (sorted by name), each with the `ParamSpec` it must obey.
+    fn de_layout(&self) -> Vec<(DeComponent, settings::ParamSpec)> {
+        let strategy_ranges = &self.optimization_config.strategy_params_ranges;
+        let mut strategy_names: Vec<&String> = strategy_ranges.keys().collect();
+        strategy_names.sort();
+
+        let mut layout: Vec<(DeComponent, settings::ParamSpec)> = strategy_names
+            .into_iter()
+            .filter_map(|name| {
+                strategy_ranges
+                    .get(name)
+                    .map(|spec| (DeComponent::Strategy(name.clone()), spec.clone()))
+            })
+            .collect();
+
+        layout.push((
+            DeComponent::PosSizerValue,
+            self.optimization_config.pos_sizer_value_range.clone(),
+        ));
+        layout.push((
+            DeComponent::Slippage,
+            self.optimization_config.slippage_range.clone(),
+        ));
+
+        let additional_ranges = &self.optimization_config.pos_sizer_additional_params;
+        let mut additional_names: Vec<&String> = additional_ranges.keys().collect();
+        additional_names.sort();
+        for name in additional_names {
+            if let Some(spec) = additional_ranges.get(name) {
+                layout.push((DeComponent::PosSizerAdditional(name.clone()), spec.clone()));
+            }
+        }
+
+        layout
+    }
+
+    /// Reads the numeric value of a single component from a parameter set.
+    fn component_value(params: &ParameterSet, component: &DeComponent) -> Option<f64> {
+        match component {
+            DeComponent::Strategy(name) => params
+                .strategy_params
+                .iter()
+                .find(|(param_name, _)| param_name == name)
+                .and_then(|(_, value)| value.as_f64()),
+            DeComponent::PosSizerValue => Some(params.pos_sizer_value),
+            DeComponent::Slippage => Some(params.slippage),
+            DeComponent::PosSizerAdditional(name) => params
+                .pos_sizer_additional_params
+                .iter()
+                .find(|(param_name, _)| param_name == name)
+                .and_then(|(_, value)| value.as_f64()),
+        }
+    }
+
+    /// Returns the first numeric value of a spec, used when a component is missing.
+    fn first_spec_value(spec: &settings::ParamSpec) -> Option<f64> {
+        match spec {
+            settings::ParamSpec::Discrete(values) => values.iter().find_map(|v| v.as_f64()),
+            settings::ParamSpec::Range { start, .. } => Some(*start),
+        }
+    }
+
+    /// Extracts the numeric vector of `params`, aligned with `layout`.
+    fn parameter_vector(
+        params: &ParameterSet,
+        layout: &[(DeComponent, settings::ParamSpec)],
+    ) -> Vec<f64> {
+        layout
+            .iter()
+            .map(|(component, spec)| {
+                Self::component_value(params, component)
+                    .or_else(|| Self::first_spec_value(spec))
+                    .unwrap_or(0.0)
+            })
+            .collect()
+    }
+
+    /// Builds a `ParameterSet` from a vector aligned with `layout`, snapping every value back
+    /// into its parameter domain.
+    fn parameter_set_from_vector(
+        layout: &[(DeComponent, settings::ParamSpec)],
+        vector: &[f64],
+        pos_sizer_name: &str,
+    ) -> ParameterSet {
+        let mut params = ParameterSet::new().with_pos_sizer_name(pos_sizer_name.to_string());
+
+        for ((component, spec), raw) in layout.iter().zip(vector.iter()) {
+            let value = snap_to_spec(spec, *raw);
+            match component {
+                DeComponent::Strategy(name) => {
+                    params.strategy_params.push((name.clone(), value));
+                }
+                DeComponent::PosSizerValue => {
+                    params.pos_sizer_value = value.as_f64().unwrap_or(0.0);
+                }
+                DeComponent::Slippage => {
+                    params.slippage = value.as_f64().unwrap_or(0.0);
+                }
+                DeComponent::PosSizerAdditional(name) => {
+                    params
+                        .pos_sizer_additional_params
+                        .push((name.clone(), value));
+                }
+            }
+        }
+
+        params
+    }
+
+    /// Picks a random index below `pool_size` that is not in `excluded`.
+    ///
+    /// Returns `None` when the pool cannot satisfy the constraint, so callers can fall back
+    /// instead of looping forever (the configuration validation rules this case out).
+    fn pick_distinct_index(
+        pool_size: usize,
+        excluded: &[usize],
+        rng: &mut impl rand::Rng,
+    ) -> Option<usize> {
+        let candidates: Vec<usize> = (0..pool_size)
+            .filter(|index| !excluded.contains(index))
+            .collect();
+        if candidates.is_empty() {
+            None
+        } else {
+            Some(candidates[rng.gen_range(0..candidates.len())])
+        }
+    }
+
     /// Generates a random initial population within the parameter bounds.
+    ///
+    /// Every component of the DE vector is sampled - strategy parameters, position-sizer
+    /// value, slippage and the additional position-sizer parameters - so the operators below
+    /// can evolve all of them.
     fn create_initial_population(&mut self, pop_size: usize) {
         let mut rng = rand::thread_rng();
         self.population.clear();
-        let param_names: Vec<String> = self
-            .optimization_config
-            .get_strategy_params_ranges()
-            .keys()
-            .cloned()
-            .collect();
+        let layout = self.de_layout();
+        let pos_sizer_name = self.optimization_config.get_pos_sizer_name().clone();
 
         for _ in 0..pop_size {
-            let mut strategy_params = Vec::new();
-            for name in &param_names {
-                if let Some(spec) = self
-                    .optimization_config
-                    .get_strategy_params_ranges()
-                    .get(name)
-                {
-                    let val = Self::random_value_in_spec(spec, &mut rng);
-                    strategy_params.push((name.clone(), val));
+            let mut ps = ParameterSet::new().with_pos_sizer_name(pos_sizer_name.clone());
+
+            for (component, spec) in &layout {
+                let value = Self::random_value_in_spec(spec, &mut rng);
+                match component {
+                    DeComponent::Strategy(name) => {
+                        ps.strategy_params.push(((*name).to_string(), value));
+                    }
+                    DeComponent::PosSizerValue => {
+                        ps.pos_sizer_value = value.as_f64().unwrap_or(0.0);
+                    }
+                    DeComponent::Slippage => {
+                        ps.slippage = value.as_f64().unwrap_or(0.005);
+                    }
+                    DeComponent::PosSizerAdditional(name) => {
+                        ps.pos_sizer_additional_params
+                            .push(((*name).to_string(), value));
+                    }
                 }
             }
-
-            let pos_sizer_val = {
-                let spec = self.optimization_config.get_pos_sizer_value_range();
-                let vals = spec.expand();
-                vals.choose(&mut rng)
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null)
-            };
-
-            let slippage = {
-                let spec = self.optimization_config.get_slippage_range();
-                let vals = spec.expand();
-                vals.choose(&mut rng)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.005)
-            };
-
-            let ps = ParameterSet::new()
-                .with_strategy_params(strategy_params)
-                .with_pos_sizer_name(self.optimization_config.get_pos_sizer_name().clone())
-                .with_pos_sizer_value(pos_sizer_val.as_f64().unwrap_or(0.0))
-                .with_slippage(slippage);
 
             self.population.push(ps);
         }
@@ -1953,12 +2223,18 @@ impl LshadeRspOptimizer {
     }
 
     /// Performs DE/current-to-pbest/1 mutation with archive.
+    ///
+    /// Returns the mutant vector aligned with `layout`, already snapped into every component's
+    /// parameter domain. When the population cannot supply three distinct members the target
+    /// vector is returned unchanged, so the operation stays total.
     fn mutate(
         &self,
         target_idx: usize,
+        layout: &[(DeComponent, settings::ParamSpec)],
         rng: &mut impl rand::Rng,
-    ) -> Vec<(String, serde_json::Value)> {
+    ) -> Vec<f64> {
         let pop_size = self.population.len();
+        let target_vector = Self::parameter_vector(&self.population[target_idx], layout);
 
         // Select F from memory
         let ri = rng.gen_range(0..self.memory_f.len());
@@ -1968,139 +2244,80 @@ impl LshadeRspOptimizer {
         let pbest_idx = self.pbest_index(rng);
 
         // Select r1 from population (not target, not pbest)
-        let mut r1 = rng.gen_range(0..pop_size);
-        while r1 == target_idx || r1 == pbest_idx {
-            r1 = rng.gen_range(0..pop_size);
-        }
+        let r1 = match Self::pick_distinct_index(pop_size, &[target_idx, pbest_idx], rng) {
+            Some(index) => index,
+            None => return target_vector,
+        };
 
         // Select r2 from population ∪ archive (not target, not pbest, not r1)
         let total_pool = pop_size + self.archive.len();
-        let mut r2 = rng.gen_range(0..total_pool);
-        while r2 == target_idx || r2 == pbest_idx || r2 == r1 {
-            r2 = rng.gen_range(0..total_pool);
-        }
+        let r2 = match Self::pick_distinct_index(total_pool, &[target_idx, pbest_idx, r1], rng) {
+            Some(index) => index,
+            None => return target_vector,
+        };
 
-        let pbest = &self.population[pbest_idx];
-        let target = &self.population[target_idx];
-        let x_r1 = &self.population[r1];
-        let x_r2 = if r2 < pop_size {
-            &self.population[r2]
+        let pbest_vector = Self::parameter_vector(&self.population[pbest_idx], layout);
+        let r1_vector = Self::parameter_vector(&self.population[r1], layout);
+        let r2_vector = if r2 < pop_size {
+            Self::parameter_vector(&self.population[r2], layout)
         } else {
-            &self.archive[r2 - pop_size]
+            Self::parameter_vector(&self.archive[r2 - pop_size], layout)
         };
 
         // Create mutant: target + F*(pbest - target) + F*(r1 - r2)
-        let param_names: Vec<String> = self
-            .optimization_config
-            .get_strategy_params_ranges()
-            .keys()
-            .cloned()
-            .collect();
-        let mut mutant = Vec::new();
-
-        for name in &param_names {
-            let spec = self
-                .optimization_config
-                .get_strategy_params_ranges()
-                .get(name);
-            let target_val = target
-                .strategy_params
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v);
-            let pbest_val = pbest
-                .strategy_params
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v);
-            let r1_val = x_r1
-                .strategy_params
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v);
-            let r2_val = x_r2
-                .strategy_params
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v);
-
-            if let (Some(tv), Some(pv), Some(r1v), Some(r2v), Some(spec)) =
-                (target_val, pbest_val, r1_val, r2_val, spec)
-            {
-                if let (Some(t), Some(p), Some(r1_n), Some(r2_n)) =
-                    (tv.as_f64(), pv.as_f64(), r1v.as_f64(), r2v.as_f64())
-                {
-                    let mut mutant_val = t + f * (p - t) + f * (r1_n - r2_n);
-                    // Clamp to bounds
-                    if let settings::ParamSpec::Range { start, end, step } = spec {
-                        mutant_val = mutant_val.clamp(*start, *end);
-                        if *step > 0.0 {
-                            mutant_val = (mutant_val / step).round() * step;
-                            mutant_val = mutant_val.clamp(*start, *end);
-                        }
-                    }
-                    mutant.push((
-                        name.clone(),
-                        serde_json::Value::Number(
-                            serde_json::Number::from_f64(mutant_val).unwrap(),
-                        ),
-                    ));
-                } else {
-                    mutant.push((name.clone(), pv.clone()));
+        layout
+            .iter()
+            .enumerate()
+            .map(|(j, (_, spec))| {
+                let t = target_vector[j];
+                let mutant_val = t + f * (pbest_vector[j] - t) + f * (r1_vector[j] - r2_vector[j]);
+                // Snap to the allowed values (Range -> step grid, Discrete -> nearest entry)
+                // before the value enters the trial vector.
+                match snap_to_spec(spec, mutant_val) {
+                    serde_json::Value::Number(number) => number.as_f64().unwrap_or(t),
+                    // Non-numeric discrete values cannot take part in the arithmetic.
+                    _ => t,
                 }
-            } else {
-                mutant.push((
-                    name.clone(),
-                    pbest_val.cloned().unwrap_or(serde_json::Value::Null),
-                ));
-            }
-        }
-
-        mutant
+            })
+            .collect()
     }
 
-    /// Binomial crossover between target and mutant to produce trial vector.
+    /// Binomial crossover between target and mutant to produce the trial vector.
+    ///
+    /// Works on the full DE vector (all strategy parameters, the position-sizer value, the
+    /// slippage and the additional position-sizer parameters) and snaps every component into
+    /// its parameter domain.
     fn crossover(
         &self,
         target_idx: usize,
-        mutant: &[(String, serde_json::Value)],
+        layout: &[(DeComponent, settings::ParamSpec)],
+        mutant: &[f64],
         cr: f64,
         rng: &mut impl rand::Rng,
     ) -> ParameterSet {
         let target = &self.population[target_idx];
-        let param_names: Vec<String> = self
-            .optimization_config
-            .get_strategy_params_ranges()
-            .keys()
-            .cloned()
+        let target_vector = Self::parameter_vector(target, layout);
+
+        // At least one component must come from the mutant (j_rand); an empty layout simply
+        // yields the target unchanged instead of panicking on `gen_range(0..0)`.
+        let j_rand = if layout.is_empty() {
+            None
+        } else {
+            Some(rng.gen_range(0..layout.len()))
+        };
+
+        let trial_vector: Vec<f64> = (0..layout.len())
+            .map(|j| {
+                let use_mutant = Some(j) == j_rand || rng.r#gen::<f64>() <= cr;
+                if use_mutant {
+                    mutant.get(j).copied().unwrap_or(target_vector[j])
+                } else {
+                    target_vector[j]
+                }
+            })
             .collect();
-        let j_rand = rng.gen_range(0..param_names.len());
-        let mut trial_params = Vec::new();
 
-        for (j, name) in param_names.iter().enumerate() {
-            let use_mutant = j == j_rand || rng.r#gen::<f64>() <= cr;
-            let target_val = target
-                .strategy_params
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, v)| v);
-            let mutant_val = mutant.iter().find(|(n, _)| n == name).map(|(_, v)| v);
-
-            let val = if use_mutant {
-                mutant_val
-                    .cloned()
-                    .unwrap_or_else(|| target_val.cloned().unwrap_or(serde_json::Value::Null))
-            } else {
-                target_val.cloned().unwrap_or(serde_json::Value::Null)
-            };
-            trial_params.push((name.clone(), val));
-        }
-
-        ParameterSet::new()
-            .with_strategy_params(trial_params)
-            .with_pos_sizer_name(target.pos_sizer_name.clone())
-            .with_pos_sizer_value(target.pos_sizer_value)
-            .with_slippage(target.slippage)
+        Self::parameter_set_from_vector(layout, &trial_vector, &target.pos_sizer_name)
     }
 
     /// Linear Population Size Reduction: removes the worst individual.
@@ -2196,9 +2413,13 @@ impl LshadeRspOptimizer {
         F: Fn(&ParameterSet) -> f64 + Send + Sync + Clone + 'static,
     {
         let threads = initial_strategy_settings.threads.unwrap_or(num_cpus::get());
+        self.config.validate(&self.optimization_config)?;
         let pop_size = self.config.population_size;
         let max_evals = self.config.max_evaluations;
         let mut stats = Vec::new();
+
+        // The DE vector layout is fixed for the whole run.
+        let layout = self.de_layout();
 
         // Initialize memory
         self.init_memory();
@@ -2213,8 +2434,10 @@ impl LshadeRspOptimizer {
             bank: self.chromosome_bank.clone(),
         };
 
-        // Create initial population
-        self.create_initial_population(pop_size);
+        // Create the initial population, never evaluating more individuals than the budget
+        // allows (`max_evaluations >= population_size` is enforced by the validation).
+        let init_batch = pop_size.min(max_evals);
+        self.create_initial_population(init_batch);
 
         self.initialize_stats_csv(initial_strategy_settings)?;
 
@@ -2223,7 +2446,7 @@ impl LshadeRspOptimizer {
         // Evaluate initial population
         println!("Evaluation: #0");
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let batch_size = pop_size;
+        let batch_size = init_batch;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()?;
@@ -2253,7 +2476,7 @@ impl LshadeRspOptimizer {
                 })
                 .collect()
         });
-        self.eval_count = self.population.len();
+        self.eval_count = self.fitness_values.len();
 
         let initial_stat = self.build_iteration_stats(1);
         self.print_iteration_summary(&initial_stat, max_evals);
@@ -2282,16 +2505,22 @@ impl LshadeRspOptimizer {
             let mut successful_f = Vec::new();
 
             let pop_size_before = self.population.len();
+            // Never exceed the configured budget: evaluate at most the remaining evaluations.
+            let remaining_budget = max_evals.saturating_sub(self.eval_count);
+            let trial_count = pop_size_before.min(remaining_budget);
+            if trial_count == 0 {
+                break;
+            }
 
             // Evaluate trials in parallel batches
             // Always count evaluations; track success for CR/F memory
             println!("Evaluation: #{}", iteration - 1);
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let batch_size = pop_size_before;
+            let batch_size = trial_count;
             let chromosome_bank = self.chromosome_bank.clone();
             let trial_results: Vec<(usize, ParameterSet, f64, f64, f64, bool)> =
                 pool.install(|| {
-                    (0..pop_size_before)
+                    (0..trial_count)
                         .into_par_iter()
                         .map(|i| {
                             let mut local_rng = rand::thread_rng();
@@ -2316,8 +2545,8 @@ impl LshadeRspOptimizer {
                             }
                             f_val = f_val.min(1.0);
 
-                            let mutant = self.mutate(i, &mut local_rng);
-                            let trial = self.crossover(i, &mutant, cr_val, &mut local_rng);
+                            let mutant = self.mutate(i, &layout, &mut local_rng);
+                            let trial = self.crossover(i, &layout, &mutant, cr_val, &mut local_rng);
                             let start_time = std::time::Instant::now();
                             let current_count =
                                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -2445,6 +2674,7 @@ impl LshadeRspOptimizer {
             "mean_fitness",
             "population_size",
             "evaluations",
+            "Best_Individual",
         ])?;
 
         wtr.flush()?;
@@ -2466,6 +2696,7 @@ impl LshadeRspOptimizer {
             .open(&path)?;
         let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_writer(file);
 
+        let best_individual = self.best_chromosome_display();
         wtr.write_record([
             &strategy_settings.strategy_name,
             &stat.iteration.to_string(),
@@ -2474,6 +2705,7 @@ impl LshadeRspOptimizer {
             &format!("{:.6}", stat.mean_fitness),
             &stat.population_size.to_string(),
             &stat.evaluations.to_string(),
+            &best_individual,
         ])?;
 
         wtr.flush()?;
@@ -2594,43 +2826,37 @@ mod lshade_tests {
         optimizer.fitness_values = vec![0.0; 10];
         optimizer.init_memory();
 
+        let layout = optimizer.de_layout();
         let mut rng = rand::thread_rng();
-        let mutant = optimizer.mutate(0, &mut rng);
+        let mutant = optimizer.mutate(0, &layout, &mut rng);
 
-        // Same number of params as the population members
-        assert_eq!(
-            mutant.len(),
-            optimizer.population[0].get_strategy_params().len()
-        );
+        // The vector covers every DE component: strategy params, pos_sizer_value, slippage.
+        assert_eq!(mutant.len(), layout.len());
+        assert_eq!(mutant.len(), 2 + 2);
 
-        for (name, val) in &mutant {
-            let spec = optimizer
-                .optimization_config
-                .get_strategy_params_ranges()
-                .get(name)
-                .unwrap();
-            // Every param must be a valid f64 number and present
-            assert!(
-                val.is_number(),
-                "mutant {} value {:?} is not a number",
-                name,
-                val
-            );
+        for ((component, spec), value) in layout.iter().zip(mutant.iter()) {
             match spec {
                 settings::ParamSpec::Range { start, end, .. } => {
-                    let v = val.as_f64().unwrap();
                     assert!(
-                        v >= *start && v <= *end,
-                        "mutant {} value {} out of [{}, {}]",
-                        name,
-                        v,
+                        *value >= *start && *value <= *end,
+                        "mutant {:?} value {} out of [{}, {}]",
+                        component,
+                        value,
                         start,
                         end
                     );
                 }
-                // For Discrete params, the DE arithmetic may produce
-                // values outside the discrete set — that's expected behaviour.
-                settings::ParamSpec::Discrete(_) => {}
+                settings::ParamSpec::Discrete(values) => {
+                    // Discrete components must stay inside their allowed domain.
+                    let allowed: Vec<f64> = values.iter().filter_map(|v| v.as_f64()).collect();
+                    assert!(
+                        allowed.iter().any(|a| (a - value).abs() < 1e-12),
+                        "mutant {:?} value {} not in {:?}",
+                        component,
+                        value,
+                        allowed
+                    );
+                }
             }
         }
     }
@@ -2647,11 +2873,12 @@ mod lshade_tests {
         optimizer.fitness_values = vec![0.0; 10];
         optimizer.init_memory();
 
+        let layout = optimizer.de_layout();
         let mut rng = rand::thread_rng();
-        let mutant = optimizer.mutate(0, &mut rng);
-        let trial = optimizer.crossover(0, &mutant, 0.9, &mut rng);
+        let mutant = optimizer.mutate(0, &layout, &mut rng);
+        let trial = optimizer.crossover(0, &layout, &mutant, 0.9, &mut rng);
 
-        // Trial must have both strategy params
+        // Trial must carry every strategy parameter.
         let trial_params = trial.get_strategy_params();
         assert_eq!(trial_params.len(), 2);
 
@@ -2672,11 +2899,22 @@ mod lshade_tests {
                     let v = val.as_f64().unwrap();
                     assert!(v >= *start && v <= *end);
                 }
-                // Crossover copies from either target or mutant, both have
-                // valid-number values (discrete containment not guaranteed).
-                settings::ParamSpec::Discrete(_) => {}
+                settings::ParamSpec::Discrete(values) => {
+                    // Crossover snaps every component back into its allowed domain.
+                    assert!(
+                        values.contains(val),
+                        "crossover {} value {:?} not in {:?}",
+                        name,
+                        val,
+                        values
+                    );
+                }
             }
         }
+
+        // The sizer value and slippage are part of the trial as well.
+        assert_eq!(*trial.get_pos_sizer_value(), 1.0);
+        assert_eq!(*trial.get_slippage(), 0.005);
     }
 
     // ─── Test 5 ────────────────────────────────────────────────────────
@@ -2915,10 +3153,29 @@ mod lshade_tests {
             rows
         );
         assert!(rows[0].starts_with("strategy_name;iteration;"));
+        assert!(
+            rows[0].ends_with(";Best_Individual"),
+            "header must carry the best-individual column, got {:?}",
+            rows[0]
+        );
         assert!(rows[1].starts_with("Test_Strategy;1;"));
         for (i, row) in rows[1..].iter().enumerate() {
             assert_eq!(stats[i].iteration, i + 1);
             assert!(row.starts_with(&format!("Test_Strategy;{};", i + 1)));
+            // The last column holds the best individual of the iteration.
+            let best_individual = row.rsplit(';').next().unwrap_or_default();
+            assert!(
+                best_individual.contains("pos_sizer_type") && best_individual.contains("slippage"),
+                "row {} has no best-individual column: {:?}",
+                i + 1,
+                row
+            );
+            assert!(
+                best_individual.starts_with('{'),
+                "row {} best individual is not a parameter set: {:?}",
+                i + 1,
+                best_individual
+            );
         }
 
         assert!(
@@ -3065,5 +3322,498 @@ mod lshade_tests {
 
             let _ = std::fs::remove_dir_all(&temp_dir);
         }
+    }
+
+    // ─── Test 14 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_snap_to_spec_respects_range_grid_and_discrete_domain() {
+        let range_spec = settings::ParamSpec::Range {
+            start: 0.0,
+            end: 10.0,
+            step: 2.0,
+        };
+        // Off-grid values land on the step grid, out-of-range values on the bounds.
+        assert_eq!(snap_to_spec(&range_spec, 3.1).as_f64().unwrap(), 4.0);
+        assert_eq!(snap_to_spec(&range_spec, 2.9).as_f64().unwrap(), 2.0);
+        assert_eq!(snap_to_spec(&range_spec, -5.0).as_f64().unwrap(), 0.0);
+        assert_eq!(snap_to_spec(&range_spec, 99.0).as_f64().unwrap(), 10.0);
+        assert_eq!(snap_to_spec(&range_spec, f64::NAN).as_f64().unwrap(), 0.0);
+
+        // The step grid is anchored at `start`, not at zero: with start=1, step=2 the
+        // allowed values are {1, 3, 5, 7, 9}. The old zero-anchored formula produced 2 or 4.
+        let offset_range_spec = settings::ParamSpec::Range {
+            start: 1.0,
+            end: 9.0,
+            step: 2.0,
+        };
+        let allowed = [1.0, 3.0, 5.0, 7.0, 9.0];
+        for raw in [-7.5, 1.0, 1.4, 2.0, 2.6, 3.5, 4.0, 6.1, 8.9, 9.0, 42.0] {
+            let snapped = snap_to_spec(&offset_range_spec, raw).as_f64().unwrap();
+            assert!(
+                allowed.contains(&snapped),
+                "raw {} snapped to {}, which is not one of {:?}",
+                raw,
+                snapped,
+                allowed
+            );
+        }
+        // Spot-check that the nearest grid point inside the offset domain is chosen.
+        // An exact half-step (raw 2.0) resolves upward, like `f64::round`.
+        assert_eq!(snap_to_spec(&offset_range_spec, 2.0).as_f64().unwrap(), 3.0);
+        assert_eq!(snap_to_spec(&offset_range_spec, 2.6).as_f64().unwrap(), 3.0);
+        assert_eq!(snap_to_spec(&offset_range_spec, 1.0).as_f64().unwrap(), 1.0);
+        assert_eq!(snap_to_spec(&offset_range_spec, 9.0).as_f64().unwrap(), 9.0);
+        // NaN falls back to the domain start.
+        assert_eq!(
+            snap_to_spec(&offset_range_spec, f64::NAN).as_f64().unwrap(),
+            1.0
+        );
+
+        let discrete_spec = settings::ParamSpec::Discrete(vec![
+            Value::Number(serde_json::Number::from(1)),
+            Value::Number(serde_json::Number::from(5)),
+            Value::Number(serde_json::Number::from(9)),
+        ]);
+        // Discrete values snap to the nearest allowed entry.
+        assert_eq!(
+            snap_to_spec(&discrete_spec, 4.4),
+            Value::Number(serde_json::Number::from(5))
+        );
+        assert_eq!(
+            snap_to_spec(&discrete_spec, 7.6),
+            Value::Number(serde_json::Number::from(9))
+        );
+        assert_eq!(
+            snap_to_spec(&discrete_spec, 0.0),
+            Value::Number(serde_json::Number::from(1))
+        );
+    }
+
+    // ─── Test 15 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_lshade_config_validation_rejects_impossible_settings() {
+        let opt_config = make_test_opt_config();
+
+        let valid = LshadeRspConfig {
+            population_size: 4,
+            max_evaluations: 8,
+            p_best: 0.1,
+            archive_rate: 1.0,
+            memory_size: 5,
+            fitness_metric: settings::FitnessValue::default(),
+            fitness_direction: "max".to_string(),
+        };
+        assert!(valid.validate(&opt_config).is_ok());
+
+        // A population below 4 cannot supply three distinct DE members.
+        for population_size in 0..4 {
+            let config = LshadeRspConfig {
+                population_size,
+                ..valid.clone()
+            };
+            assert!(
+                config.validate(&opt_config).is_err(),
+                "population_size {} must be rejected",
+                population_size
+            );
+        }
+
+        // The initial population must fit into the evaluation budget.
+        let config = LshadeRspConfig {
+            population_size: 10,
+            max_evaluations: 9,
+            ..valid.clone()
+        };
+        assert!(config.validate(&opt_config).is_err());
+
+        // An empty F/CR memory cannot be sampled.
+        let config = LshadeRspConfig {
+            memory_size: 0,
+            ..valid.clone()
+        };
+        assert!(config.validate(&opt_config).is_err());
+
+        // No optimizable strategy parameter means nothing to evolve.
+        let empty_config = OptimizationConfig::new()
+            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(1.0).unwrap(),
+            )]))
+            .with_slippage_range(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(0.005).unwrap(),
+            )]))
+            .with_pos_sizer_name("mpr".to_string());
+        assert!(valid.validate(&empty_config).is_err());
+    }
+
+    // ─── Test 16 ───────────────────────────────────────────────────────
+
+    /// Builds an optimization config whose position sizer contributes an additional
+    /// parameter, so the DE vector has to cover it too.
+    fn make_test_opt_config_with_additional_param() -> OptimizationConfig {
+        let strategy_params_ranges: HashMap<String, settings::ParamSpec> = [(
+            "param_a".to_string(),
+            settings::ParamSpec::Range {
+                start: 0.0,
+                end: 6.0,
+                step: 1.0,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let additional: HashMap<String, settings::ParamSpec> = [(
+            "extra".to_string(),
+            settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from(2)),
+                Value::Number(serde_json::Number::from(4)),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        OptimizationConfig::new()
+            .with_strategy_params_ranges(strategy_params_ranges)
+            .with_pos_sizer_additional_params(additional)
+            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from(1)),
+                Value::Number(serde_json::Number::from(2)),
+            ]))
+            .with_slippage_range(settings::ParamSpec::Range {
+                start: 0.001,
+                end: 0.01,
+                step: 0.001,
+            })
+            .with_pos_sizer_name("mpr".to_string())
+    }
+
+    #[test]
+    fn test_initial_population_and_trials_cover_all_components() {
+        let mut optimizer = LshadeRspOptimizer::new()
+            .with_optimization_config(make_test_opt_config_with_additional_param());
+
+        optimizer.create_initial_population(10);
+        optimizer.fitness_values = vec![0.0; 10];
+        optimizer.init_memory();
+
+        let layout = optimizer.de_layout();
+        // param_a + pos_sizer_value + slippage + extra
+        assert_eq!(layout.len(), 4);
+
+        for ps in &optimizer.population {
+            let additional = ps
+                .get_pos_sizer_additional_params()
+                .iter()
+                .find(|(n, _)| n == "extra")
+                .map(|(_, v)| v.as_f64().unwrap());
+            assert!(
+                matches!(additional, Some(v) if v == 2.0 || v == 4.0),
+                "initial individual lacks a valid 'extra' parameter: {:?}",
+                ps.get_pos_sizer_additional_params()
+            );
+            assert!(
+                matches!(*ps.get_pos_sizer_value(), 1.0 | 2.0),
+                "pos_sizer_value {} outside its discrete spec",
+                ps.get_pos_sizer_value()
+            );
+            let slippage = *ps.get_slippage();
+            assert!(
+                (0.001..=0.01).contains(&slippage),
+                "slippage {} outside its range",
+                slippage
+            );
+        }
+
+        let mut rng = rand::thread_rng();
+        let mutant = optimizer.mutate(0, &layout, &mut rng);
+        let trial = optimizer.crossover(0, &layout, &mutant, 1.0, &mut rng);
+
+        assert_eq!(mutant.len(), layout.len());
+        let trial_additional = trial
+            .get_pos_sizer_additional_params()
+            .iter()
+            .find(|(n, _)| n == "extra")
+            .map(|(_, v)| v.as_f64().unwrap());
+        assert!(
+            matches!(trial_additional, Some(v) if v == 2.0 || v == 4.0),
+            "trial 'extra' parameter left its discrete spec: {:?}",
+            trial.get_pos_sizer_additional_params()
+        );
+        assert!(matches!(*trial.get_pos_sizer_value(), 1.0 | 2.0));
+    }
+
+    // ─── Test 17 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_respects_max_evaluations_budget() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("farukon_lshade_budget_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let strategy_settings = make_test_strategy_settings(&temp_dir.to_string_lossy());
+
+        let mut optimizer = LshadeRspOptimizer::new()
+            .with_optimization_config(make_test_opt_config())
+            .with_config(LshadeRspConfig {
+                population_size: 4,
+                max_evaluations: 5,
+                p_best: 0.1,
+                archive_rate: 1.0,
+                memory_size: 5,
+                fitness_metric: settings::FitnessValue::default(),
+                fitness_direction: "max".to_string(),
+            });
+
+        let evaluations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = evaluations.clone();
+        let evaluate = move |params: &ParameterSet| -> f64 {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            params
+                .get_strategy_params()
+                .iter()
+                .find(|(n, _)| n == "param_a")
+                .and_then(|(_, v)| v.as_f64())
+                .unwrap_or(0.0)
+        };
+
+        let stats = optimizer.run(&strategy_settings, evaluate).unwrap();
+        assert!(!stats.is_empty());
+        assert!(
+            optimizer.eval_count <= 5,
+            "eval_count {} exceeded the budget of 5",
+            optimizer.eval_count
+        );
+        assert!(
+            evaluations.load(std::sync::atomic::Ordering::Relaxed) <= 5,
+            "the fitness function was called more often than the budget allows"
+        );
+        for stat in &stats {
+            assert!(
+                stat.evaluations <= 5,
+                "iteration {} reports {} evaluations",
+                stat.iteration,
+                stat.evaluations
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ─── Test 18 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_run_rejects_population_below_four() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "farukon_lshade_invalid_pop_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let strategy_settings = make_test_strategy_settings(&temp_dir.to_string_lossy());
+
+        for population_size in [1usize, 2, 3] {
+            let mut optimizer = LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size,
+                    max_evaluations: 100,
+                    p_best: 0.1,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: "max".to_string(),
+                });
+            let evaluate = |_params: &ParameterSet| -> f64 { 0.0 };
+            assert!(
+                optimizer.run(&strategy_settings, evaluate).is_err(),
+                "population_size {} must be rejected before the run starts",
+                population_size
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[cfg(test)]
+mod ga_tests {
+    use super::*;
+    use crate::settings;
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    fn make_test_ga_config(population_size: usize, elite_size: usize) -> GAConfig {
+        GAConfig {
+            population_size,
+            elite_size,
+            max_generations: 2,
+            p_crossover: 0.8,
+            p_mutation: 0.2,
+            fitness_metric: settings::FitnessValue::default(),
+            fitness_direction: "max".to_string(),
+            std_stop: 0.0,
+        }
+    }
+
+    fn make_test_opt_config() -> OptimizationConfig {
+        let strategy_params_ranges: HashMap<String, settings::ParamSpec> = [(
+            "param_a".to_string(),
+            settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from(1)),
+                Value::Number(serde_json::Number::from(2)),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        OptimizationConfig::new()
+            .with_strategy_params_ranges(strategy_params_ranges)
+            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(1.0).unwrap(),
+            )]))
+            .with_slippage_range(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(0.005).unwrap(),
+            )]))
+            .with_pos_sizer_name("mpr".to_string())
+    }
+
+    fn make_individ(param_a: i64) -> ParameterSet {
+        ParameterSet::new()
+            .with_strategy_params(vec![(
+                "param_a".to_string(),
+                Value::Number(serde_json::Number::from(param_a)),
+            )])
+            .with_pos_sizer_name("mpr".to_string())
+            .with_pos_sizer_value(1.0)
+            .with_slippage(0.005)
+    }
+
+    #[test]
+    fn test_ga_config_validation_rejects_invalid_combinations() {
+        assert!(make_test_ga_config(10, 2).validate().is_ok());
+        // An empty elite pool has no first parent.
+        assert!(make_test_ga_config(10, 0).validate().is_err());
+        // A population of one cannot be split into parents.
+        assert!(make_test_ga_config(1, 1).validate().is_err());
+        assert!(make_test_ga_config(0, 0).validate().is_err());
+        // The elite pool must leave at least one non-elite individual.
+        assert!(make_test_ga_config(5, 5).validate().is_err());
+    }
+
+    #[test]
+    fn test_tournament_selection_keeps_population_size() {
+        // Small elite/population combinations used to underflow or index an empty elite pool.
+        for (population_size, elite_size) in [(2usize, 1usize), (3, 1), (3, 2), (4, 3), (10, 2)] {
+            let config = make_test_ga_config(population_size, elite_size);
+            config.validate().unwrap();
+            let ga = GeneticAlgorythm::new()
+                .with_ga_config(config)
+                .with_optimization_config(make_test_opt_config());
+
+            let results: Vec<(ParameterSet, f64)> = (0..population_size)
+                .map(|i| (make_individ(i as i64), i as f64))
+                .collect();
+
+            let next_gen = ga.tournament_selection(&results);
+            assert_eq!(
+                next_gen.len(),
+                population_size,
+                "population_size={} elite_size={}",
+                population_size,
+                elite_size
+            );
+        }
+    }
+
+    #[test]
+    fn test_tournament_selection_is_total_with_empty_elite_results() {
+        // Defensive case: results shorter than the configured elite pool must not panic.
+        let ga = GeneticAlgorythm::new()
+            .with_ga_config(make_test_ga_config(5, 2))
+            .with_optimization_config(make_test_opt_config());
+
+        let next_gen = ga.tournament_selection(&[(make_individ(1), 1.0)]);
+        assert_eq!(next_gen.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod grid_search_tests {
+    use super::*;
+    use crate::settings;
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    fn make_config() -> OptimizationConfig {
+        let strategy_params_ranges: HashMap<String, settings::ParamSpec> = [(
+            "window".to_string(),
+            settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from(10)),
+                Value::Number(serde_json::Number::from(20)),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+        let additional: HashMap<String, settings::ParamSpec> = [(
+            "extra".to_string(),
+            settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from(1)),
+                Value::Number(serde_json::Number::from(2)),
+                Value::Number(serde_json::Number::from(3)),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        OptimizationConfig::new()
+            .with_strategy_params_ranges(strategy_params_ranges)
+            .with_pos_sizer_additional_params(additional)
+            .with_pos_sizer_value_ranges(settings::ParamSpec::Discrete(vec![
+                Value::Number(serde_json::Number::from_f64(1.0).unwrap()),
+                Value::Number(serde_json::Number::from_f64(2.0).unwrap()),
+            ]))
+            .with_slippage_range(settings::ParamSpec::Discrete(vec![Value::Number(
+                serde_json::Number::from_f64(0.005).unwrap(),
+            )]))
+            .with_pos_sizer_name("mpr".to_string())
+    }
+
+    #[test]
+    fn test_grid_search_covers_all_additional_sizer_parameter_values() {
+        let config = make_config();
+        let optimizer = GridSearchOptimizer::new().with_optimization_config(config.clone());
+
+        // window (2) * extra (3) * pos_sizer_value (2) * slippage (1)
+        let expected = 2 * 3 * 2;
+        let total = optimizer.calculate_total_combinations().unwrap();
+        assert_eq!(total, expected as u128);
+
+        let combinations: Vec<ParameterSet> = config.generate_all_combinations_iter().collect();
+        assert_eq!(
+            combinations.len(),
+            expected,
+            "generated combinations must match the reported total"
+        );
+
+        // Every additional-parameter value appears, not just the first one.
+        let mut extra_values: Vec<f64> = combinations
+            .iter()
+            .map(|ps| {
+                ps.get_pos_sizer_additional_params()
+                    .iter()
+                    .find(|(name, _)| name == "extra")
+                    .and_then(|(_, v)| v.as_f64())
+                    .expect("every set must carry the additional parameter")
+            })
+            .collect();
+        extra_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        extra_values.dedup();
+        assert_eq!(extra_values, vec![1.0, 2.0, 3.0]);
+
+        // Every combination is unique.
+        let unique_count = combinations
+            .iter()
+            .map(|ps| ps.format_for_display())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert_eq!(unique_count, expected);
     }
 }

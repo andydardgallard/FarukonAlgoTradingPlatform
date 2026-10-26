@@ -1,11 +1,13 @@
 # 🚀 Farukon Algo Trading Platform
-<!-- code-factory-version: 3.0.0 -->
+<!-- code-factory-version: 3.1.0 -->
 
 **Ultra-Fast, Low-Latency, Event-Driven Algorithmic Trading Engine**
 
-Farukon is a high-performance, Rust-based algorithmic trading platform designed for **ultra-low-latency backtesting, multi-strategy optimization**, and **real-time execution**. Built **with zero-copy FlatBuffers, SIMD-accelerated calculations, and a multi-threaded event-driven architecture,** Farukon enables researchers and traders to prototype, test, and deploy strategies with minimal overhead.
+Farukon is a high-performance, Rust-based algorithmic trading platform designed for **ultra-low-latency backtesting and multi-strategy optimization** with **simulated order execution**. Built **with zero-copy FlatBuffers, SIMD-accelerated calculations, and a multi-threaded event-driven architecture,** Farukon enables researchers and traders to prototype, test, and validate strategies with minimal overhead.
 
-The platform supports dynamic strategy loading via `.dylib`/`.so` libraries, grid search and genetic algorithm optimization, margin-aware position sizing, and real-time performance tracking.
+> ⚠️ **Scope**: execution is **simulated only** (`SimulatedExecutionHandler`). Live/real-time trading against a broker or exchange is **not implemented**; every run replays historical market data.
+
+The platform supports dynamic strategy loading via `.dll`/`.so`/`.dylib` libraries, grid search, genetic algorithm and LSHADE-RSP optimization, margin-aware position sizing, and per-bar performance tracking.
 
  ## 🚀 Key Features
 
@@ -86,7 +88,9 @@ FarukonAlgoTradingPlatform/
 
 ## 🛠 Getting Started
 
-1. **Prerequisites**: Install [Rust 1.78+](https://rust-lang.org/tools/install/)
+1. **Prerequisites**: Install [Rust 1.85+](https://rust-lang.org/tools/install/) — every crate in the
+   workspace uses the Rust 2024 edition, which was stabilized in Rust 1.85, so older toolchains
+   cannot build it.
 2. **Clone the Repository:**
    ```bash
    git clone https://github.com/andydardgallard/FarukonAlgoTradingPlatform.git
@@ -148,11 +152,10 @@ A map where keys are unique strategy IDs (e.g., `"Strategy_1"`), and values are 
 {
   "threads": 8,
   "strategy_name": "MovingAverageCrossStrategy",
-  "strategy_path": "target/release/libstrategy_lib.dylib",
+  "strategy_path": "target/release/strategy_lib.dll",
   "strategy_weight": 1.0,
   "slippage": [0.005],
   "data": { ... },
-  "symbol_base_name": "Si",
   "symbols": ["Si-12.23", "Si-3.24"],
   "strategy_params": { ... },
   "pos_sizer_params": { ... },
@@ -164,8 +167,8 @@ A map where keys are unique strategy IDs (e.g., `"Strategy_1"`), and values are 
 
 * `threads` (int, optional): Number of CPU threads to use for this strategy’s calculations. Defaults to `num_cpus::get()`.
 ✅ Fully multi-threaded: Each strategy runs independently in its own thread pool.
-* `strategy_name` (string): Name of the strategy class (e.g., `MovingAverageCrossStrategy`). Must match the exported symbol in the `.dylib`.
-* `strategy_path` (string): Path to the compiled dynamic library (`.dylib` on macOS/Linux, `.dll` on Windows).
+* `strategy_name` (string): Name of the strategy class (e.g., `MovingAverageCrossStrategy`). Must match the exported symbol in the strategy library.
+* `strategy_path` (string): Path to the compiled dynamic library. The file name is platform-specific: Cargo emits `strategy_lib.dll` on Windows/MSVC, `libstrategy_lib.so` on Linux and `libstrategy_lib.dylib` on macOS — edit the example above to match your platform.
 * `strategy_weight` (float): Proportion of `initial_capital` allocated to this strategy. Unused capital remains in cash — no need to sum to 1.0.
 * `slippage` (array of float OR range object):
 Slippage applied to market orders as a percentage of price.
@@ -174,7 +177,6 @@ Slippage applied to market orders as a percentage of price.
 * `data` (object): Data source configuration.
   * `data_path` (string): Path to directory containing `.bin`/`.idx` files (e.g., `"Tickers/FBS/Si"`).
   * `timeframe` (string): Target resampled timeframe. Valid values: `"1min"`, `"2min"`, `"3min"`, `"4min"`, `"5min"`, `"1d"`.
-* `symbol_base_name` (string): Base symbol name (e.g., `"Si"`) used to look up contract metadata in `instruments_info.json`.
 * `symbols` (array of strings): List of contract symbols to trade (e.g., `["Si-12.23", "Si-3.24"]`). Must exist in `instruments_info.json`.
 * `strategy_params` (object): Strategy hyperparameters.
 Each key is a parameter name; value is an array of discrete values or a range object.
@@ -204,7 +206,7 @@ Each key is a parameter name; value is an array of discrete values or a range ob
       * `fitness_params` (object):
         * `fitness_direction` (string): `"max"` or `"min"` (optimize for max or min fitness).
         * `fitness_value` (string or object): Metric(s) to optimize.
-          * Single: `"APR"`, `"Total_Return"`, `"MaxDD"`, `"Recovery_Factor"`, `"Deals_Count"`.
+          * Single: `"APR"`, `"Total_Return"`, `"Total_Return_%"`, `"Max_Drawdown"`, `"APR/DD_factor"`, `"Recovery_Factor"`, `"Deals_Count"`.
           * Composite:
             ```json
             {
@@ -213,6 +215,10 @@ Each key is a parameter name; value is an array of discrete values or a range ob
               }
             }
             ```
+            Accepted composite names: `Total_Return`, `Total_Return_%`, `APR`, `max_DD`,
+            `max_DD_%`, `max_DD_30%`, `APR/DD_factor`, `APR/DD_factor_3`, `Recovery_Factor`,
+            `Recovery_Factor_5`, `Deals_Count`, `Composite` (each contributes with equal weight; an
+            unknown name is a hard error, never a silent zero).
 
 ## 🧠 For AI Systems
 Farukon is designed to be **AI-native** — a platform for automated strategy discovery and hyperparameter optimization.
@@ -281,7 +287,10 @@ cargo run --release -- -c portfolios/lshade_si_25_apr_dd.json
 
 **Output:** Every iteration appends one row to `lshade_optimization_results.csv` in the
 strategy's `exit_results_path` (the file is recreated with its header at the start of each run,
-and iterations are numbered from 1); the evaluated parameter sets are written to
+and iterations are numbered from 1). Columns: `strategy_name`, `iteration`, `best_fitness`,
+`worst_fitness`, `mean_fitness`, `population_size`, `evaluations`, `Best_Individual` (the best
+individual's strategy parameters, position-sizer value/additional parameters and slippage,
+formatted like the console `BestChromosome` line); the evaluated parameter sets are written to
 `optimization_results.csv` as for the other optimizers. The configured `fitness_direction`
 (`"max"` / `"min"`) is honoured by selection, by the best/worst statistics and by the convergence
 check.

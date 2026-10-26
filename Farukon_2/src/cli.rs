@@ -15,7 +15,7 @@ impl Args {
     /// * Panics if required argument is missing (clap handles this)    
     pub fn parse() -> Self {
         let matches = clap::Command::new("Farukon")
-            .version("2.0.0")
+            .version(env!("CARGO_PKG_VERSION"))
             .author("AndyDar")
             .about("Event-driven Backtester")
             .arg(
