@@ -168,7 +168,7 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
                         "high" => Some(*soa_data.get_high(idx).unwrap()),
                         "low" => Some(*soa_data.get_low(idx).unwrap()),
                         "close" => Some(*soa_data.get_close(idx).unwrap()),
-                        "volume" => Some(*soa_data.get_volume(idx).unwrap() as f64),
+                        "volume" => Some(*soa_data.get_volume(idx).unwrap()),
                         _ => {
                             eprintln!(
                                 "Warning: Unknown value type '{}' for symbol '{}'",
@@ -222,8 +222,8 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
                         "close" => {
                             Some(&soa_data.get_closes().unwrap()[start_index..self.current_index])
                         }
-                        // Note: This method returns &[f64], so it cannot directly return &[u64] for volume.
-                        // A separate method like get_latest_bars_volume_values would be needed for volume.
+                        // This method returns &[f64]; volume values are f64 as well, so they are
+                        // reachable through `get_latest_bars_volume_values`.
                         _ => {
                             eprintln!(
                                 "Warning: Unknown value type '{}' for symbol '{}'",
@@ -243,7 +243,7 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
         }
     }
 
-    /// Retrieves a slice of volume values (u64) from the last `n` bars for the specified symbol based on the current index.
+    /// Retrieves a slice of volume values (f64) from the last `n` bars for the specified symbol based on the current index.
     /// This is the most efficient way (zero-copy) to access multiple historical volume values.
     ///
     /// # Arguments
@@ -251,8 +251,8 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
     /// * `n` - The number of latest bars to retrieve volume values from.
     ///
     /// # Returns
-    /// * `Option<&[u64]>` - A slice of the volume values or `None` if symbol not found, index out of bounds.
-    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[u64]> {
+    /// * `Option<&[f64]>` - A slice of the volume values or `None` if symbol not found, index out of bounds.
+    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[f64]> {
         if self.current_index > 0 {
             let idx = self.current_index - 1;
             if let Some(soa_data) = self.global_data_store.get_soa_data_for_symbol(symbol) {

@@ -132,13 +132,13 @@ impl<'a> OHLCVSOA<'a> {
         }
     }
     #[inline]
-    pub fn volumes(&self) -> Option<flatbuffers::Vector<'a, u64>> {
+    pub fn volumes(&self) -> Option<flatbuffers::Vector<'a, f64>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
             self._tab
-                .get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u64>>>(
+                .get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, f64>>>(
                     OHLCVSOA::VT_VOLUMES,
                     None,
                 )
@@ -179,7 +179,7 @@ impl flatbuffers::Verifiable for OHLCVSOA<'_> {
                 Self::VT_CLOSES,
                 false,
             )?
-            .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u64>>>(
+            .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, f64>>>(
                 "volumes",
                 Self::VT_VOLUMES,
                 false,
@@ -194,7 +194,7 @@ pub struct OHLCVSOAArgs<'a> {
     pub highs: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, f64>>>,
     pub lows: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, f64>>>,
     pub closes: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, f64>>>,
-    pub volumes: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u64>>>,
+    pub volumes: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, f64>>>,
 }
 impl<'a> Default for OHLCVSOAArgs<'a> {
     #[inline]
@@ -244,7 +244,7 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> OHLCVSOABuilder<'a, 'b, A> {
             .push_slot_always::<flatbuffers::WIPOffset<_>>(OHLCVSOA::VT_CLOSES, closes);
     }
     #[inline]
-    pub fn add_volumes(&mut self, volumes: flatbuffers::WIPOffset<flatbuffers::Vector<'b, u64>>) {
+    pub fn add_volumes(&mut self, volumes: flatbuffers::WIPOffset<flatbuffers::Vector<'b, f64>>) {
         self.fbb_
             .push_slot_always::<flatbuffers::WIPOffset<_>>(OHLCVSOA::VT_VOLUMES, volumes);
     }

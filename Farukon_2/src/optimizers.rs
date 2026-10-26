@@ -6,6 +6,8 @@
 
 use ::std::io::Write;
 
+use anyhow::Context;
+
 use crate::backtest;
 use crate::data_engine;
 use crate::execution;
@@ -82,19 +84,20 @@ impl OptimizationRunner {
     /// * `total_combinations` - The total number of parameter sets to evaluate.
     /// * `combinations_to_grid_search` - A vector of `ParameterSet` objects to test.
     /// # Returns
-    /// * A vector of `OptimizationResult` objects, one for each evaluated parameter set.
+    /// * `anyhow::Result<Vec<farukon_core::optimization::OptimizationResult>>` - One result per
+    ///   successfully evaluated parameter set, or the first candidate failure (a failed candidate
+    ///   is never reported as a silent placeholder).
     pub fn run_grid_search(
         &self,
         total_combinations: u128,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
-    ) -> Vec<farukon_core::optimization::OptimizationResult> {
+    ) -> anyhow::Result<Vec<farukon_core::optimization::OptimizationResult>> {
         // Runs Grid Search in parallel across all CPU cores.
         // Each parameter set is evaluated by running a full backtest.
         // Uses Atomic counter to track progress.
 
         self.grid_search_optimizer
-            .check_memory_limit(self.grid_search_optimizer.get_config())
-            .expect("Grid search memory limit exceeded");
+            .check_memory_limit(self.grid_search_optimizer.get_config())?;
 
         // Determine the number of threads to use for parallel execution.
         // Defaults to the number of logical CPU cores if not specified in settings.
@@ -118,19 +121,25 @@ impl OptimizationRunner {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let lib_path = &strategy_settings.strategy_path;
-        let lib = std::sync::Arc::new(unsafe {
-            libloading::Library::new(lib_path).expect("Can't load library")
-        });
+        let lib = std::sync::Arc::new(
+            unsafe { libloading::Library::new(lib_path) }
+                .with_context(|| format!("failed to load the strategy library {}", lib_path))?,
+        );
 
         // Create a Rayon thread pool with the specified number of threads.
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
-            .expect("Failed to create thread pool");
+            .context("failed to create the grid search thread pool")?;
+
+        // First failure of a candidate evaluation; it fails the whole search after the run.
+        let candidate_error: std::sync::Arc<std::sync::Mutex<Option<anyhow::Error>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let candidate_error_worker = std::sync::Arc::clone(&candidate_error);
 
         // Execute the optimization within the thread pool.
 
-        pool.install(|| {
+        let results = pool.install(|| {
             self.grid_search_optimizer.run_optimization(
                 // The fitness function executed for each parameter set.
                 // It runs a backtest and returns an OptimizationResult.
@@ -157,6 +166,13 @@ impl OptimizationRunner {
                         full_parameter_set.format_for_display() // Human-readable representation of the parameters.
                     );
 
+                    // Once a candidate failed the search is already doomed: skip the remaining
+                    // backtests instead of spending time on work that will be discarded.
+                    if candidate_error_worker.lock().unwrap().is_some() {
+                        return farukon_core::optimization::OptimizationResult::new()
+                            .with_parameters(params.clone());
+                    }
+
                     // Create temporary strategy settings based on the current parameter set.
                     let test_settings = farukon_core::utils::create_stratagy_settings_from_params(
                         &strategy_settings,
@@ -164,23 +180,40 @@ impl OptimizationRunner {
                     );
 
                     // Run a full backtest using the current parameter set.
-                    let results = match global_data_mode.as_str() {
-                        "arc" => Self::run_backtest_with_settings_arc(
-                            &mode,
-                            &initial_capital,
-                            &test_settings,
-                            &strategy_instruments_info,
-                            std::sync::Arc::clone(&global_data_store),
-                            lib.clone(),
-                        ),
-                        _ => Self::run_backtest_with_settings_deep(
-                            &mode,
-                            &initial_capital,
-                            &test_settings,
-                            &strategy_instruments_info,
-                            std::sync::Arc::clone(&global_data_store),
-                            lib.clone(),
-                        ),
+                    let results = Self::evaluate_grid_candidate(
+                        &full_parameter_set,
+                        &candidate_error_worker,
+                        || match global_data_mode.as_str() {
+                            "arc" => Self::run_backtest_with_settings_arc(
+                                &mode,
+                                &initial_capital,
+                                &test_settings,
+                                &strategy_instruments_info,
+                                std::sync::Arc::clone(&global_data_store),
+                                lib.clone(),
+                                &full_parameter_set,
+                            ),
+                            _ => Self::run_backtest_with_settings_deep(
+                                &mode,
+                                &initial_capital,
+                                &test_settings,
+                                &strategy_instruments_info,
+                                std::sync::Arc::clone(&global_data_store),
+                                lib.clone(),
+                                &full_parameter_set,
+                            ),
+                        },
+                    );
+
+                    // A failed candidate is reported by `finish_grid_search`; the placeholder
+                    // below is dropped there together with the error.
+                    let Some(results) = results else {
+                        eprintln!(
+                            "# {} from {} failed to evaluate; see the reported error",
+                            current_count, total_combinations
+                        );
+                        return farukon_core::optimization::OptimizationResult::new()
+                            .with_parameters(params.clone());
                     };
 
                     println!(
@@ -198,7 +231,51 @@ impl OptimizationRunner {
                 threads, // Number of threads to use for the optimization.
                 self.grid_search_optimizer.get_config(),
             )
-        })
+        });
+
+        // Report the first candidate failure instead of returning placeholder results.
+        Self::finish_grid_search(results, &candidate_error)
+    }
+
+    /// Evaluates one Grid Search candidate and remembers the first failure.
+    ///
+    /// The optimizer core requires a value for every candidate, so a failing candidate yields
+    /// `None`; its placeholder is dropped by `finish_grid_search`, which turns the remembered
+    /// failure into the error of the whole search.
+    fn evaluate_grid_candidate<F>(
+        candidate: &farukon_core::optimization::ParameterSet,
+        candidate_error: &std::sync::Mutex<Option<anyhow::Error>>,
+        evaluate: F,
+    ) -> Option<farukon_core::performance::PerformanceMetrics>
+    where
+        F: FnOnce() -> anyhow::Result<farukon_core::performance::PerformanceMetrics>,
+    {
+        match evaluate() {
+            Ok(metrics) => Some(metrics),
+            Err(error) => {
+                let mut slot = candidate_error.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(error.context(Self::candidate_error_context(
+                        "grid search candidate failed",
+                        candidate,
+                    )));
+                }
+                None
+            }
+        }
+    }
+
+    /// Converts the raw Grid Search output into a result set: the first candidate failure wins, so
+    /// a failed candidate can never be reported as a silent placeholder.
+    fn finish_grid_search(
+        results: Vec<farukon_core::optimization::OptimizationResult>,
+        candidate_error: &std::sync::Mutex<Option<anyhow::Error>>,
+    ) -> anyhow::Result<Vec<farukon_core::optimization::OptimizationResult>> {
+        let candidate_error = candidate_error.lock().unwrap().take();
+        match candidate_error {
+            Some(error) => Err(error),
+            None => anyhow::Ok(results),
+        }
     }
 
     /// Executes a single backtest run with a given set of strategy parameters.
@@ -209,7 +286,8 @@ impl OptimizationRunner {
     /// * `strategy_settings` - The strategy settings, potentially modified with new parameters.
     /// * `strategy_instruments_info` - Metadata for the instruments traded.
     /// # Returns
-    /// * `farukon_core::performance::PerformanceMetrics` - The performance metrics from the completed backtest.
+    /// * `anyhow::Result<farukon_core::performance::PerformanceMetrics>` - The performance metrics
+    ///   from the completed backtest, or an error carrying the failing candidate's parameters.
     fn run_backtest_with_settings_arc(
         mode: &String,
         initial_capital_for_strategy: &f64,
@@ -220,7 +298,8 @@ impl OptimizationRunner {
         >,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
         strategy_library: std::sync::Arc<libloading::Library>,
-    ) -> farukon_core::performance::PerformanceMetrics {
+        candidate: &farukon_core::optimization::ParameterSet,
+    ) -> anyhow::Result<farukon_core::performance::PerformanceMetrics> {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
 
@@ -242,7 +321,9 @@ impl OptimizationRunner {
                 &event_sender,
                 strategy_library.clone(),
             )
-            .expect("Failed to load dynamic strategy"),
+            .with_context(|| {
+                Self::candidate_error_context("failed to construct the strategy", candidate)
+            })?,
         );
 
         // Initialize the portfolio manager.
@@ -254,13 +335,16 @@ impl OptimizationRunner {
                 strategy_settings,
                 strategy_instruments_info,
             )
-            .expect("Failed to create portfolio"),
+            .with_context(|| {
+                Self::candidate_error_context("failed to create the portfolio", candidate)
+            })?,
         );
 
         // Initialize the simulated execution handler.
         let execution_handler: Box<dyn farukon_core::execution::ExecutionHandler> = Box::new(
-            execution::SimulatedExecutionHandler::new(event_sender.clone())
-                .expect("Failed to create execution handler"),
+            execution::SimulatedExecutionHandler::new(event_sender.clone()).with_context(|| {
+                Self::candidate_error_context("failed to create the execution handler", candidate)
+            })?,
         );
 
         // Create the main backtest controller.
@@ -276,12 +360,16 @@ impl OptimizationRunner {
         );
 
         // Run the backtest simulation and return the final performance metrics.
-        backtest
+        let metrics = backtest
             .simulate_trading()
-            .expect("Backtest failed")
-            .clone()
+            .with_context(|| Self::candidate_error_context("backtest failed", candidate))?;
+        anyhow::Ok(metrics.clone())
     }
 
+    /// Executes a single backtest in `deep` data mode (per-candidate dataset clone).
+    /// # Returns
+    /// * `anyhow::Result<farukon_core::performance::PerformanceMetrics>` - The performance metrics
+    ///   from the completed backtest, or an error carrying the failing candidate's parameters.
     fn run_backtest_with_settings_deep(
         mode: &String,
         initial_capital_for_strategy: &f64,
@@ -292,7 +380,8 @@ impl OptimizationRunner {
         >,
         global_data_store: std::sync::Arc<data_engine::global_data_storage::GlobalDataStore>,
         strategy_library: std::sync::Arc<libloading::Library>,
-    ) -> farukon_core::performance::PerformanceMetrics {
+        candidate: &farukon_core::optimization::ParameterSet,
+    ) -> anyhow::Result<farukon_core::performance::PerformanceMetrics> {
         // Creates a full backtest environment for a single parameter set.
         // Used by Grid Search and Genetic Algorithm.
 
@@ -314,7 +403,9 @@ impl OptimizationRunner {
                 &event_sender,
                 strategy_library.clone(),
             )
-            .expect("Failed to load dynamic strategy"),
+            .with_context(|| {
+                Self::candidate_error_context("failed to construct the strategy", candidate)
+            })?,
         );
 
         // Initialize the portfolio manager.
@@ -326,13 +417,16 @@ impl OptimizationRunner {
                 strategy_settings,
                 strategy_instruments_info,
             )
-            .expect("Failed to create portfolio"),
+            .with_context(|| {
+                Self::candidate_error_context("failed to create the portfolio", candidate)
+            })?,
         );
 
         // Initialize the simulated execution handler.
         let execution_handler: Box<dyn farukon_core::execution::ExecutionHandler> = Box::new(
-            execution::SimulatedExecutionHandler::new(event_sender.clone())
-                .expect("Failed to create execution handler"),
+            execution::SimulatedExecutionHandler::new(event_sender.clone()).with_context(|| {
+                Self::candidate_error_context("failed to create the execution handler", candidate)
+            })?,
         );
 
         // Create the main backtest controller.
@@ -348,10 +442,32 @@ impl OptimizationRunner {
         );
 
         // Run the backtest simulation and return the final performance metrics.
-        backtest
+        let metrics = backtest
             .simulate_trading()
-            .expect("Backtest failed")
-            .clone()
+            .with_context(|| Self::candidate_error_context("backtest failed", candidate))?;
+        anyhow::Ok(metrics.clone())
+    }
+
+    /// Builds the error message attached to every failure of one optimization candidate.
+    fn candidate_error_context(
+        action: &str,
+        candidate: &farukon_core::optimization::ParameterSet,
+    ) -> String {
+        format!(
+            "{} for candidate {}",
+            action,
+            candidate.format_for_display()
+        )
+    }
+
+    /// Fitness assigned to a candidate whose evaluation failed: the worst possible value for the
+    /// configured direction, so ranking and selection never prefer it.
+    fn worst_fitness(fitness_direction: &str) -> f64 {
+        if fitness_direction == "min" {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        }
     }
 
     /// Executes a Genetic Algorithm optimization.
@@ -378,9 +494,10 @@ impl OptimizationRunner {
             .with_optimization_config(opt_config.clone());
 
         let lib_path = &self.strategy_settings.strategy_path;
-        let lib = std::sync::Arc::new(unsafe {
-            libloading::Library::new(lib_path).expect("Can't load library")
-        });
+        let lib = std::sync::Arc::new(
+            unsafe { libloading::Library::new(lib_path) }
+                .with_context(|| format!("failed to load the strategy library {}", lib_path))?,
+        );
 
         let initial_capital_for_strategy = self.initial_capital_for_strategy;
         let common_settings = self.common_settings.clone();
@@ -391,10 +508,23 @@ impl OptimizationRunner {
         let all_ga_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_ga_results_clone = std::sync::Arc::clone(&all_ga_results_shared);
 
+        // First failure of a candidate evaluation; reported once the optimizer returns.
+        let candidate_error: std::sync::Arc<std::sync::Mutex<Option<anyhow::Error>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let candidate_error_worker = std::sync::Arc::clone(&candidate_error);
+
         // Run the Genetic Algorithm, providing a fitness function that evaluates parameter sets.
         let stats = ga.run(&strategy_settings.clone(), move |params| {
             let mode = &common_settings.mode;
             let global_data_storage_mode = &common_settings.global_data_storage_mode;
+            let fitness_direction = ga_config_closure.get_fitness_direction().as_str();
+
+            // Once a candidate failed the run is already compromised: skip the remaining
+            // backtests and report the stored error instead of running garbage.
+            if candidate_error_worker.lock().unwrap().is_some() {
+                return Self::worst_fitness(fitness_direction);
+            }
+
             // Create temporary strategy settings based on the current parameter set for this generation.
             let test_settings = &farukon_core::utils::create_stratagy_settings_from_params(
                 &strategy_settings,
@@ -409,6 +539,7 @@ impl OptimizationRunner {
                     &strategy_instruments_info,
                     std::sync::Arc::clone(&global_data_store),
                     lib.clone(),
+                    params,
                 ),
                 _ => Self::run_backtest_with_settings_deep(
                     mode,
@@ -417,10 +548,20 @@ impl OptimizationRunner {
                     &strategy_instruments_info,
                     std::sync::Arc::clone(&global_data_store),
                     lib.clone(),
+                    params,
                 ),
+            };
+            let results = match results {
+                Ok(results) => results,
+                Err(error) => {
+                    *candidate_error_worker.lock().unwrap() = Some(error);
+                    return Self::worst_fitness(fitness_direction);
+                }
             };
 
             // Create an OptimizationResult object containing the parameters and the resulting performance metrics.
+            let fitness =
+                Self::calculate_fitness_score(&results, ga_config_closure.get_fitness_metric());
             let results_obj = farukon_core::optimization::OptimizationResult::new()
                 .with_parameters(params.clone())
                 .with_results(results.clone());
@@ -429,7 +570,14 @@ impl OptimizationRunner {
                 let mut results_guard = all_ga_results_clone.lock().unwrap();
                 results_guard.push(results_obj);
             }
-            Self::calculate_fitness_score(&results, &ga_config_closure)
+
+            match fitness {
+                Ok(fitness) => fitness,
+                Err(error) => {
+                    *candidate_error_worker.lock().unwrap() = Some(error);
+                    Self::worst_fitness(fitness_direction)
+                }
+            }
         })?;
 
         let final_results = {
@@ -439,56 +587,54 @@ impl OptimizationRunner {
 
         // save results
         self.save_grid_search_optimization_results(&final_results)?;
+
+        // A failed candidate invalidates the generation statistics: report it instead of
+        // writing misleading numbers.
+        let candidate_error = candidate_error.lock().unwrap().take();
+        if let Some(error) = candidate_error {
+            return Err(error.context("genetic search aborted: a candidate failed"));
+        }
+
         ga.save_generation_stats_to_csv(&stats, &self.strategy_settings)?;
 
         anyhow::Ok(stats)
     }
 
-    /// Calculates a scalar fitness score from performance metrics.
-    /// The score is used by the Genetic Algorithm to rank parameter sets.
+    /// Calculates the raw scalar fitness value from performance metrics.
+    /// The score is used by the Genetic Algorithm and by LSHADE-RSP to rank parameter sets.
+    ///
+    /// The value is returned untransformed: the optimizers apply `fitness_direction`
+    /// ("max"/"min") themselves when ranking, selecting and reporting individuals.
     /// # Arguments
     /// * `metrics` - The performance metrics from a backtest run.
-    /// * `ga_config` - Configuration specifying the fitness metric and direction (maximize/minimize).
+    /// * `fitness_metric` - The configured metric to extract.
     /// # Returns
-    /// * `f64` - The calculated fitness score.
+    /// * `anyhow::Result<f64>` - The raw metric value, or an error for an unknown composite metric.
     fn calculate_fitness_score(
         metrics: &farukon_core::performance::PerformanceMetrics,
-        ga_config: &farukon_core::optimization::GAConfig,
-    ) -> f64 {
-        // Converts performance metrics into a scalar fitness score.
-        // Supports max/min direction and composite metrics.
-
-        // Determine which metric to use for the raw fitness score.
-        let raw_fitness = match ga_config.get_fitness_metric() {
-            farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
+        fitness_metric: &farukon_core::settings::FitnessValue,
+    ) -> anyhow::Result<f64> {
+        let raw_fitness = match fitness_metric {
+            farukon_core::settings::FitnessValue::TotalReturn => *metrics.get_total_return(),
             farukon_core::settings::FitnessValue::TotalReturnPercent => {
-                metrics.get_total_return_percent()
+                *metrics.get_total_return_percent()
             }
-            farukon_core::settings::FitnessValue::APR => metrics.get_apr(),
-            farukon_core::settings::FitnessValue::MaxDD => metrics.get_max_drawdown(),
+            farukon_core::settings::FitnessValue::APR => *metrics.get_apr(),
+            farukon_core::settings::FitnessValue::MaxDD => *metrics.get_max_drawdown(),
             farukon_core::settings::FitnessValue::AprDDFactor => {
-                metrics.get_apr_to_drawdown_ratio()
+                *metrics.get_apr_to_drawdown_ratio()
             }
-            farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
-            farukon_core::settings::FitnessValue::DealsCount => {
-                &(*metrics.get_deals_count() as f64)
-            }
+            farukon_core::settings::FitnessValue::RecoveryFactor => *metrics.get_recovery_factor(),
+            farukon_core::settings::FitnessValue::DealsCount => *metrics.get_deals_count() as f64,
             farukon_core::settings::FitnessValue::Composite {
                 metrics: composite_metrics,
             } => {
                 // For composite metrics, calculate a combined score.
-                &Self::calculate_composite_score(metrics, composite_metrics)
+                Self::calculate_composite_score(metrics, composite_metrics)?
             }
         };
 
-        // Apply the fitness direction (maximize or minimize).
-        // If direction is "min", the score is negated.
-
-        match ga_config.get_fitness_direction().as_str() {
-            "max" => *raw_fitness,
-            "min" => -raw_fitness,
-            _ => *raw_fitness, // Default to "max" if direction is unknown.
-        }
+        anyhow::Ok(raw_fitness)
     }
 
     /// Combines multiple performance metrics into a single composite fitness score.
@@ -497,11 +643,12 @@ impl OptimizationRunner {
     /// * `metrics` - The performance metrics from a backtest run.
     /// * `composite_metrics` - A list of metric names to include in the composite score.
     /// # Returns
-    /// * `f64` - The calculated composite score.
+    /// * `anyhow::Result<f64>` - The calculated composite score, or an error for an unknown
+    ///   metric name (an unknown name must never silently contribute zero).
     fn calculate_composite_score(
         metrics: &farukon_core::performance::PerformanceMetrics,
         composite_metrics: &[String],
-    ) -> f64 {
+    ) -> anyhow::Result<f64> {
         // Combines multiple metrics into a single score with equal weights.
         // Example: APR/DD_factor + Recovery_Factor + Deals_Count
 
@@ -515,6 +662,8 @@ impl OptimizationRunner {
                 "Total_Return" => *metrics.get_total_return(),
                 "Total_Return_%" => *metrics.get_total_return_percent(),
                 "APR" => *metrics.get_apr(),
+                "max_DD" => *metrics.get_max_drawdown(),
+                "max_DD_%" => *metrics.get_max_drawdown_pct(),
                 "max_DD_30%" => {
                     if *metrics.get_max_drawdown() < -0.3 {
                         -100.0
@@ -540,13 +689,18 @@ impl OptimizationRunner {
                 }
                 "Deals_Count" => -((*metrics.get_deals_count() as f64) + 1.0).ln(), // Negative count for maximization (fewer trades might be better depending on context, but often more is desired, this might need review)
                 "Composite" => metrics.get_composite_score(),
-                _ => 0.0, // Default to 0 if the metric name is unknown.
+                unknown => {
+                    anyhow::bail!(
+                        "unknown composite metric '{}': it would silently contribute 0.0",
+                        unknown
+                    );
+                }
             };
             // Add the weighted value of this metric to the total score.
             total_score += metric_value * weight;
         }
 
-        total_score
+        anyhow::Ok(total_score)
     }
 
     /// Executes a LSHADE-RSP optimization.
@@ -567,9 +721,10 @@ impl OptimizationRunner {
             .with_optimization_config(opt_config.clone());
 
         let lib_path = &self.strategy_settings.strategy_path;
-        let lib = std::sync::Arc::new(unsafe {
-            libloading::Library::new(lib_path).expect("Can't load library")
-        });
+        let lib = std::sync::Arc::new(
+            unsafe { libloading::Library::new(lib_path) }
+                .with_context(|| format!("failed to load the strategy library {}", lib_path))?,
+        );
 
         let initial_capital_for_strategy = self.initial_capital_for_strategy;
         let common_settings = self.common_settings.clone();
@@ -580,9 +735,22 @@ impl OptimizationRunner {
         let all_results_shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let all_results_clone = std::sync::Arc::clone(&all_results_shared);
 
+        // First failure of a candidate evaluation; reported once the optimizer returns.
+        let candidate_error: std::sync::Arc<std::sync::Mutex<Option<anyhow::Error>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let candidate_error_worker = std::sync::Arc::clone(&candidate_error);
+
         lshade.run(&strategy_settings.clone(), move |params| {
             let mode = &common_settings.mode;
             let global_data_storage_mode = &common_settings.global_data_storage_mode;
+            let fitness_direction = lshade_config_closure.get_fitness_direction().as_str();
+
+            // Once a candidate failed the run is already compromised: skip the remaining
+            // backtests and report the stored error instead of running garbage.
+            if candidate_error_worker.lock().unwrap().is_some() {
+                return Self::worst_fitness(fitness_direction);
+            }
+
             let test_settings = &farukon_core::utils::create_stratagy_settings_from_params(
                 &strategy_settings,
                 params,
@@ -595,6 +763,7 @@ impl OptimizationRunner {
                     &strategy_instruments_info,
                     std::sync::Arc::clone(&global_data_store),
                     lib.clone(),
+                    params,
                 ),
                 _ => Self::run_backtest_with_settings_deep(
                     mode,
@@ -603,9 +772,19 @@ impl OptimizationRunner {
                     &strategy_instruments_info,
                     std::sync::Arc::clone(&global_data_store),
                     lib.clone(),
+                    params,
                 ),
             };
+            let results = match results {
+                Ok(results) => results,
+                Err(error) => {
+                    *candidate_error_worker.lock().unwrap() = Some(error);
+                    return Self::worst_fitness(fitness_direction);
+                }
+            };
 
+            let fitness =
+                Self::calculate_fitness_score(&results, lshade_config_closure.get_fitness_metric());
             let results_obj = farukon_core::optimization::OptimizationResult::new()
                 .with_parameters(params.clone())
                 .with_results(results.clone());
@@ -614,7 +793,14 @@ impl OptimizationRunner {
                 let mut results_guard = all_results_clone.lock().unwrap();
                 results_guard.push(results_obj);
             }
-            Self::calculate_fitness_score_lshade(&results, &lshade_config_closure)
+
+            match fitness {
+                Ok(fitness) => fitness,
+                Err(error) => {
+                    *candidate_error_worker.lock().unwrap() = Some(error);
+                    Self::worst_fitness(fitness_direction)
+                }
+            }
         })?;
 
         let final_results = {
@@ -625,37 +811,13 @@ impl OptimizationRunner {
         // Save results using existing method
         self.save_grid_search_optimization_results(&final_results)?;
 
+        // A failed candidate means the produced statistics are not trustworthy: report it.
+        let candidate_error = candidate_error.lock().unwrap().take();
+        if let Some(error) = candidate_error {
+            return Err(error.context("LSHADE-RSP search aborted: a candidate failed"));
+        }
+
         anyhow::Ok(())
-    }
-
-    /// Calculates a scalar fitness score from performance metrics for LSHADE-RSP.
-    ///
-    /// Returns the raw metric value; the optimizer applies `fitness_direction` itself when
-    /// selecting, ranking and reporting individuals.
-    fn calculate_fitness_score_lshade(
-        metrics: &farukon_core::performance::PerformanceMetrics,
-        lshade_config: &farukon_core::optimization::LshadeRspConfig,
-    ) -> f64 {
-        let raw_fitness = match lshade_config.get_fitness_metric() {
-            farukon_core::settings::FitnessValue::TotalReturn => metrics.get_total_return(),
-            farukon_core::settings::FitnessValue::TotalReturnPercent => {
-                metrics.get_total_return_percent()
-            }
-            farukon_core::settings::FitnessValue::APR => metrics.get_apr(),
-            farukon_core::settings::FitnessValue::MaxDD => metrics.get_max_drawdown(),
-            farukon_core::settings::FitnessValue::AprDDFactor => {
-                metrics.get_apr_to_drawdown_ratio()
-            }
-            farukon_core::settings::FitnessValue::RecoveryFactor => metrics.get_recovery_factor(),
-            farukon_core::settings::FitnessValue::DealsCount => {
-                &(*metrics.get_deals_count() as f64)
-            }
-            farukon_core::settings::FitnessValue::Composite {
-                metrics: composite_metrics,
-            } => &Self::calculate_composite_score(metrics, composite_metrics),
-        };
-
-        *raw_fitness
     }
 
     /// Saves the results of a Grid Search optimization to a CSV file.
@@ -866,5 +1028,161 @@ impl OptimizationRunner {
         // --- 6. Return Success ---
         // Indicates that the file was written successfully.
         anyhow::Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use farukon_core::optimization::{OptimizationResult, ParameterSet};
+    use farukon_core::performance::PerformanceMetrics;
+    use farukon_core::settings::FitnessValue;
+
+    /// Builds `PerformanceMetrics` for fitness tests: the struct exposes no public constructor,
+    /// but it is `Deserialize`.
+    fn test_metrics(max_drawdown: f64, max_drawdown_pct: f64) -> PerformanceMetrics {
+        serde_json::from_value(serde_json::json!({
+            "total_return": 100.0,
+            "total_return_percent": 10.0,
+            "apr": 20.0,
+            "max_drawdown": max_drawdown,
+            "max_drawdown_pct": max_drawdown_pct,
+            "apr_to_drawdown_ratio": 2.0,
+            "recovery_factor": 4.0,
+            "deals_count": 10,
+            "max_drawdown_datetime": null,
+        }))
+        .expect("test metrics must deserialize")
+    }
+
+    fn test_candidate() -> ParameterSet {
+        ParameterSet::new()
+            .with_pos_sizer_name("test_sizer".to_string())
+            .with_pos_sizer_value(1.5)
+            .with_slippage(0.001)
+    }
+
+    /// Regression: a candidate whose strategy construction or backtest fails must fail the grid
+    /// search with candidate context, never produce a placeholder result and a successful run.
+    #[test]
+    fn failing_candidate_produces_error_with_candidate_context() {
+        let candidate = test_candidate();
+        let candidate_error = std::sync::Mutex::new(None);
+
+        let metrics =
+            OptimizationRunner::evaluate_grid_candidate(&candidate, &candidate_error, || {
+                Err(anyhow::anyhow!("strategy construction failed"))
+            });
+        assert!(
+            metrics.is_none(),
+            "a failed candidate must not produce performance metrics"
+        );
+
+        // The optimizer core still yields a placeholder for the failed candidate; the search
+        // must turn that into an error instead of reporting success.
+        let placeholder = OptimizationResult::new().with_parameters(candidate.clone());
+        let error = OptimizationRunner::finish_grid_search(vec![placeholder], &candidate_error)
+            .expect_err("a failed candidate must fail the grid search");
+        let message = format!("{:#}", error);
+        assert!(
+            message.contains("grid search candidate failed"),
+            "missing failure context: {message}"
+        );
+        assert!(
+            message.contains(candidate.format_for_display().as_str()),
+            "missing candidate parameters in: {message}"
+        );
+        assert!(
+            message.contains("strategy construction failed"),
+            "missing root cause in: {message}"
+        );
+    }
+
+    /// Regression: without a failure the grid search output is returned unchanged.
+    #[test]
+    fn successful_grid_search_returns_results() {
+        let candidate = test_candidate();
+        let candidate_error = std::sync::Mutex::new(None);
+
+        let metrics =
+            OptimizationRunner::evaluate_grid_candidate(&candidate, &candidate_error, || {
+                Ok(test_metrics(-0.1, -1000.0))
+            })
+            .expect("a successful candidate must produce performance metrics");
+        assert!(metrics.get_max_drawdown().eq(&-0.1));
+
+        let result = OptimizationResult::new()
+            .with_parameters(candidate)
+            .with_results(metrics);
+        let results = OptimizationRunner::finish_grid_search(vec![result], &candidate_error)
+            .expect("a search without failures must succeed");
+        assert_eq!(results.len(), 1);
+    }
+
+    /// Regression: the host returns the RAW metric. The optimizer applies `fitness_direction`
+    /// itself, so for "min" a lower drawdown must score lower; the pre-fix code negated the
+    /// metric here, which inverted the direction.
+    #[test]
+    fn fitness_score_is_the_raw_metric_for_minimization() {
+        let worse_drawdown = test_metrics(-0.40, -4000.0);
+        let better_drawdown = test_metrics(-0.10, -1000.0);
+
+        let worse_score =
+            OptimizationRunner::calculate_fitness_score(&worse_drawdown, &FitnessValue::MaxDD)
+                .expect("fitness score");
+        let better_score =
+            OptimizationRunner::calculate_fitness_score(&better_drawdown, &FitnessValue::MaxDD)
+                .expect("fitness score");
+
+        assert!(
+            (worse_score - (-0.40)).abs() < 1e-12,
+            "must be raw: {worse_score}"
+        );
+        assert!(
+            (better_score - (-0.10)).abs() < 1e-12,
+            "must be raw: {better_score}"
+        );
+        assert!(
+            worse_score < better_score,
+            "a lower drawdown must yield a lower score for minimization ({worse_score} vs {better_score})"
+        );
+    }
+
+    /// Regression: `max_DD` and `max_DD_%` are accepted metric names and must contribute the
+    /// actual drawdown values instead of silently contributing 0.0.
+    #[test]
+    fn composite_score_uses_max_drawdown_metrics() {
+        let metrics = test_metrics(-0.25, -2500.0);
+
+        let max_dd =
+            OptimizationRunner::calculate_composite_score(&metrics, &["max_DD".to_string()])
+                .expect("max_DD is a valid composite metric");
+        assert!(
+            (max_dd - (-0.25)).abs() < 1e-12,
+            "unexpected max_DD: {max_dd}"
+        );
+
+        let max_dd_pct =
+            OptimizationRunner::calculate_composite_score(&metrics, &["max_DD_%".to_string()])
+                .expect("max_DD_% is a valid composite metric");
+        assert!(
+            (max_dd_pct - (-2500.0)).abs() < 1e-12,
+            "unexpected max_DD_%: {max_dd_pct}"
+        );
+    }
+
+    /// Regression: an unknown composite metric name must be an error, not a silent 0.0.
+    #[test]
+    fn unknown_composite_metric_is_an_error() {
+        let metrics = test_metrics(-0.25, -2500.0);
+        let error = OptimizationRunner::calculate_composite_score(
+            &metrics,
+            &["unknown_metric".to_string()],
+        )
+        .expect_err("an unknown composite metric must be rejected");
+        assert!(
+            error.to_string().contains("unknown_metric"),
+            "error must name the metric: {error}"
+        );
     }
 }

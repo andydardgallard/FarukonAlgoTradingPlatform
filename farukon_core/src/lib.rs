@@ -30,7 +30,7 @@ pub struct DataHandlerVTable {
     get_latest_bar_datetime: unsafe fn(*const (), &str) -> Option<chrono::DateTime<chrono::Utc>>,
     get_latest_bar_value: unsafe fn(*const (), &str, &str) -> Option<f64>,
     get_latest_bar_values: unsafe fn(*const (), &str, &str, usize) -> Option<&'static [f64]>,
-    get_latest_bar_volume_values: unsafe fn(*const (), &str, usize) -> Option<&'static [u64]>,
+    get_latest_bar_volume_values: unsafe fn(*const (), &str, usize) -> Option<&'static [f64]>,
     update_bars: unsafe fn(*const ()) -> (),
     get_continue_backtest: unsafe fn(*const ()) -> bool,
     set_continue_backtest: unsafe fn(*const (), bool) -> (),
@@ -60,7 +60,7 @@ impl data_handler::DataHandler for DataHandlerVTable {
         unsafe { (self.get_latest_bar_values)(self as *const _ as *const (), symbol, val_type, n) }
     }
 
-    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[u64]> {
+    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[f64]> {
         unsafe { (self.get_latest_bar_volume_values)(self as *const _ as *const (), symbol, n) }
     }
 

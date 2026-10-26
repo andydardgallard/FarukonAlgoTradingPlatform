@@ -20,7 +20,8 @@ pub struct PerformanceMetrics {
     max_drawdown_pct: f64,
     /// Ratio of APR to Max Drawdown (higher is better).
     apr_to_drawdown_ratio: f64,
-    /// Recovery Factor as a percentage.
+    /// Recovery Factor: signed net return divided by the absolute max drawdown amount, so an
+    /// equal-magnitude loss yields a negative value.
     recovery_factor: f64,
     /// Total number of trades executed.
     deals_count: usize,
@@ -96,7 +97,9 @@ impl PerformanceMetrics {
 
     // Getters
 
-    /// Calculates the Composite score using APR/DD ratio, Recovery Factor and Max Drawdown.
+    /// Calculates the Composite score from the APR/DD ratio, the signed Recovery Factor and the
+    /// relative Max Drawdown: each sub-metric below its floor subtracts a 1000-point penalty, and
+    /// the log term is clamped so a Recovery Factor below -1 stays finite.
     pub fn get_composite_score(&self) -> f64 {
         let apr_dd_metric = self.apr_to_drawdown_ratio;
         let rf_metric = self.recovery_factor;
@@ -113,7 +116,9 @@ impl PerformanceMetrics {
             penalty += 1000.0;
         }
 
-        200.0 * apr_dd_metric + (1.0 + rf_metric).ln() / 10.0 - penalty
+        // A signed Recovery Factor can fall below -1, where `ln` is undefined: clamp the argument so
+        // a losing strategy scores finite (and heavily negative) instead of NaN.
+        200.0 * apr_dd_metric + (1.0 + rf_metric).max(1e-12).ln() / 10.0 - penalty
     }
 
     /// Returns a reference to the APR to Drawdown ratio.
@@ -151,7 +156,8 @@ impl PerformanceMetrics {
         &self.max_drawdown_datetime
     }
 
-    /// Returns a reference to the recovery factor as a percentage.
+    /// Returns a reference to the recovery factor (signed net return over the absolute max
+    /// drawdown; negative for a net loss).
     pub fn get_recovery_factor(&self) -> &f64 {
         &self.recovery_factor
     }
@@ -275,11 +281,13 @@ impl PerformanceManager {
             apr * 100.0
         };
 
+        // Signed net return over the absolute drawdown: an equal-magnitude loss must produce a
+        // negative Recovery Factor, otherwise maximizing it can prefer a losing strategy.
         let max_dd_pct_abs = self.max_drawdown_pct.abs();
         let recovery_factor = if max_dd_pct_abs > 1e-8 {
-            current_return.abs() / max_dd_pct_abs
+            current_return / max_dd_pct_abs
         } else {
-            current_return_percent.abs() * 100.0
+            current_return_percent * 100.0
         };
 
         self.metrics = PerformanceMetrics {
@@ -463,14 +471,20 @@ fn calculate_drawdowns_simd(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>, us
             equity[start + 3],
         ]);
 
-        for j in 0..4 {
+        // Running-peak semantics of the scalar tail loop below: every value is measured against
+        // the peak of the values up to and including itself. Advancing the peak across all four
+        // lanes before the division measured a rising chunk against its own maximum and fabricated
+        // a drawdown (e.g. [100, 200, 300, 400] read as -80%).
+        let mut chunk_peaks = [0.0_f64; 4];
+        for (j, chunk_peak) in chunk_peaks.iter_mut().enumerate() {
             let value = equity[start + j];
             if value.is_finite() && value > peak {
                 peak = value;
             }
+            *chunk_peak = peak;
         }
 
-        let peak_vec = wide::f64x4::splat(peak);
+        let peak_vec = wide::f64x4::from(chunk_peaks);
         let dd_array: [f64; 4] = ((values / peak_vec) - wide::f64x4::splat(1.0)).into();
         let dd_pct_array: [f64; 4] = (values - peak_vec).into();
 
@@ -684,5 +698,165 @@ mod tests {
         let metrics = pm.get_current_performance_metrics();
         assert!((metrics.get_max_drawdown() - -0.8).abs() < 1e-9);
         assert_eq!(metrics.get_max_drawdown_datetime(), &Some(datetimes[3]));
+    }
+
+    /// Scalar running-peak reference for the drawdown curves: every value is measured against the
+    /// peak of the values up to and including itself.
+    fn scalar_drawdowns(equity: &[f64]) -> (f64, f64, Vec<f64>, Vec<f64>, usize) {
+        let n = equity.len();
+        let mut drawdowns = vec![0.0; n];
+        let mut drawdowns_pct = vec![0.0; n];
+        let mut peak = equity[0];
+        let mut max_dd = 0.0;
+        let mut max_dd_pct = 0.0;
+        let mut max_dd_index = 0;
+
+        for i in 1..n {
+            let value = equity[i];
+            if value > peak {
+                peak = value;
+            }
+
+            let dd = (value / peak) - 1.0;
+            drawdowns[i] = dd;
+
+            let dd_pct = value - peak;
+            drawdowns_pct[i] = dd_pct;
+
+            if dd < max_dd {
+                max_dd = dd;
+                max_dd_index = i;
+            }
+
+            if dd_pct < max_dd_pct {
+                max_dd_pct = dd_pct;
+            }
+        }
+
+        (max_dd, max_dd_pct, drawdowns, drawdowns_pct, max_dd_index)
+    }
+
+    fn datetimes_for(len: usize) -> Vec<chrono::DateTime<chrono::Utc>> {
+        let base = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        (0..len)
+            .map(|i| base + chrono::Duration::minutes(i as i64))
+            .collect()
+    }
+
+    #[test]
+    fn calculate_final_monotonic_equity_has_zero_drawdown() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+
+        // Strictly increasing equity: nine values so the SIMD chunk loop runs twice.
+        let equity = [
+            100.0, 110.0, 125.0, 130.0, 150.0, 180.0, 200.0, 240.0, 260.0,
+        ];
+        let datetimes = datetimes_for(equity.len());
+
+        pm.calculate_final(
+            &equity,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+
+        let metrics = pm.get_current_performance_metrics();
+        assert_eq!(metrics.get_max_drawdown(), &0.0);
+        assert_eq!(metrics.get_max_drawdown_pct(), &0.0);
+        assert!(pm.get_drawdons().iter().all(|dd| *dd == 0.0));
+        assert!(pm.get_drawdowns_pct().iter().all(|dd| *dd == 0.0));
+    }
+
+    #[test]
+    fn simd_drawdowns_match_scalar_reference() {
+        // Nontrivial series long enough to exercise two SIMD chunks plus the scalar tail.
+        let equity = [
+            100.0, 120.0, 108.0, 140.0, 96.0, 150.0, 130.0, 160.0, 120.0, 175.0, 90.0, 200.0,
+        ];
+
+        let simd = super::calculate_drawdowns_simd(&equity);
+        let scalar = scalar_drawdowns(&equity);
+
+        assert!(
+            (simd.0 - scalar.0).abs() < 1e-12,
+            "max dd {} {}",
+            simd.0,
+            scalar.0
+        );
+        assert!(
+            (simd.1 - scalar.1).abs() < 1e-12,
+            "max dd pct {} {}",
+            simd.1,
+            scalar.1
+        );
+        assert_eq!(simd.4, scalar.4);
+        for i in 0..equity.len() {
+            assert!(
+                (simd.2[i] - scalar.2[i]).abs() < 1e-12,
+                "drawdown mismatch at {i}: {} vs {}",
+                simd.2[i],
+                scalar.2[i]
+            );
+            assert!(
+                (simd.3[i] - scalar.3[i]).abs() < 1e-12,
+                "drawdown pct mismatch at {i}: {} vs {}",
+                simd.3[i],
+                scalar.3[i]
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_factor_is_signed() {
+        // Both series peak at 150 and dip through 90 (drawdown), so only the net return differs.
+        let profitable = [100.0, 120.0, 90.0, 150.0, 140.0];
+        let losing = [100.0, 120.0, 90.0, 150.0, 60.0];
+
+        let mut pm_win = PerformanceManager::new(100.0, &test_strategy_settings());
+        let datetimes = datetimes_for(profitable.len());
+        pm_win.calculate_final(
+            &profitable,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+        let rf_win = *pm_win
+            .get_current_performance_metrics()
+            .get_recovery_factor();
+
+        let mut pm_loss = PerformanceManager::new(100.0, &test_strategy_settings());
+        pm_loss.calculate_final(
+            &losing,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+        let rf_loss = *pm_loss
+            .get_current_performance_metrics()
+            .get_recovery_factor();
+
+        // +40 over a 30 absolute drawdown, -40 over a 90 absolute drawdown.
+        assert!((rf_win - 40.0 / 30.0).abs() < 1e-6, "rf_win = {rf_win}");
+        assert!((rf_loss + 40.0 / 90.0).abs() < 1e-6, "rf_loss = {rf_loss}");
+        assert!(rf_win > 0.0);
+        assert!(rf_loss < 0.0);
+    }
+
+    #[test]
+    fn composite_score_stays_finite_for_negative_recovery_factor() {
+        // A signed Recovery Factor can drop below -1, where `ln(1 + rf)` is NaN.
+        let metrics = PerformanceMetrics {
+            apr_to_drawdown_ratio: 1.0,
+            recovery_factor: -3.0,
+            max_drawdown: -0.5,
+            ..Default::default()
+        };
+
+        assert!(metrics.get_composite_score().is_finite());
     }
 }

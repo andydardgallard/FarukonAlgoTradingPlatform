@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
 
                     if total_combinations == 1 {
                         let results = optimization_runner
-                            .run_grid_search(total_combinations, global_data_store);
+                            .run_grid_search(total_combinations, global_data_store)?;
                         optimization_runner.save_grid_search_optimization_results(&results)?;
                         if common_settings.mode == "Portfolio" {
                             let deals_count = results
@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
                             .calculate_total_combinations()?;
 
                         let results = optimization_runner
-                            .run_grid_search(total_combinations, global_data_store);
+                            .run_grid_search(total_combinations, global_data_store)?;
                         optimization_runner.save_grid_search_optimization_results(&results)?;
                     }
                     farukon_core::settings::OptimizerType::Genetic { ga_params } => {
@@ -130,7 +130,15 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .map(|(p, ic, _, _)| (p.clone(), *ic))
             .collect();
-        farukon_core::utils::export_portfolio_equity_csv(&equity_files, &output_path)?;
+        // Portfolio capital that no strategy manages (weights summing to less than 1) stays in
+        // cash, so the aggregated equity curve must carry it exactly like the metrics do.
+        let unallocated_capital =
+            farukon_core::utils::unallocated_common_capital(&portfolio_strategy_inputs);
+        farukon_core::utils::export_portfolio_equity_csv(
+            &equity_files,
+            unallocated_capital,
+            &output_path,
+        )?;
 
         if let Some(ref settings) = reference_strategy_settings {
             let results_path = std::path::Path::new(&output_path)

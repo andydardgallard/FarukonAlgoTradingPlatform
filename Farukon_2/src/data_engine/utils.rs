@@ -172,7 +172,7 @@ fn resample_data(
     let highs_slice = bytes_to_slice::<f64>(raw_highs);
     let lows_slice = bytes_to_slice::<f64>(raw_lows);
     let closes_slice = bytes_to_slice::<f64>(raw_closes);
-    let volumes_slice = bytes_to_slice::<u64>(raw_volumes);
+    let volumes_slice = bytes_to_slice::<f64>(raw_volumes);
 
     // Map the resample timeframe (in seconds) to the key used in `FullIndex.timeframe_index`.
     let timeframe_key = match resample_timeframe_sec {
@@ -229,7 +229,7 @@ fn resample_data(
             let mut agg_high = f64::NEG_INFINITY;
             let mut agg_low = f64::INFINITY;
             let mut agg_close: Option<f64> = None;
-            let mut agg_volume = 0u64;
+            let mut agg_volume = 0.0_f64;
 
             // SIMD variables for efficient max/min aggregation.
             let mut simd_max = wide::f64x4::splat(f64::NEG_INFINITY);
@@ -381,7 +381,7 @@ fn copy_raw_data_without_resampling(
         .unwrap_or(&[]);
     let raw_volumes = data_soa
         .volumes()
-        .map(|v| bytes_to_slice::<u64>(v.bytes()))
+        .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
 
     // Find the minimum length among all vectors to ensure they are aligned.
@@ -568,7 +568,7 @@ fn create_bar_from_source(
         .with_high(*soa_data.get_high(source_idx).unwrap_or(&f64::NAN))
         .with_low(*soa_data.get_low(source_idx).unwrap_or(&f64::NAN))
         .with_close(*soa_data.get_close(source_idx).unwrap_or(&f64::NAN))
-        .with_volume(*soa_data.get_volume(source_idx).unwrap_or(&0))
+        .with_volume(*soa_data.get_volume(source_idx).unwrap_or(&0.0))
 }
 
 /// Creates a `MarketBar` filled with NaN values for prices and 0 for volume.
@@ -588,7 +588,7 @@ fn create_nan_bar(
         .with_high(f64::NAN)
         .with_low(f64::NAN)
         .with_close(f64::NAN)
-        .with_volume(0)
+        .with_volume(0.0)
 }
 
 /// Aligns the resampled data for a single symbol to the global combined timeline using padding.
@@ -677,4 +677,93 @@ pub fn align_and_pad(
     });
 
     anyhow::Ok(std::sync::Arc::new(final_soa_data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use data_engine::ohlcv_soa_generated::{
+        OHLCVListSOA, OHLCVListSOAArgs, OHLCVSOA, OHLCVSOAArgs, finish_ohlcvlist_soa_buffer,
+        root_as_ohlcvlist_soa,
+    };
+    use farukon_core::index::{FullIndex, TimeIndexEntry};
+
+    const START: u64 = 1_700_000_000;
+
+    /// Builds an in-memory `OHLCVListSOA` buffer with the given volumes (fractional on purpose).
+    fn soa_buffer(volumes: &[f64]) -> Vec<u8> {
+        let bar_count = volumes.len() as u64;
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let timestamps: Vec<u64> = (0..bar_count).map(|i| START + i * 60).collect();
+        let timestamps = fbb.create_vector(&timestamps);
+        let opens = fbb.create_vector(&[100.0_f64, 101.0, 102.0][..volumes.len()]);
+        let highs = fbb.create_vector(&[110.0_f64, 111.0, 112.0][..volumes.len()]);
+        let lows = fbb.create_vector(&[90.0_f64, 91.0, 92.0][..volumes.len()]);
+        let closes = fbb.create_vector(&[105.0_f64, 106.0, 107.0][..volumes.len()]);
+        let volumes_vector = fbb.create_vector(volumes);
+
+        let soa = OHLCVSOA::create(
+            &mut fbb,
+            &OHLCVSOAArgs {
+                timestamps: Some(timestamps),
+                opens: Some(opens),
+                highs: Some(highs),
+                lows: Some(lows),
+                closes: Some(closes),
+                volumes: Some(volumes_vector),
+            },
+        );
+        let list = OHLCVListSOA::create(&mut fbb, &OHLCVListSOAArgs { data: Some(soa) });
+        finish_ohlcvlist_soa_buffer(&mut fbb, list);
+        fbb.finished_data().to_vec()
+    }
+
+    /// Index over the three raw bars of [`soa_buffer`] plus one 5-minute window at `START`.
+    fn soa_index() -> FullIndex {
+        FullIndex {
+            time_index: (0..3)
+                .map(|i| TimeIndexEntry {
+                    timestamp: START + i * 60,
+                    index: i,
+                })
+                .collect(),
+            daily_index: vec![],
+            timeframe_index: std::collections::HashMap::from([("5m".to_string(), vec![START])]),
+        }
+    }
+
+    /// Volumes are `f64`: a fractional volume must load and resample (sum) without truncation.
+    #[test]
+    fn fractional_volumes_load_and_resample() {
+        let buffer = soa_buffer(&[0.25, 0.5, 0.125]);
+        let list = root_as_ohlcvlist_soa(&buffer).expect("valid buffer");
+        let index = soa_index();
+
+        let resampled = resample_data(&list, &index, &std::collections::HashSet::new(), 300)
+            .expect("resampling must succeed");
+
+        assert_eq!(resampled.len(), 1);
+        let volume = *resampled.get_volume(0).expect("one resampled bar");
+        assert!(
+            (volume - 0.875).abs() < 1e-12,
+            "fractional volumes must sum, got {}",
+            volume
+        );
+        assert_eq!(*resampled.get_open(0).unwrap(), 100.0);
+        assert_eq!(*resampled.get_close(0).unwrap(), 107.0);
+    }
+
+    /// The raw (no resampling) copy path keeps fractional volumes too.
+    #[test]
+    fn fractional_volumes_survive_raw_copy() {
+        let buffer = soa_buffer(&[0.25, 0.5, 0.125]);
+        let list = root_as_ohlcvlist_soa(&buffer).expect("valid buffer");
+
+        let copied = copy_raw_data_without_resampling(&list).expect("copy must succeed");
+
+        assert_eq!(copied.len(), 3);
+        assert_eq!(*copied.get_volume(0).unwrap(), 0.25);
+        assert_eq!(*copied.get_volume(1).unwrap(), 0.5);
+        assert_eq!(*copied.get_volume(2).unwrap(), 0.125);
+    }
 }

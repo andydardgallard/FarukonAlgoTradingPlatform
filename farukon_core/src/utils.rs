@@ -41,10 +41,12 @@ pub fn string_to_date_time(
 /// * `quantity` - Desired quantity.
 /// * `instrument_info` - Instrument metadata.
 /// # Returns
-/// * `f64` representing the maximum available quantity.
+/// * `f64` representing the maximum available quantity. It is `0.0` when the requested quantity
+///   or the cash capacity is zero: an unaffordable or empty request must not be turned into a
+///   trade, so callers reject a zero size instead of forcing one minimum contract.
 pub fn calculate_max_available_quantity(
     cash: f64,
-    mut current_quantity: f64,
+    current_quantity: f64,
     strategy_instruments_info: &instruments_info::InstrumentInfo,
 ) -> f64 {
     let margin = strategy_instruments_info.margin;
@@ -52,13 +54,7 @@ pub fn calculate_max_available_quantity(
     let max_quantity =
         ((cash / margin) * 10.0_f64.powi(precision)).floor() / 10.0_f64.powi(precision);
 
-    current_quantity = current_quantity.min(max_quantity.abs());
-
-    if current_quantity == 0.0 {
-        current_quantity += 1.0 / 10.0_f64.powi(precision);
-    }
-
-    current_quantity
+    current_quantity.min(max_quantity.abs()).max(0.0)
 }
 
 /// Parses optimization configuration from strategy settings.
@@ -213,12 +209,16 @@ pub fn export_equity_drawdowns_to_csv(
 ///
 /// # Arguments
 /// * `strategy_equity_files` - slice of (path_to_equity_csv, initial_capital).
+/// * `unallocated_capital` - common capital that no strategy manages (weights summing to less than
+///   1). It stays in cash, so it is added to every point of the summed curve; see
+///   [`unallocated_common_capital`]. Pass `0.0` when everything is allocated.
 /// * `output_path` - full path for the output CSV.
 pub fn export_portfolio_equity_csv(
     strategy_equity_files: &[(String, f64)],
+    unallocated_capital: f64,
     output_path: &str,
 ) -> anyhow::Result<()> {
-    let summed = aggregate_portfolio_equity(strategy_equity_files)?;
+    let summed = aggregate_portfolio_equity(strategy_equity_files, unallocated_capital)?;
 
     let mut file = std::fs::File::create(output_path)
         .with_context(|| format!("Failed to create output CSV '{}'", output_path))?;
@@ -248,16 +248,20 @@ pub fn export_portfolio_equity_csv(
 /// `YYYY-MM-DD HH:MM:SS;capital;...` (semicolon-separated). For each strategy, capital is
 /// forward-filled: before its first timestamp it equals its `initial_capital`, after its last
 /// timestamp it stays at the last observed value. Portfolio capital at each timestamp is the
-/// sum across strategies.
+/// sum across strategies plus `constant_capital` (capital that is not allocated to any strategy,
+/// e.g. the unused part of the common portfolio capital).
 ///
 /// # Arguments
 /// * `strategy_equity_files` - slice of (path_to_equity_csv, initial_capital).
+/// * `constant_capital` - capital added to every point of the summed curve (usually the
+///   unallocated common capital; `0.0` when everything is allocated).
 ///
 /// # Returns
 /// * `anyhow::Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>>` - datetimes ascending with
 ///   summed portfolio capital.
 fn aggregate_portfolio_equity(
     strategy_equity_files: &[(String, f64)],
+    constant_capital: f64,
 ) -> anyhow::Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>> {
     let mut per_strategy_capital: Vec<
         std::collections::BTreeMap<chrono::DateTime<chrono::Utc>, f64>,
@@ -310,10 +314,30 @@ fn aggregate_portfolio_equity(
             }
             capital += current_capital[i];
         }
-        summed.push((*datetime, capital));
+        summed.push((*datetime, capital + constant_capital));
     }
 
     anyhow::Ok(summed)
+}
+
+/// Returns the common portfolio capital that is not allocated to any strategy.
+///
+/// Each strategy receives `common_initial_capital * strategy_weight`, so the allocation sum is
+/// `common * sum(weight)` and the common capital itself is `allocation_sum / sum(weight)`. The
+/// unallocated remainder `common * (1 - sum(weight))` stays in cash. Portfolios whose weights sum
+/// to 1 (or more) allocate everything and yield `0.0`.
+///
+/// # Arguments
+/// * `strategy_inputs` - per strategy: (equity_csv_path, initial_capital, deals_count, strategy_weight).
+pub fn unallocated_common_capital(strategy_inputs: &[(String, f64, usize, f64)]) -> f64 {
+    let allocated_capital: f64 = strategy_inputs.iter().map(|(_, ic, _, _)| ic).sum();
+    let total_weight: f64 = strategy_inputs.iter().map(|(_, _, _, w)| w).sum();
+
+    if allocated_capital <= 0.0 || total_weight <= 0.0 || total_weight >= 1.0 {
+        return 0.0;
+    }
+
+    allocated_capital / total_weight - allocated_capital
 }
 
 /// Writes aggregated portfolio metrics to `optimization_results_portfolio.csv`.
@@ -322,6 +346,10 @@ fn aggregate_portfolio_equity(
 /// single strategy (via `PerformanceManager::calculate_final`). `Deals_Count` is the
 /// weighted sum of per-strategy deal counts rounded to an integer. The timestamps of the
 /// summed equity curve are forwarded as well, so `Max_Drawdown_DateTime` is populated.
+///
+/// The common capital that is not allocated to any strategy (weights summing to less than 1)
+/// stays in cash: it is added to every point of the equity curve and to the initial capital, so
+/// `Total_Return_%` / `APR` use the full common capital as their denominator.
 ///
 /// # Arguments
 /// * `strategy_inputs` - per strategy: (equity_csv_path, initial_capital, deals_count, strategy_weight).
@@ -332,12 +360,14 @@ pub fn export_portfolio_optimization_results_csv(
     reference_strategy_settings: &settings::StrategySettings,
     output_path: &str,
 ) -> anyhow::Result<()> {
-    let portfolio_initial_capital: f64 = strategy_inputs.iter().map(|(_, ic, _, _)| ic).sum();
+    let allocated_capital: f64 = strategy_inputs.iter().map(|(_, ic, _, _)| ic).sum();
+    let unallocated_capital = unallocated_common_capital(strategy_inputs);
+    let portfolio_initial_capital = allocated_capital + unallocated_capital;
     let equity_files: Vec<(String, f64)> = strategy_inputs
         .iter()
         .map(|(path, ic, _, _)| (path.clone(), *ic))
         .collect();
-    let summed = aggregate_portfolio_equity(&equity_files)?;
+    let summed = aggregate_portfolio_equity(&equity_files, unallocated_capital)?;
 
     if summed.is_empty() {
         return anyhow::Ok(());
@@ -724,6 +754,43 @@ mod tests {
         assert!(get_param_as_f64(&params, "absent").is_err());
     }
 
+    fn test_instrument(margin: f64, precision: usize) -> instruments_info::InstrumentInfo {
+        instruments_info::InstrumentInfo {
+            exchange: "FORTS".to_string(),
+            instrument_type: "futures".to_string(),
+            contract_precision: precision,
+            margin,
+            commission_type: "currency".to_string(),
+            trade_from_date: "2025-01-01 00:00:00".to_string(),
+            expiration_date: "2025-12-31 00:00:00".to_string(),
+            marginal_costs: 0.0,
+            step: 1.0,
+            step_price: 1.0,
+        }
+    }
+
+    /// An unaffordable or empty request must stay at zero: the cap may not invent a trade, and a
+    /// fractional quantity that fits the cash capacity must be kept as is.
+    #[test]
+    fn calculate_max_available_quantity_rejects_zero_and_keeps_fractions() {
+        let instrument = test_instrument(100.0, 2);
+
+        assert_eq!(calculate_max_available_quantity(0.0, 1.0, &instrument), 0.0);
+        assert_eq!(
+            calculate_max_available_quantity(1_000.0, 0.0, &instrument),
+            0.0
+        );
+        assert_eq!(
+            calculate_max_available_quantity(1_000.0, 0.5, &instrument),
+            0.5
+        );
+        // Cash for 2.5 contracts caps a larger request without rounding it up.
+        assert_eq!(
+            calculate_max_available_quantity(250.0, 10.0, &instrument),
+            2.5
+        );
+    }
+
     #[test]
     fn export_portfolio_equity_csv_aggregates_two_strategies() {
         let suffix = std::process::id();
@@ -754,6 +821,7 @@ mod tests {
                 (file_a.to_str().unwrap().to_string(), 100.0),
                 (file_b.to_str().unwrap().to_string(), 200.0),
             ],
+            0.0,
             output.to_str().unwrap(),
         );
         assert!(result.is_ok(), "aggregation failed: {:?}", result.err());
@@ -792,6 +860,7 @@ mod tests {
 
         let result = export_portfolio_equity_csv(
             &[(file.to_str().unwrap().to_string(), 100.0)],
+            0.0,
             output.to_str().unwrap(),
         );
         assert!(result.is_ok(), "aggregation failed: {:?}", result.err());
@@ -806,6 +875,51 @@ mod tests {
             .map(|line| line.split(';').nth(1).unwrap().parse::<f64>().unwrap())
             .collect();
         assert_eq!(capitals, vec![100.0, 110.0]);
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    /// The emitted portfolio equity curve must carry the capital that no strategy manages: with
+    /// weights summing to less than 1 that cash stays in the portfolio and is part of its equity.
+    #[test]
+    fn export_portfolio_equity_csv_includes_unallocated_common_capital() {
+        let suffix = std::process::id();
+        let temp_dir = std::env::temp_dir();
+        let file = temp_dir.join(format!("portfolio_unalloc_equity_{}.csv", suffix));
+        let output = temp_dir.join(format!("portfolio_unalloc_equity_out_{}.csv", suffix));
+
+        // One strategy allocated 400 out of a common capital of 1000 (weight 0.4), growing 400 -> 450.
+        std::fs::write(
+            &file,
+            "datetime;capital;drawdown;drawdown_pct\n\
+             2025-01-01 09:00:00;400\n\
+             2025-01-01 09:05:00;450\n",
+        )
+        .unwrap();
+
+        let strategy_inputs = vec![(file.to_str().unwrap().to_string(), 400.0, 10, 0.4)];
+        let unallocated = unallocated_common_capital(&strategy_inputs);
+        assert!((unallocated - 600.0).abs() < 1e-9);
+
+        let result = export_portfolio_equity_csv(
+            &[(strategy_inputs[0].0.clone(), 400.0)],
+            unallocated,
+            output.to_str().unwrap(),
+        );
+        assert!(result.is_ok(), "aggregation failed: {:?}", result.err());
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        let capitals: Vec<f64> = lines[1..]
+            .iter()
+            .map(|line| line.split(';').nth(1).unwrap().parse::<f64>().unwrap())
+            .collect();
+        assert_eq!(
+            capitals,
+            vec![1_000.0, 1_050.0],
+            "the unallocated cash must be part of the portfolio equity curve"
+        );
 
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_file(&output);
@@ -907,6 +1021,75 @@ mod tests {
         assert_eq!(row[name_index], "portfolio");
 
         let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    /// Portfolio weights below 1 leave part of the common capital unallocated: that cash must be
+    /// part of the equity curve and of the return denominator, otherwise `Total_Return_%` is
+    /// computed against the allocated capital only.
+    #[test]
+    fn portfolio_metrics_include_unallocated_common_capital() {
+        let suffix = std::process::id();
+        let temp_dir = std::env::temp_dir();
+        let file_a = temp_dir.join(format!("portfolio_unalloc_a_{}.csv", suffix));
+        let file_b = temp_dir.join(format!("portfolio_unalloc_b_{}.csv", suffix));
+        let output = temp_dir.join(format!("portfolio_unalloc_out_{}.csv", suffix));
+
+        // Two strategies allocated 400 each out of a common capital of 1000 (weights 0.4 + 0.4).
+        // Each grows by 50, so the full portfolio goes 1000 -> 1100 (+10%).
+        for (path, start) in [(&file_a, 400.0), (&file_b, 400.0)] {
+            std::fs::write(
+                path,
+                format!(
+                    "datetime;capital;drawdown;drawdown_pct\n\
+                     2025-01-01 09:00:00;{}\n\
+                     2025-01-01 09:05:00;{}\n",
+                    start,
+                    start + 50.0
+                ),
+            )
+            .unwrap();
+        }
+
+        let inputs = vec![
+            (file_a.to_str().unwrap().to_string(), 400.0, 10, 0.4),
+            (file_b.to_str().unwrap().to_string(), 400.0, 10, 0.4),
+        ];
+        assert!((unallocated_common_capital(&inputs) - 200.0).abs() < 1e-9);
+
+        let result = export_portfolio_optimization_results_csv(
+            &inputs,
+            &test_strategy_settings(),
+            output.to_str().unwrap(),
+        );
+        assert!(result.is_ok(), "write failed: {:?}", result.err());
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        let header = lines[0];
+        let row: Vec<&str> = lines[1].split(';').collect();
+        let column = |name: &str| {
+            let index = header.split(';').position(|col| col == name).unwrap();
+            row[index].trim_end_matches('%').parse::<f64>().unwrap()
+        };
+
+        // `total_return_percent` is stored as a fraction (0.1 == 10%), see
+        // `PerformanceManager::calculate_final`.
+        let total_return_percent = column("Total_Return_%");
+        assert!(
+            (total_return_percent - 0.1).abs() < 1e-9,
+            "Total_Return_% must use the full common capital, got {}",
+            total_return_percent
+        );
+        let total_return = column("Total_Return");
+        assert!(
+            (total_return - 100.0).abs() < 1e-6,
+            "Total_Return must include the unallocated cash, got {}",
+            total_return
+        );
+
+        let _ = std::fs::remove_file(&file_a);
+        let _ = std::fs::remove_file(&file_b);
         let _ = std::fs::remove_file(&output);
     }
 

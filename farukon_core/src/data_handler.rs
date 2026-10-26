@@ -15,7 +15,8 @@ pub struct MarketBar {
     high: f64,
     low: f64,
     close: f64,
-    volume: u64,
+    /// Traded volume. `f64` (not `u64`) so fractional crypto quantities survive the data path.
+    volume: f64,
 }
 
 impl Default for MarketBar {
@@ -32,7 +33,7 @@ impl MarketBar {
             high: 0.0,
             low: 0.0,
             close: 0.0,
-            volume: 0,
+            volume: 0.0,
         }
     }
 
@@ -61,7 +62,7 @@ impl MarketBar {
         self
     }
 
-    pub fn with_volume(mut self, volume: u64) -> Self {
+    pub fn with_volume(mut self, volume: f64) -> Self {
         self.volume = volume;
         self
     }
@@ -87,7 +88,7 @@ impl MarketBar {
         self.close
     }
 
-    pub fn get_volume(&self) -> u64 {
+    pub fn get_volume(&self) -> f64 {
         self.volume
     }
 }
@@ -99,7 +100,8 @@ pub struct SOAData {
     highs: Vec<f64>,
     lows: Vec<f64>,
     closes: Vec<f64>,
-    volumes: Vec<u64>,
+    /// Traded volumes; `f64` so fractional crypto quantities are preserved.
+    volumes: Vec<f64>,
 }
 
 impl Default for SOAData {
@@ -203,7 +205,7 @@ impl SOAData {
         }
     }
 
-    pub fn get_volume(&self, index: usize) -> Option<&u64> {
+    pub fn get_volume(&self, index: usize) -> Option<&f64> {
         if let Some(volume) = self.volumes.get(index) {
             Some(volume)
         } else {
@@ -240,7 +242,7 @@ impl SOAData {
         Some(&self.closes)
     }
 
-    pub fn get_volumes(&self) -> Option<&Vec<u64>> {
+    pub fn get_volumes(&self) -> Option<&Vec<f64>> {
         Some(&self.volumes)
     }
 
@@ -250,7 +252,7 @@ impl SOAData {
         highs: &[f64],
         lows: &[f64],
         closes: &[f64],
-        volumes: &[u64],
+        volumes: &[f64],
     ) -> Self {
         Self {
             timestamps: timestamps.to_vec(),
@@ -305,7 +307,7 @@ pub trait DataHandler {
     /// * A vector of `f64` values.
     fn get_latest_bars_values(&self, symbol: &str, val_type: &str, n: usize) -> Option<&[f64]>;
 
-    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[u64]>;
+    fn get_latest_bars_volume_values(&self, symbol: &str, n: usize) -> Option<&[f64]>;
 
     /// Advances the data handler to the next bar.
     /// This method is called by the backtesting engine to simulate time passing.
@@ -319,4 +321,40 @@ pub trait DataHandler {
     /// # Arguments
     /// * `value` - The new value for the flag.
     fn set_continue_backtest(&mut self, value: bool); // Stop backtest manually
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Volume is `f64` (not `u64`), so a fractional crypto quantity must survive a
+    /// `MarketBar` → `SOAData` round trip without truncation.
+    #[test]
+    fn fractional_volume_survives_market_bar_to_soa_round_trip() {
+        let bar = MarketBar::new()
+            .with_datetime(chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap())
+            .with_open(1.0)
+            .with_high(2.0)
+            .with_low(0.5)
+            .with_close(1.5)
+            .with_volume(0.000_125);
+
+        assert_eq!(bar.get_volume(), 0.000_125);
+
+        let mut soa = SOAData::new();
+        soa.add_bar(&bar);
+
+        assert_eq!(*soa.get_volume(0).unwrap(), 0.000_125);
+        assert_eq!(soa.get_volumes().unwrap()[0], 0.000_125);
+    }
+
+    /// A slice-built `SOAData` (the flatbuffer copy path) keeps the fractional volumes as well.
+    #[test]
+    fn from_slice_preserves_fractional_volumes() {
+        let datetimes = [chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap()];
+        let prices = [1.0];
+        let soa = SOAData::from_slice(&datetimes, &prices, &prices, &prices, &prices, &[0.5]);
+
+        assert_eq!(*soa.get_volume(0).unwrap(), 0.5);
+    }
 }

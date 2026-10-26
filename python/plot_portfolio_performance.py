@@ -9,6 +9,8 @@ For every ``equity_curve_<strategy>.csv`` in the folder (except
 ``equity_curve_portfolio.csv``) one 2x2 figure is opened in the style of
 ``python/visual.py``; an additional 2x2 figure shows the portfolio with every
 strategy's returns overlaid as thin black lines on the top-right subplot.
+One more figure shows the correlation matrix of the strategies' per-bar
+returns (``capital.pct_change()``) aligned by datetime.
 All figures are shown at the end with a single ``plt.show()`` call; nothing is
 written to disk.
 """
@@ -97,6 +99,47 @@ def _read_equity(path):
     return pd.read_csv(path, sep=";", header=0, index_col="datetime")
 
 
+def plot_correlation_matrix(strategies):
+    """Plot the correlation matrix of the strategies' per-bar returns.
+
+    ``strategies`` is a list of ``(title, data)`` pairs as read by
+    ``_read_equity``. Each strategy's ``capital.pct_change()`` series is
+    re-indexed with its datetime stamps so that pandas aligns the series by
+    datetime before ``.corr()`` is computed. The matrix is rendered in its own
+    figure (annotated heatmap of the Pearson correlation coefficients).
+    """
+    if len(strategies) < 2:
+        print("Fewer than two strategies found; the correlation matrix figure "
+              "will be skipped.")
+        return
+
+    returns = {}
+    for title, data in strategies:
+        name = title[len("equity_curve_"):] if title.startswith("equity_curve_") else title
+        series = data["capital"].pct_change()
+        series.index = pd.to_datetime(data.index)
+        returns[name] = series
+
+    corr = pd.DataFrame(returns).sort_index().corr()
+    labels = list(corr.columns)
+    values = corr.values
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    fig.canvas.manager.set_window_title("strategy_correlation_matrix")
+    image = ax.imshow(values, cmap="coolwarm", vmin=-1.0, vmax=1.0)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels, fontsize=9)
+    for row in range(len(labels)):
+        for col in range(len(labels)):
+            ax.text(col, row, "{:.2f}".format(values[row, col]),
+                    ha="center", va="center", fontsize=9)
+    ax.set_title("Strategy return correlation (capital pct_change)")
+    fig.colorbar(image, ax=ax, label="Pearson correlation")
+    fig.tight_layout()
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: python plot_portfolio_performance.py <results_folder>")
@@ -138,6 +181,8 @@ def main():
         ]
         plot_equity(_read_equity(portfolio_path), "equity_curve_portfolio",
                     overlay=overlay)
+
+    plot_correlation_matrix(strategies)
 
     plt.show()
 

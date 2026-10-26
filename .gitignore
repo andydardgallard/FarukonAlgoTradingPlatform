@@ -55,3 +55,19 @@ __pycache__/
 task.yaml
 start.cmd
 start.sh
+
+# --- Code Factory (auto-added by prepare_factory.ps1) ---
+.agents/
+.code-factory/
+.kimi-code/mcp.json
+.kimi-code/vendor/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.env
+*.pem
+*.key
+task.yaml
+start.cmd
+start.sh
