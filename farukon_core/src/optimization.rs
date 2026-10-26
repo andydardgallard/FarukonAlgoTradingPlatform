@@ -459,40 +459,45 @@ impl GridSearchOptimizer {
     }
 
     /// Calculates the total number of parameter combinations to test.
+    ///
+    /// The count is accumulated with `checked_mul` per axis: an overflowing product is reported as
+    /// an error naming the axis that overflowed, instead of wrapping (release) or panicking
+    /// (overflow-checked builds) inside the grid generation.
     pub fn calculate_total_combinations(&self) -> anyhow::Result<u128> {
-        let strategy_combinations = self
-            .config
-            .strategy_params_ranges
-            .values()
-            .map(|spec| spec.count_expanded_values().map(|count| count.max(1)))
-            .collect::<anyhow::Result<Vec<u128>>>()?
-            .into_iter()
-            .product::<u128>()
-            .max(1);
+        let mut axes: Vec<(String, u128)> = Vec::new();
 
-        let pos_sizer_additional_combinations = self
-            .config
-            .pos_sizer_additional_params
-            .values()
-            .map(|spec| spec.count_expanded_values().map(|count| count.max(1)))
-            .collect::<anyhow::Result<Vec<u128>>>()?
-            .into_iter()
-            .product::<u128>()
-            .max(1);
+        for (name, spec) in &self.config.strategy_params_ranges {
+            axes.push((name.clone(), spec.count_expanded_values()?.max(1)));
+        }
+        for (name, spec) in &self.config.pos_sizer_additional_params {
+            axes.push((name.clone(), spec.count_expanded_values()?.max(1)));
+        }
+        axes.push((
+            "pos_sizer_value_range".to_string(),
+            self.config
+                .pos_sizer_value_range
+                .count_expanded_values()?
+                .max(1),
+        ));
+        axes.push((
+            "slippage_range".to_string(),
+            self.config.slippage_range.count_expanded_values()?.max(1),
+        ));
+        // Deterministic order, so an overflow always names the same axis for the same config.
+        axes.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let pos_sizer_value_count = self
-            .config
-            .pos_sizer_value_range
-            .count_expanded_values()?
-            .max(1);
-        let slippage_count = self.config.slippage_range.count_expanded_values()?.max(1);
+        let mut total_combinations: u128 = 1;
+        for (axis, count) in &axes {
+            total_combinations = total_combinations.checked_mul(*count).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Grid search parameter space is too large: combining the '{}' axis ({} values) overflows the combination count (u128::MAX). Reduce the number of values in that axis.",
+                    axis,
+                    count,
+                )
+            })?;
+        }
 
-        let total_combinations = strategy_combinations
-            * pos_sizer_additional_combinations
-            * pos_sizer_value_count
-            * slippage_count;
-
-        anyhow::Ok(total_combinations)
+        anyhow::Ok(total_combinations.max(1))
     }
 
     /// Checks if the total memory required for grid search exceeds available system memory.
@@ -532,13 +537,47 @@ impl GridSearchOptimizer {
         } else {
             ParameterSet::new().aproximate_size_in_bytes()
         };
-        let total_combinations_u64 = total_combinations as u64;
-        let estimated_bytes = total_combinations_u64 * aprox_size_per_set as u64;
 
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
-        let available_memory = sys.available_memory() * 1024;
-        let limit_memory = (available_memory as f64 * 0.8) as u64;
+        // `sysinfo` 0.36 reports `available_memory()` in BYTES already; the former `* 1024`
+        // conversion inflated the OOM threshold 1024x and let the guard pass allocations it was
+        // meant to reject.
+        let available_memory_bytes = sys.available_memory();
+
+        Self::check_estimated_memory(
+            total_combinations,
+            aprox_size_per_set,
+            available_memory_bytes,
+        )
+    }
+
+    /// Applies the OOM guard to an explicitly supplied available-memory value (in bytes).
+    ///
+    /// Split out of [`Self::check_memory_limit`] so the guard can be tested against a known memory
+    /// value instead of the machine's real amount of RAM.
+    fn check_estimated_memory(
+        total_combinations: u128,
+        aprox_size_per_set: usize,
+        available_memory_bytes: u64,
+    ) -> anyhow::Result<()> {
+        let total_combinations_u64 = u64::try_from(total_combinations).map_err(|_| {
+            anyhow::anyhow!(
+                "Total combinations ({}) do not fit in a u64.",
+                total_combinations
+            )
+        })?;
+        let estimated_bytes = total_combinations_u64
+            .checked_mul(aprox_size_per_set as u64)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot estimate grid-search memory: {} combinations * ~{} bytes per set overflows u64.",
+                    total_combinations,
+                    aprox_size_per_set,
+                )
+            })?;
+
+        let limit_memory = (available_memory_bytes as f64 * 0.8) as u64;
 
         if estimated_bytes > limit_memory {
             anyhow::bail!(
@@ -747,7 +786,7 @@ impl GAConfig {
 pub struct GeneticAlgorythm {
     ga_config: GAConfig,
     optimization_config: OptimizationConfig,
-    chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+    chromosome_bank: std::sync::Arc<std::sync::Mutex<FitnessCache>>,
     populations: Vec<Vec<ParameterSet>>,
 }
 
@@ -763,9 +802,7 @@ impl GeneticAlgorythm {
         Self {
             ga_config: GAConfig::new(),
             optimization_config: OptimizationConfig::new(),
-            chromosome_bank: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            chromosome_bank: std::sync::Arc::new(std::sync::Mutex::new(FitnessCache::new())),
             populations: Vec::new(),
         }
     }
@@ -880,11 +917,9 @@ impl GeneticAlgorythm {
                         params.format_for_display()
                     );
 
-                    let hash = hash_parameter_set(params);
-
                     let cached_fitness = {
                         let bank = chromosome_bank.lock().unwrap();
-                        bank.get(&hash).copied()
+                        cache_lookup(&bank, params)
                     };
 
                     let fitness = if let Some(cahed_f) = cached_fitness {
@@ -899,7 +934,7 @@ impl GeneticAlgorythm {
                     } else {
                         let calculated_f = evaluate(params);
                         let mut bank = chromosome_bank.lock().unwrap();
-                        bank.insert(hash, calculated_f);
+                        cache_store(&mut bank, params, calculated_f);
                         drop(bank);
 
                         println!(
@@ -1040,9 +1075,8 @@ impl GeneticAlgorythm {
             let new_set = self.perform_mutation(child_after_crossover);
 
             // 3. Check in chromosome bank
-            let hash = hash_parameter_set(&new_set);
             let bank = self.chromosome_bank.lock().unwrap();
-            if !bank.contains_key(&hash) {
+            if !cache_contains(&bank, &new_set) {
                 drop(bank);
                 return new_set;
             }
@@ -1341,9 +1375,8 @@ impl GeneticAlgorythm {
             &mut rng,
         );
         for random_set in random_sets {
-            let hash = hash_parameter_set(&random_set);
             let bank = self.chromosome_bank.lock().unwrap();
-            if !bank.contains_key(&hash) {
+            if !cache_contains(&bank, &random_set) {
                 drop(bank);
                 next_gen.push(random_set);
             } else {
@@ -1626,6 +1659,38 @@ fn hash_parameter_set(params: &ParameterSet) -> u64 {
     hasher.finish()
 }
 
+/// Fitness cache shared by the optimizers: the `DefaultHasher` digest of a `ParameterSet` maps to
+/// the candidates that produced it, each stored with its fitness.
+///
+/// The digest alone must never be treated as the key. It is 64 bits wide, so two different
+/// candidates can hash to the same value; a cache that returned the entry found under the digest
+/// would hand one candidate another candidate's fitness. Every stored candidate is therefore kept
+/// next to its fitness and compared with `==` on lookup (a collision simply yields a cache miss).
+type FitnessCache = std::collections::HashMap<u64, Vec<(ParameterSet, f64)>>;
+
+/// Returns the cached fitness of `params`, or `None` when it has not been evaluated yet.
+fn cache_lookup(bank: &FitnessCache, params: &ParameterSet) -> Option<f64> {
+    bank.get(&hash_parameter_set(params))?
+        .iter()
+        .find(|(candidate, _)| candidate == params)
+        .map(|(_, fitness)| *fitness)
+}
+
+/// Tells whether `params` already has a cached fitness.
+fn cache_contains(bank: &FitnessCache, params: &ParameterSet) -> bool {
+    bank.get(&hash_parameter_set(params))
+        .is_some_and(|bucket| bucket.iter().any(|(candidate, _)| candidate == params))
+}
+
+/// Stores the fitness of `params`, keeping the colliding candidates apart in the same bucket.
+fn cache_store(bank: &mut FitnessCache, params: &ParameterSet, fitness: f64) {
+    let bucket = bank.entry(hash_parameter_set(params)).or_default();
+    match bucket.iter_mut().find(|(candidate, _)| candidate == params) {
+        Some((_, cached)) => *cached = fitness,
+        None => bucket.push((params.clone(), fitness)),
+    }
+}
+
 /// Hashes a slice of key-value pairs representing parameters using a provided hasher.
 ///
 /// This function ensures consistent hashing by first sorting the parameters by their keys.
@@ -1789,9 +1854,63 @@ pub struct LshadeRspIterationStats {
     pub evaluations: usize,
 }
 
+/// Path of the LSHADE-RSP statistics CSV written by a run.
+pub fn lshade_stats_csv_path(strategy_settings: &settings::StrategySettings) -> std::path::PathBuf {
+    std::path::Path::new(&strategy_settings.exit_results_path)
+        .join("lshade_optimization_results.csv")
+}
+
+/// Removes the LSHADE-RSP statistics CSV on drop unless the run is explicitly accepted.
+///
+/// A run appends one statistics row per iteration while it executes, so a run that is later
+/// reported as failed (a candidate backtest failed) would otherwise leave a plausible but partial
+/// per-iteration history behind. The owner of the acceptance decision calls `commit` only once the
+/// whole search is accepted; every other exit path drops the guard uncommitted and removes the file.
+pub struct LshadeStatsCsvGuard {
+    path: std::path::PathBuf,
+    keep: bool,
+}
+
+impl LshadeStatsCsvGuard {
+    /// Creates a guard for the statistics CSV `strategy_settings` points at.
+    pub fn new(strategy_settings: &settings::StrategySettings) -> Self {
+        Self {
+            path: lshade_stats_csv_path(strategy_settings),
+            keep: false,
+        }
+    }
+
+    /// Path guarded by this instance.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Keeps the statistics CSV instead of removing it on drop.
+    pub fn commit(mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for LshadeStatsCsvGuard {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "warning: failed to remove the incomplete LSHADE-RSP statistics CSV {}: {}",
+                self.path.display(),
+                error
+            ),
+        }
+    }
+}
+
 /// Clears and releases the LSHADE chromosome bank when it goes out of scope.
 struct BankClearGuard {
-    bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+    bank: std::sync::Arc<std::sync::Mutex<FitnessCache>>,
 }
 
 impl Drop for BankClearGuard {
@@ -1867,7 +1986,7 @@ pub struct LshadeRspOptimizer {
     config: LshadeRspConfig,
     optimization_config: OptimizationConfig,
     /// Caches fitness per hashed `ParameterSet` for the duration of a single `run`.
-    chromosome_bank: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+    chromosome_bank: std::sync::Arc<std::sync::Mutex<FitnessCache>>,
     population: Vec<ParameterSet>,
     fitness_values: Vec<f64>,
     archive: Vec<ParameterSet>,
@@ -1888,9 +2007,7 @@ impl LshadeRspOptimizer {
         Self {
             config: LshadeRspConfig::new(),
             optimization_config: OptimizationConfig::new(),
-            chromosome_bank: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            chromosome_bank: std::sync::Arc::new(std::sync::Mutex::new(FitnessCache::new())),
             population: Vec::new(),
             fitness_values: Vec::new(),
             archive: Vec::new(),
@@ -1914,25 +2031,24 @@ impl LshadeRspOptimizer {
     /// Evaluates a parameter set through the chromosome bank, reusing cached fitness values.
     fn evaluate_cached<F>(
         params: &ParameterSet,
-        bank: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, f64>>>,
+        bank: &std::sync::Arc<std::sync::Mutex<FitnessCache>>,
         evaluate: &F,
     ) -> f64
     where
         F: Fn(&ParameterSet) -> f64,
     {
-        let hash = hash_parameter_set(params);
-        if let Some(cached) = bank
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&hash)
-            .copied()
-        {
+        let cached = {
+            let bank = bank.lock().unwrap_or_else(|e| e.into_inner());
+            cache_lookup(&bank, params)
+        };
+        if let Some(cached) = cached {
             return cached;
         }
         let fitness = evaluate(params);
-        bank.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(hash, fitness);
+        {
+            let mut bank = bank.lock().unwrap_or_else(|e| e.into_inner());
+            cache_store(&mut bank, params, fitness);
+        }
         fitness
     }
 
@@ -2397,7 +2513,10 @@ impl LshadeRspOptimizer {
     /// The chromosome bank is cleared before the run starts and released again on every exit
     /// path. Statistics are appended to `lshade_optimization_results.csv` after each iteration
     /// (the file is recreated with its header at the start of the run) and iterations are
-    /// numbered starting from 1.
+    /// numbered starting from 1. Statistics are written while the run executes, so the caller
+    /// owns their fate: a `LshadeStatsCsvGuard` created before the call keeps the file only when
+    /// the whole search (including every candidate backtest) is accepted, and removes it
+    /// otherwise.
     ///
     /// # Arguments
     /// * `initial_strategy_settings` - The initial strategy settings.
@@ -2657,8 +2776,7 @@ impl LshadeRspOptimizer {
         &self,
         strategy_settings: &settings::StrategySettings,
     ) -> anyhow::Result<()> {
-        let path = std::path::Path::new(&strategy_settings.exit_results_path)
-            .join("lshade_optimization_results.csv");
+        let path = lshade_stats_csv_path(strategy_settings);
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -2687,8 +2805,7 @@ impl LshadeRspOptimizer {
         stat: &LshadeRspIterationStats,
         strategy_settings: &settings::StrategySettings,
     ) -> anyhow::Result<()> {
-        let path = std::path::Path::new(&strategy_settings.exit_results_path)
-            .join("lshade_optimization_results.csv");
+        let path = lshade_stats_csv_path(strategy_settings);
 
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -3082,6 +3199,68 @@ mod lshade_tests {
         assert_eq!(bank.lock().unwrap_or_else(|e| e.into_inner()).len(), 2);
     }
 
+    /// Two candidates whose 64-bit digest collides must not share a fitness value: the cache stores
+    /// the whole parameter set and compares it on lookup, so a collision is a cache miss.
+    #[test]
+    fn test_fitness_cache_rejects_a_colliding_candidate() {
+        let make_params = |param_a: i64| {
+            ParameterSet::new()
+                .with_strategy_params(vec![(
+                    "param_a".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(param_a)),
+                )])
+                .with_pos_sizer_name("mpr".to_string())
+                .with_pos_sizer_value(1.0)
+                .with_slippage(0.005)
+        };
+        let candidate = make_params(1);
+        let colliding = make_params(2);
+
+        let bank = std::sync::Arc::new(std::sync::Mutex::new(FitnessCache::new()));
+        // Simulate a collision: the other candidate's fitness sits in this candidate's digest bucket.
+        bank.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            hash_parameter_set(&candidate),
+            vec![(colliding.clone(), 999.0)],
+        );
+
+        {
+            let bank = bank.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                cache_lookup(&bank, &candidate),
+                None,
+                "a colliding entry must not be returned as this candidate's fitness"
+            );
+            assert!(!cache_contains(&bank, &candidate));
+        }
+
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let evaluate = move |_params: &ParameterSet| -> f64 {
+            counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            1.0
+        };
+
+        assert_eq!(
+            LshadeRspOptimizer::evaluate_cached(&candidate, &bank, &evaluate),
+            1.0
+        );
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // Both candidates now live side by side in the same bucket, each with its own fitness.
+        let bank_guard = bank.lock().unwrap_or_else(|e| e.into_inner());
+        let bucket = bank_guard
+            .get(&hash_parameter_set(&candidate))
+            .expect("the bucket must still be there");
+        assert_eq!(bucket.len(), 2);
+        assert_eq!(cache_lookup(&bank_guard, &candidate), Some(1.0));
+        assert!(
+            bucket
+                .iter()
+                .any(|(c, fitness)| *c == colliding && *fitness == 999.0),
+            "the colliding entry must be preserved next to the real one"
+        );
+    }
+
     // ─── Test 10 ───────────────────────────────────────────────────────
 
     fn make_test_strategy_settings(exit_results_path: &str) -> settings::StrategySettings {
@@ -3185,6 +3364,79 @@ mod lshade_tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_empty(),
             "chromosome bank must be released after run"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // ─── Test 10b ──────────────────────────────────────────────────────
+
+    /// Regression (finding C8): a run that is reported as failed must leave no statistics CSV.
+    ///
+    /// The statistics file is created and appended while the run executes, so a candidate failure
+    /// detected after `run` returns would otherwise leave plausible but partial per-iteration
+    /// history behind. The caller keeps the file through `LshadeStatsCsvGuard` only when the whole
+    /// search is accepted.
+    #[test]
+    fn test_failed_run_leaves_no_stats_csv() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "farukon_lshade_failed_run_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let strategy_settings = make_test_strategy_settings(&temp_dir.to_string_lossy());
+        let make_optimizer = || {
+            LshadeRspOptimizer::new()
+                .with_optimization_config(make_test_opt_config())
+                .with_config(LshadeRspConfig {
+                    population_size: 4,
+                    max_evaluations: 8,
+                    p_best: 0.1,
+                    archive_rate: 1.0,
+                    memory_size: 5,
+                    fitness_metric: settings::FitnessValue::default(),
+                    fitness_direction: "max".to_string(),
+                })
+        };
+        let evaluate = |params: &ParameterSet| -> f64 {
+            params
+                .get_strategy_params()
+                .iter()
+                .find(|(n, _)| n == "param_a")
+                .and_then(|(_, v)| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        let stats_path = lshade_stats_csv_path(&strategy_settings);
+
+        // An accepted run commits the guard and keeps its statistics.
+        {
+            let mut optimizer = make_optimizer();
+            let guard = LshadeStatsCsvGuard::new(&strategy_settings);
+            assert_eq!(guard.path(), stats_path.as_path());
+            optimizer.run(&strategy_settings, evaluate).unwrap();
+            guard.commit();
+        }
+        assert!(
+            stats_path.exists(),
+            "an accepted run must keep its statistics CSV"
+        );
+
+        // A run the caller reports as failed drops the guard uncommitted, exactly like the
+        // candidate-failure path in `optimizers.rs`, and takes the statistics CSV with it.
+        {
+            let mut optimizer = make_optimizer();
+            let guard = LshadeStatsCsvGuard::new(&strategy_settings);
+            let stats = optimizer.run(&strategy_settings, evaluate).unwrap();
+            assert!(!stats.is_empty());
+            assert!(
+                stats_path.exists(),
+                "the run writes statistics while it executes"
+            );
+            drop(guard);
+        }
+        assert!(
+            !stats_path.exists(),
+            "a failed run must leave no LSHADE statistics CSV behind"
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -3733,6 +3985,39 @@ mod ga_tests {
         let next_gen = ga.tournament_selection(&[(make_individ(1), 1.0)]);
         assert_eq!(next_gen.len(), 5);
     }
+
+    /// A 64-bit digest collision must not hand one candidate another candidate's fitness: the GA
+    /// cache stores the whole parameter set next to the digest and compares it on lookup.
+    #[test]
+    fn test_evaluate_population_ignores_a_colliding_cached_candidate() {
+        let ga = GeneticAlgorythm::new()
+            .with_ga_config(make_test_ga_config(2, 1))
+            .with_optimization_config(make_test_opt_config());
+
+        let candidate = make_individ(1);
+        let colliding = make_individ(2);
+        {
+            // Simulate a collision: a different candidate sits in this candidate's digest bucket
+            // with a fitness of its own.
+            let mut bank = ga.chromosome_bank.lock().unwrap();
+            bank.insert(hash_parameter_set(&candidate), vec![(colliding, 999.0)]);
+        }
+
+        let results = ga
+            .evaluate_population(1, std::slice::from_ref(&candidate), |params| {
+                params.get_strategy_params()[0].1.as_f64().unwrap()
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].1, 1.0,
+            "the colliding candidate's cached fitness must not be reused"
+        );
+
+        let bank = ga.chromosome_bank.lock().unwrap();
+        assert_eq!(cache_lookup(&bank, &candidate), Some(1.0));
+    }
 }
 
 #[cfg(test)]
@@ -3815,5 +4100,65 @@ mod grid_search_tests {
             .collect::<std::collections::HashSet<_>>()
             .len();
         assert_eq!(unique_count, expected);
+    }
+
+    /// A Cartesian product that does not fit in `u128` must be reported as an error naming an axis
+    /// instead of wrapping (release) or panicking (overflow-checked builds) while generating.
+    #[test]
+    fn test_combination_count_overflow_is_reported() {
+        // Four axes of 10^12 values each: 10^48 combinations, far beyond `u128::MAX` (~3.4e38).
+        let ranges: HashMap<String, settings::ParamSpec> = (0..4)
+            .map(|i| {
+                (
+                    format!("axis_{i}"),
+                    settings::ParamSpec::Range {
+                        start: 0.0,
+                        end: 1e12 - 1.0,
+                        step: 1.0,
+                    },
+                )
+            })
+            .collect();
+        let config = OptimizationConfig::new().with_strategy_params_ranges(ranges);
+        let optimizer = GridSearchOptimizer::new().with_optimization_config(config);
+
+        let error = optimizer
+            .calculate_total_combinations()
+            .expect_err("an overflowing combination count must not wrap");
+        let message = format!("{error}");
+        assert!(
+            message.contains("axis_"),
+            "the error must name the overflowing axis, got: {message}"
+        );
+    }
+
+    /// `sysinfo` reports `available_memory()` in bytes; the OOM guard must compare bytes with bytes.
+    /// The former `* 1024` conversion inflated the threshold 1024x and let oversized grids through.
+    #[test]
+    fn test_memory_guard_compares_bytes_with_bytes() {
+        // 1_000 sets * 1_024 bytes = 1_024_000 bytes; 1_000_000 available bytes put the 80% limit
+        // at 800_000 bytes, so the guard must reject it (the 1024x-inflated limit would not).
+        let rejected = GridSearchOptimizer::check_estimated_memory(1_000, 1_024, 1_000_000);
+        assert!(
+            rejected.is_err(),
+            "1_024_000 estimated bytes must not fit into an 800_000-byte limit"
+        );
+        let message = format!("{}", rejected.unwrap_err());
+        assert!(
+            message.contains("1024000") && message.contains("800000"),
+            "the error must state both the estimate and the byte limit, got: {message}"
+        );
+
+        // The same request fits once the machine really has 10 MB available.
+        assert!(GridSearchOptimizer::check_estimated_memory(1_000, 1_024, 10_000_000).is_ok());
+    }
+
+    /// The estimate itself must not wrap when the combination count times the set size overflows.
+    #[test]
+    fn test_memory_estimate_overflow_is_reported() {
+        assert!(
+            GridSearchOptimizer::check_estimated_memory(u64::MAX as u128, 1_024, u64::MAX).is_err()
+        );
+        assert!(GridSearchOptimizer::check_estimated_memory(u128::MAX, 1_024, u64::MAX).is_err());
     }
 }

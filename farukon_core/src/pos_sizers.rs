@@ -185,16 +185,14 @@ fn plain_pos_sizer(
             .round()
             / 100_000.0;
         let commission = match strategy_instruments_info_for_symbol.exchange.as_str() {
-            "FORTS" => {
-                let entry_commission = commission_plans::calculate_forts_comission(
-                    Some(entry_price),
-                    strategy_instruments_info_for_symbol,
-                    strategy_settings,
-                )
-                .unwrap();
-
-                Some(entry_commission)
-            }
+            // A missing commission plan is a normal `None` for the caller: printing the diagnostic
+            // without one must not panic inside the `extern "C"` strategy call (this check runs in
+            // the Optimize flow too, where `commission_plans` may be absent).
+            "FORTS" => commission_plans::calculate_forts_comission(
+                Some(entry_price),
+                strategy_instruments_info_for_symbol,
+                strategy_settings,
+            ),
             _ => None,
         };
 
@@ -459,6 +457,44 @@ mod tests {
                 &instrument(100.0, 0),
             ),
             None
+        );
+    }
+
+    /// The `Debug` diagnostic of the fixed-lot sizer used to unwrap the commission calculation,
+    /// which is `None` whenever no commission plan is configured — a panic on the `extern "C"`
+    /// strategy path. The diagnostic must degrade to "no commission" and still size the order.
+    #[test]
+    fn debug_fixed_lot_without_commission_plan_still_sizes_the_order() {
+        let mut strategy_settings = settings_with_sizer("1", 1.0);
+        strategy_settings.commission_plans = None;
+
+        assert_eq!(
+            get_pos_sizer_from_settings(
+                &"Debug".to_string(),
+                &holdings(10_000.0),
+                Some(100.0),
+                Some(90.0),
+                &strategy_settings,
+                &instrument(100.0, 0),
+            ),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn debug_fixed_lot_with_a_commission_plan_still_sizes_the_order() {
+        let strategy_settings = settings_with_sizer("1", 1.0);
+
+        assert_eq!(
+            get_pos_sizer_from_settings(
+                &"Debug".to_string(),
+                &holdings(10_000.0),
+                Some(100.0),
+                Some(90.0),
+                &strategy_settings,
+                &instrument(100.0, 0),
+            ),
+            Some(1.0)
         );
     }
 }

@@ -153,3 +153,35 @@ unfinished:
     reason: report-only review — findings are handed over, never fixed in the review run; the owner decides when to run the follow-up implement task
     severity: critical
     follow_up: true
+
+## 2026-10-26 — Fix the 40 review findings across BOTH repositories (run 20261026-3f117829)
+
+title: Fix the 40 review findings across BOTH repositories (farukon_v3.1.0 + csv-to-flatbuffer) — review run 20261026-2f16ea3a
+project: code
+timestamp: 2026-10-26T23:59:00Z
+commit: PENDING (this entry is written before the commit; the commit hash lands in the summary on the next run)
+run_id: 20261026-3f117829
+branch: code-factory/fix-40-findings-20261026 (consumer), code-factory/fix-contract-and-findings-20261026 (producer)
+task_type: implement
+goal: Close all 40 merged findings of review 20261026-2f16ea3a in both repos, including the u64->f64 volume contract and a versioned file_identifier on both sides; regenerate the RTS market data.
+changed_files: 35 files across both repos (consumer 19 incl. backtest.rs, portfolio.rs, optimizers.rs, main.rs, data_engine/*, farukon_core/{optimization,performance,pos_sizers,instruments_info}.rs, python/*, start.sh, Strategies/rs/MA_cross.rs, USER_MANUAL.md, AGENTS.md, VERSION 3.1.0->3.2.0; producer 16 incl. both .fbs, csv_processor.rs, resample.rs, read_flatbuffers.rs, file_processing.rs, progress.rs, main.rs, cli.rs, utils.rs, regenerated bindings, README.md, build.rs) [verified: .code-factory/manifest.json]
+created_files: consumer python/tests/{test_plot_script_fixes,test_ma_cross_memoization,test_start_sh_platforms,test_user_manual_v31}.py; producer src/lib.rs + tests/conversion.rs; run scripts under .code-factory/scripts_run/ (gitignored) [verified: .code-factory/manifest.json]
+results: integration=pass regression=pass business=pass review=approve | SUCCESS — acceptance 5/5 verify MET, exit 0 [verified: .code-factory/state/acceptance.md]; contract landed on BOTH sides: schemas double + file_identifier OHL1/OHS1, producer finishes roots with identifiers, consumer rejects identifier-less legacy buffers with a MIGRATION error [verified: producer tests/conversion.rs identifier round-trips + consumer utils.rs buffer_without_identifier_is_rejected_with_migration_hint + business-test.md §5]; AC1 volume round-trip two-part PASS: real consumer binary loads the producer-written 100-bar fixture (exit 0, 10 deals) AND 100/100 integer+fractional volumes read back bit-exact [verified: .code-factory/scripts_run/volume_roundtrip_check.py FINAL_EXIT=0]; business parity MATCH — temp base-clone old stack+old data vs new stack+new data: all 10 metrics identical, equity CSV byte-identical (md5 35e4a934...) [verified: .code-factory/logs/business-test.md §8]; regression green: consumer 36 Farukon_2 + 73 farukon_core, producer 24+15+1, clippy/fmt clean both repos, 6 python test files pass [verified: .code-factory/logs/regression-final.md]; review: iteration 1 request_changes (6 critical + 11 major incl. portfolio add-on carry, LSHADE stats guard, short-buffer panic) -> rework by 6 agents -> iteration 2 approve [verified: .code-factory/logs/code-review.md]; market data regenerated: 51 RTS .soa.bin + .idx (302 MB) with OHS1 into Tickers_fbs/soa/RTS [verified: business-test.md §2]; version 3.2.0 minor, reviewer-validated [verified: logs/code-review.md version_type]
+decisions: volume contract fixed by aligning the PRODUCER to the consumer's f64 (schemas double, CSV/parse/builder/resampling f64) rather than the reverse — the consumer v3.1.0 contract was already published [verified: task.yaml coordination rule 1]; file_identifier OHL1/OHS1 chosen as the version marker; any future incompatible revision must change it [verified: ohlcv.fbs/ohlcv_soa.fbs]; partial exits keep the original entry basis (entry_price/entry_capital cleared only at zero position) [verified: portfolio.rs:355 comment + test partial_exit_keeps_the_entry_basis]; add-on entries book the old quantity's close-to-close move as carried_market_move before advancing last_marked_close [verified: portfolio.rs add_on tests + vaccination]; failed LSHADE/GA runs leave neither results nor stats CSV (candidate gate + LshadeStatsCsvGuard RAII) [verified: optimization.rs test_failed_run_leaves_no_stats_csv]; fitness caches key by full ParameterSet per digest bucket (collision => miss) [verified: optimization.rs cache_lookup + collision tests]; market data regeneration used the producer's real in/RTS-*.txt (51 files) [verified: business-test.md]; owner's uncommitted producer codegen refresh kept and committed together with the fix [verified: producer git status at run start]
+assumptions: task.yaml was normalized formatting-only for the deterministic parser (block scalars, AC ids folded into criterion text) — content unchanged; baseline metric parity was initially recorded as not reproducible (owner deleted pre-change data) but the reviewer-required real rerun via temp base clones succeeded, so the assumption is RETIRED [verified: business-test.md §6 annotation + §8]; visual-mode population searches run with mode Optimize semantics to avoid parallel writers on equity_series.csv [verified: main.rs resolve_strategy_execution]; python pandas/matplotlib unavailable in this environment — python changes verified via stdlib AST/functional tests only [verified: analysis notes in agent-9 result]
+models_used: main_agent=kimi-code/k3; analyzer=kimi-code/k3.1-pro (2); coder=deepseek-flash (T1-T13 + rework R1-R3/RB/RC); tester=deepseek-flash (T13, RD); reviewer=kimi-code/k3.1-pro (2 iterations); documenter=deepseek-flash
+factory_version: 12.17.0
+
+unfinished:
+  - item: 17 pre-existing Cyrillic comments remain in shipped consumer files (Farukon_2/src/data_engine/utils.rs:233, python/optresults_handler.py:27-59)
+    reason: english-only cleanup is a code-line edit the documenter gate rejects; needs a small implement-task touch
+    severity: info
+    follow_up: false
+  - item: pandas/numpy/matplotlib are undeclared and were unavailable in this environment
+    reason: python plotting verified statically; a live plotting run needs the owner venv
+    severity: info
+    follow_up: false
+
+closed:
+  - item: Close the 40 review findings via the generated follow-up task .code-factory/review/fix-tasks.yaml (30 critical incl. the u64/f64 volume contract break, destructive output-dir wipe, swallowed conversion errors, PnL accounting on partial exits/multi-fills)
+    evidence: acceptance SUCCESS 5/5 verify MET (.code-factory/state/acceptance.md exit 0), reviewer approve at iteration 2 (.code-factory/logs/code-review.md), all 40 findings confirmed fixed with regressions (per-finding coverage table in the iteration-1 review and the iteration-2 confirmation), business parity MATCH on regenerated RTS data (.code-factory/logs/business-test.md §8)

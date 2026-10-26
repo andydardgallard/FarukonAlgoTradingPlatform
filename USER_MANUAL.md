@@ -134,7 +134,7 @@ The platform is configured using a single JSON file passed via the `--config` co
 ```
 
 *   **`common` (Object):** Global settings.
-    *   **`mode`** (String): `"Debug"`, `"Optimize"`, `"Visual"`, or `"Portfolio"`. Controls verbosity and behavior (in `"Portfolio"` mode only the `Grid_Search` optimizer is allowed).
+    *   **`mode`** (String): `"Debug"`, `"Optimize"`, `"Visual"`, or `"Portfolio"`. Controls verbosity and behavior. `"Portfolio"` always runs exactly one `Grid_Search` combination per strategy and ignores the configured `optimizer_type`; `"Visual"` runs one `Grid_Search` combination for a `Grid_Search` strategy, while a population search (`Genetic`, `LSHADE_RSP`) runs its own optimizer with `Optimize` semantics so its candidates never share the single `equity_series.csv`.
     *   **`initial_capital`** (float): Starting capital for the entire portfolio.
     *   **`global_data_storage_mode`** (String): `"arc"` or `"deep"`. In `"arc"` mode every candidate shares one `Arc`-held dataset; in `"deep"` mode every candidate **deep-clones the whole dataset** before its backtest. `"deep"` is valid but very expensive: the process prints a prominent startup warning recommending `"arc"` (see [§7](#7-optimization)).
 
@@ -324,7 +324,7 @@ All optimizers write the evaluated parameter sets and their metrics to `optimiza
 
 ---
 
-Конечно. Ниже приведён обновлённый раздел **User Manual**, включающий **детальный разбор примера стратегии пересечения средних** (`MovingAverageCrossStrategy`) и **руководство по созданию новой стратегии**.
+Below is the updated **User Manual** section, including a **detailed walkthrough of the moving-average-cross example** (`MovingAverageCrossStrategy`) and a **guide to creating a new strategy**.
 
 ---
 
@@ -343,6 +343,27 @@ To create a new trading strategy, you need to implement the `Strategy` trait def
 > mixing the two allocators for one event object crashes the process. The full rationale and the
 > exact contract: `farukon_core/src/event.rs`, section "SIGNAL EMISSION ACROSS THE FFI BOUNDARY";
 > `strategy_lib/src/lib.rs` is the reference implementation.
+
+> **Breaking change (v3.1.0) — volume is `f64` and market data is versioned.** Volume changed from
+> `u64` to `f64` in the FlatBuffer schema and in the `DataHandlerVTable` volume slices
+> (`get_latest_bars_volume_values` returns `&[f64]`). Because `u64` and `f64` are both 8-byte
+> scalars, a legacy file passes FlatBuffer layout verification and its integer volume bits would be
+> silently reinterpreted as IEEE-754 values — so the loader now requires the current schema
+> `file_identifier` and **rejects** any file without it with a migration error instead of reading
+> garbage. Migrating to v3.1.0 takes three steps:
+>
+> 1. **Regenerate every market-data file** with the matching `csv-to-flatbuffer` build (the one whose
+>    schemas declare `volumes: [double]` and stamp the new `file_identifier`). Pre-v3.1
+>    `.soa.bin`/`.soa.idx` files cannot be converted in place and are no longer accepted.
+> 2. **Rebuild every strategy library** against the current `farukon_core` — the volume slices of
+>    `DataHandlerVTable` are part of the ABI this release changes, so a library built for v3.0.0 has
+>    a stale vtable layout. See §8.4.3 for the build recipe.
+> 3. **Re-run the reference/measurement configs** and compare `optimization_results.csv` with the
+>    previous release to confirm metric parity on the regenerated data.
+>
+> Anything that reads volume by type — strategies calling `get_latest_bar_value(symbol, "volume")` or
+> `get_latest_bars_volume_values` — now receives `f64` on both the SOA and the padded timeline path,
+> including fractional volumes from crypto data.
 
 ### 8.1 Understanding the `Strategy` Trait
 
@@ -708,7 +729,7 @@ fn calculate_signals(
 *   **Signal Sending**: The helper functions `open_by_limit`, `close_by_market`, etc., are the trait's default methods: they marshal their arguments through `self.emitter` (the host callback), and the **host** allocates the `SignalEvent` and puts it into the event channel. The `Portfolio` module receives these signals and handles the order creation and execution simulation.
 *   **Hot path**: the strategy resolves nothing per bar that it could resolve once — the FFI entry point and the symbol list are cached by the loader per strategy instance, and the instrument dates are memoized in `parsed_symbol_dates` at construction time.
 
-Конечно, вот обновлённый раздел 8.3 "Creating Your Own Strategy", переписанный с акцентом на то, что пользователю в большинстве случаев нужно изменять **только** функцию `calculate_signals`.
+Below is the updated section 8.3 "Creating Your Own Strategy", rewritten to emphasize that in most cases you need to modify **only** the `calculate_signals` function.
 
 ---
 
@@ -1160,7 +1181,7 @@ include!("../../../SYMI_Ch_SMA_up_lmt.rs");
 cargo build --release   # produces target/release/SYMI_Ch_SMA_up_lmt.dll (or .so/.dylib)
 ```
 
-Two requirements are mandatory since v3.0.0:
+Requirements that are mandatory since v3.0.0:
 
 - **mimalloc as the dll's global allocator** — the host binary allocates with mimalloc, and the
   allocator kind must match on both sides of the FFI boundary.
@@ -1169,7 +1190,24 @@ Two requirements are mandatory since v3.0.0:
   (see §8.1 and `farukon_core/src/event.rs`). A dll built against an older `farukon_core` will
   crash the new binary.
 
-Then point `strategy_path` in the portfolio config at the produced library file.
+Additional requirements since v3.1.0 (see the v3.1.0 breaking-change block in §8 for the full
+migration):
+
+- **A rebuild against v3.1.0 `farukon_core`, even if the dll was already built for v3.0.0** — this
+  release changes the volume type: FlatBuffer volumes and the `DataHandlerVTable` volume slices went
+  from `u64` to `f64`, so a v3.0.0-built dll has a stale vtable layout and must be recompiled, not
+  just reloaded.
+- **Market data regenerated with the matching `csv-to-flatbuffer`** — the fixed producer writes
+  `volumes: [double]` and stamps the new `file_identifier`. Legacy u64-volume `.soa.bin`/`.soa.idx`
+  files are **rejected by the loader** with a migration error (the schema identifier guard) instead
+  of being read as corrupted volumes; re-convert them from the source CSV/TXT before running.
+- **Volume is `f64` in strategy code** — `get_latest_bar_value(symbol, "volume")` and
+  `get_latest_bars_volume_values` now yield `f64` values, fractional volumes included, and synthetic
+  timeline padding bars carry volume `0.0`.
+
+Then point `strategy_path` in the portfolio config at the produced library file. Its name is
+platform-specific: `strategy_lib.dll` on Windows/MSVC, `libstrategy_lib.so` on Linux,
+`libstrategy_lib.dylib` on macOS (the repository `start.sh` selects the right one for the host).
 
 #### 8.4.4 Validation
 
@@ -1215,7 +1253,8 @@ benchmarks with exact business-metric parity.
 
 *   **"No instrument info for ...":** Verify the symbol exists in `instruments_info.json`.
 *   **"Failed to create data handler":** Check if the `.soa.bin`/`.soa.idx` files exist and are readable at the specified `data_path`.
-*   **"Failed to load dynamic strategy":** Ensure the `strategy_path` is correct and the library file exists. Check the `strategy_name` matches the exported symbol.
+*   **The data handler reports a migration error / rejects a `.soa.bin` file:** the file carries the pre-v3.1 schema identifier (u64 volumes). FlatBuffer volumes went `u64` → `f64` in v3.1.0, so legacy files are refused instead of being misread; regenerate them from the source CSV/TXT with the matching `csv-to-flatbuffer` build (see [§8](#8-extending-with-strategies)).
+*   **"Failed to load dynamic strategy":** Ensure the `strategy_path` is correct and the library file exists. Check the `strategy_name` matches the exported symbol. Remember the name is platform-specific (`strategy_lib.dll` / `libstrategy_lib.so` / `libstrategy_lib.dylib`).
 *   **Engine crashes as soon as a strategy library is loaded (or on the first signal):** the library was built against an older strategy ABI. Rebuild it against the current `farukon_core` (see [§8](#8-extending-with-strategies)); a library built for the pre-v3.0.0 channel ABI cannot work with the current host.
 *   **"No commission plan found for exchange '...' / commission_type '...'":** `commission_plans.json` has no rate for that exchange/commission-type pair, so the execution handler fails the order with this descriptive error instead of silently trading without commission.
 *   **"WARNING: global_data_storage_mode = \"deep\""** or a thread-scaling warning: both are advisories printed once per run; the run continues. Switch to `"arc"` storage mode or reduce `threads` (see [§7](#7-optimization)).

@@ -16,6 +16,13 @@ pub struct MovingAverageCrossStrategy {
     strategy_instruments_info:
         std::collections::HashMap<String, farukon_core::instruments_info::InstrumentInfo>,
 
+    /// Pre-parsed, immutable per-symbol instrument dates: `(expiration_date, trade_from_date)`.
+    /// Parsed once in `new()`, so the per-bar signal loop never re-parses metadata.
+    parsed_symbol_dates: std::collections::HashMap<
+        String,
+        (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+    >,
+
     /// The signal emitter of the host that loaded this strategy (host-owned, only borrowed here).
     emitter: farukon_core::event::SignalEmitter,
 
@@ -30,6 +37,8 @@ impl MovingAverageCrossStrategy {
     /// Creates a new instance of the MovingAverageCrossStrategy.
     /// Initializes the strategy with the provided mode, settings, instrument info, and signal emitter.
     /// It also parses the required strategy parameters (`short_window`, `long_window`) from the settings.
+    /// Finally it pre-parses every instrument's `expiration_date` / `trade_from_date` once and memoizes
+    /// the datetimes, so the per-bar signal loop never parses metadata again.
     ///
     /// # Arguments
     /// * `mode` - The operational mode (e.g., "Debug", "Optimize").
@@ -38,7 +47,8 @@ impl MovingAverageCrossStrategy {
     /// * `emitter` - The host's signal emitter, used to communicate signals.
     ///
     /// # Returns
-    /// * `anyhow::Result<Self>` - A new instance of the strategy or an error if initialization fails.
+    /// * `anyhow::Result<Self>` - A new instance of the strategy or an error if initialization fails
+    ///   (including an unparsable instrument date).
     pub fn new(
         mode: String,
         strategy_settings: farukon_core::settings::StrategySettings,
@@ -63,11 +73,40 @@ impl MovingAverageCrossStrategy {
             );
         }
 
+        // Pre-parse the immutable per-symbol instrument dates once: the hot path must not re-parse
+        // metadata on every bar. A malformed date fails here, naming the symbol.
+        let mut parsed_symbol_dates =
+            std::collections::HashMap::with_capacity(strategy_instruments_info.len());
+        for (symbol, instrument_info) in &strategy_instruments_info {
+            let expiration_date_dt = utils::string_to_date_time(
+                &instrument_info.expiration_date,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|err| {
+                err.context(format!(
+                    "Failed to parse 'expiration_date' for symbol '{}'",
+                    symbol
+                ))
+            })?;
+            let trade_from_date_dt = utils::string_to_date_time(
+                &instrument_info.trade_from_date,
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .map_err(|err| {
+                err.context(format!(
+                    "Failed to parse 'trade_from_date' for symbol '{}'",
+                    symbol
+                ))
+            })?;
+            parsed_symbol_dates.insert(symbol.clone(), (expiration_date_dt, trade_from_date_dt));
+        }
+
         // Create and return the new strategy instance.
         anyhow::Ok(MovingAverageCrossStrategy {
             mode,
             strategy_settings,
             strategy_instruments_info,
+            parsed_symbol_dates,
             short_window,
             long_window,
             emitter,
@@ -111,17 +150,16 @@ impl farukon_core::strategy::Strategy for MovingAverageCrossStrategy {
             // Get the latest close price for the symbol.
             let close = Some(data_handler.get_latest_bar_value(symbol, "close").unwrap());
 
-            // Get the expiration datetime for the symbol
-            let expiration_date = &strategy_instruments_info_for_symbol.expiration_date;
-            let expiration_date_dt =
-                farukon_core::utils::string_to_date_time(expiration_date, "%Y-%m-%d %H:%M:%S")?;
+            // Get the pre-parsed (expiration_date, trade_from_date) datetimes memoized in `new()`.
+            // A missing entry means an unknown symbol; fail like the old parse error path did.
+            let (expiration_date_dt, trade_from_date_dt) = *self
+                .parsed_symbol_dates
+                .get(symbol)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No pre-parsed instrument dates for symbol '{}'", symbol)
+                })?;
 
-            // Get the expiration datetime for the symbol from instrument info and parse it.
-            let trade_from_date = &strategy_instruments_info_for_symbol.trade_from_date;
-            let trade_from_date_dt =
-                farukon_core::utils::string_to_date_time(trade_from_date, "%Y-%m-%d %H:%M:%S")?;
-
-            // Get the trade_from_date for the symbol from instrument info and parse it.
+            // Get the current position state for the symbol.
             let current_position_state = current_positions.get(symbol).unwrap();
             let current_position_quantity = current_position_state.position;
 

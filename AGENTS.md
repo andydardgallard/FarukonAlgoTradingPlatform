@@ -1,5 +1,5 @@
 <!-- code-factory-fingerprint: 4dc58b5f0dcf604558d81b4aaaf029d747d33b2ca29d2f6f161be2d8cba3d172 content: 3437c428b7f490000e976a1b2af1eab032a5e856e4e6e3b282cdabfe4b39ea46 -->
-<!-- code-factory-version: 3.1.0 -->
+<!-- code-factory-version: 3.2.0 -->
 # Farukon
 
 ## Project Overview
@@ -21,7 +21,7 @@ The repository is a Rust workspace plus Python tooling. There is no CI configura
   `num_cpus`, `anyhow`, `itertools`, `sysinfo`, `futures`, `mimalloc` (global allocator, since v3.0.0).
 - **Python 3.12** tooling for visualization: `pandas`, `numpy`, `matplotlib` (not declared in any
   requirements file; a Windows venv is expected at `python/VM`).
-- **Versioning**: `VERSION` is the single source of truth (currently 3.0.0), mirrored into
+- **Versioning**: `VERSION` is the single source of truth (currently 3.2.0), mirrored into
   `[workspace.package] version` in `Cargo.toml`.
 - **Windows/MSVC build note**: `~/.cargo/config.toml` sets `CXXFLAGS`/`CL` to `-utf-8` — required
   because `libmimalloc-sys` emits absolute non-ASCII `#include` paths that cl.exe cannot read
@@ -70,7 +70,11 @@ block from README after any regeneration.)
 - `strategy_lib` (cdylib) — a sample MA-cross strategy compiled as a shared library and loaded at
   runtime via `libloading`.
 - Dispatch: `main.rs` maps `OptimizerType::{GridSearch, Genetic, LshadeRSP}` to
-  `optimizers.rs::{run_grid_search, run_genetic_search, run_lshade_rsp_search}`.
+  `optimizers.rs::{run_grid_search, run_genetic_search, run_lshade_rsp_search}`. In `Visual`
+  mode the configured `optimizer_type` decides the path: a `GridSearch` runs one combination
+  (`run_single_combination_grid_search`, the single `equity_series.csv` the plots read), while a
+  population search (`Genetic`, `LshadeRSP`) runs the search with `mode = "Optimize"`, so its
+  candidates never race on that one file.
 
 ## Directory Structure
 
@@ -79,16 +83,18 @@ block from README after any regeneration.)
   `portfolio.rs`, `execution.rs`, `strategy_loader.rs`, `data_engine/`).
 - `strategy_lib/src/` — cdylib sample strategy.
 - `python/` — visualization/analysis scripts (`optresults_handler.py`, `visual.py`,
-  `plot_portfolio_*.py`).
+  `plot_portfolio_*.py`) and the stdlib regression tests under `python/tests/`.
 - `portfolios/` — portfolio JSON configs (e.g. `lshade_si_25_apr_dd.json`).
 - `Strategies/` — prebuilt strategy shared libraries (e.g. `MA_cross.dylib` — **stale, pre-v3.0.0
-  ABI; source of truth is `Strategies/rs/MA_cross.rs`, nothing in this repo builds it**).
+  ABI; source of truth is `Strategies/rs/MA_cross.rs`, nothing in this repo builds it** — the
+  `python/tests/test_ma_cross_memoization.py` regression type-checks that source with `rustc`
+  against the built `farukon_core` rlib, which is the only compile gate it has).
 - `Tickers_fbs/` — market data in flatbuffers/SOA format.
 - `commission_plans.json`, `instruments_info.json` — static config data.
 
 ## Key Configuration Files
 
-- `Cargo.toml` (workspace, `[workspace.package] version` = 3.0.0) and per-crate `Cargo.toml`.
+- `Cargo.toml` (workspace, `[workspace.package] version` = 3.2.0) and per-crate `Cargo.toml`.
 - `VERSION` — single source of truth for the version.
 - `portfolios/*.json` — portfolio/optimizer configuration. `exit_results_path` inside each config
   determines the `opt_results/<name>` output directory.
@@ -99,16 +105,25 @@ block from README after any regeneration.)
 
 ```bash
 cargo build --release
-cargo test --workspace           # 73 tests (59 farukon_core + 14 Farukon_2), all green on Windows
+cargo test --workspace           # 109 tests (73 farukon_core + 36 Farukon_2), all green on Windows
 python python/tests/test_optresults_handler.py            # Python regression tests, stdlib only
 python python/tests/test_plot_portfolio_genetic_results.py
+python python/tests/test_ma_cross_memoization.py          # rustc-gated: needs a --release build
+python python/tests/test_start_sh_platforms.py            # bash + cargo/uname stubs, no real build
 cargo clippy --workspace         # 0 errors / 0 warnings (gate)
 cargo build -p strategy_lib --release   # build the sample strategy cdylib
 cargo run --release -- --config portfolios/lshade_si_25_apr_dd.json
+./start.sh                       # build strategy_lib + run the portfolio config, platform-aware
 ```
 
 The single CLI argument is `--config <path>` (clap `Args` in `Farukon_2/src/cli.rs`). Config `mode`
 drives Optimize / Visual / Portfolio behavior.
+
+`start.sh` is the one-action launcher: it builds `strategy_lib`, picks the platform's cdylib file
+name from `uname -s` (`libstrategy_lib.so` on Linux, `libstrategy_lib.dylib` on macOS,
+`strategy_lib.dll` otherwise, i.e. Windows/MSVC), patches the `strategy_path` values into a
+throwaway `portfolios/.runtime_<name>.json` next to the committed config (removed on exit), and
+runs that. The committed configs keep the Windows path; nothing is rewritten in place.
 
 ## Dependencies & Integrations
 
@@ -128,18 +143,33 @@ drives Optimize / Visual / Portfolio behavior.
   (`farukon_core/src/optimization.rs`): the file is recreated with its header at the start of a run
   and one row is **appended per iteration**, so per-iteration history is complete. The header ends
   with the `Best_Individual` column.
-- Both LSHADE-RSP and the Genetic Algorithm keep an in-memory fitness cache (`HashMap<u64, f64>`
-  keyed by `DefaultHasher` — collision risk; the LSHADE key includes `pos_sizer_name`, the GA bank
-  does not). The LSHADE bank is cleared per run via `BankClearGuard`; the GA bank lives as long as
-  the optimizer instance.
+- Both LSHADE-RSP and the Genetic Algorithm keep an in-memory fitness cache
+  (`type FitnessCache = HashMap<u64, Vec<(ParameterSet, f64)>>` in `farukon_core/src/optimization.rs`).
+  The `DefaultHasher` digest is only the bucket key: every candidate is stored next to its fitness
+  and compared with `==` on lookup (`cache_lookup`/`cache_contains`/`cache_store`), so a 64-bit
+  digest collision degrades to a cache miss instead of handing a candidate another candidate's
+  fitness. The LSHADE key includes `pos_sizer_name`, the GA key does not. The LSHADE bank is
+  cleared per run via `BankClearGuard`; the GA bank lives as long as the optimizer instance.
+- **Market-data format (v3.1.0, breaking for old files)**: the fixed SOA schema
+  (`ohlcv_soa.fbs`) stores `volumes` as `double` and stamps every `.soa.bin` buffer with the
+  flatbuffers file identifier `OHS1`. `data_engine::utils::parse_ohlcv_list_soa_buffer` refuses a
+  buffer without that identifier, because files written by the old csv-to-flatbuffer store volume
+  as `uint64` and would be silently misread as `f64`. Such files must be **regenerated with the
+  fixed csv-to-flatbuffer**; the loader reports `MIGRATION REQUIRED` with the offending path.
+- Volume is `f64` end to end: `SOAData::volume` and `volumes: Vec<f64>`, and
+  `farukon_core::DataHandlerVTable::get_latest_bar_volume_values` returns `Option<&[f64]>` (it was
+  `u64`), so fractional crypto quantities survive the FFI boundary.
 - `PerformanceMetrics` stores the timestamp of max drawdown: `Max_Drawdown_DateTime` is emitted to
   `optimization_results.csv` (all three optimizers, all metrics modes since v3.0.0) and the
   portfolio CSV.
 - `python/optresults_handler.py` has a "compare two CSVs" mode (`-fc/--file_compare`, `-y set_cmp`);
   its Python dependencies (pandas, numpy, matplotlib) are still not declared in any requirements file.
 - No CI. Rust tests are `#[cfg(test)]` modules inside `farukon_core/src` and `Farukon_2/src`;
-  `python/tests/` holds stdlib-runnable regression tests for `optresults_handler.py` and
-  `plot_portfolio_genetic_results.py` (run directly with `python <file>`, or under pytest).
+  `python/tests/` holds stdlib-runnable regression tests — `optresults_handler.py`,
+  `plot_portfolio_genetic_results.py`, the plot fixes, the `Strategies/rs/MA_cross.rs`
+  memoization contract (with an `rustc` type-check of that exact source, skipped when no
+  `target/release` rlib exists) and the `start.sh` platform selection (run against stub
+  `uname`/`cargo`). Run them directly with `python <file>`, or under pytest.
 - **Thread scaling (fixed in v3.0.0, run 20260929-f24b5e53)**: runtime used to stop scaling beyond
   ~8 threads on 1-3 minute timeframes. After the fix (FFI caching, snapshot-clone removal, mimalloc,
   allocator-safe ABI): 1m arc 16 threads 44185 s → 7202 s (6.1x), 2m arc 32 threads
@@ -147,5 +177,7 @@ drives Optimize / Visual / Portfolio behavior.
   business-metric parity. Scaling stays positive at 64 threads but is sublinear (~39% efficiency
   16→64). The only remaining startup warning is `global_data_storage_mode: deep`
   (per-candidate dataset clone — prefer `arc`).
-- Every strategy dll must be built against the current `farukon_core` (v3.0.0 ABI). The repo's
-  `Strategies/MA_cross.dylib` is pre-v3.0.0 and incompatible.
+- Every strategy dll must be built against the current `farukon_core` (the allocator-safe ABI
+  introduced in v3.0.0, still current in v3.2.0). The repo's `Strategies/MA_cross.dylib` is
+  pre-v3.0.0 and incompatible; `Strategies/rs/MA_cross.rs` is the source of truth and must be
+  rebuilt by hand (nothing in the workspace builds it).

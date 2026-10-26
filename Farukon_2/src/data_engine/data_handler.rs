@@ -188,12 +188,12 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
         }
     }
 
-    /// Retrieves a slice of a specific value (open, high, low, close) from the last `n` bars for the specified symbol based on the current index.
+    /// Retrieves a slice of a specific value (open, high, low, close, volume) from the last `n` bars for the specified symbol based on the current index.
     /// This is the most efficient way (zero-copy) to access multiple historical values of a single field.
     ///
     /// # Arguments
     /// * `symbol` - The trading symbol (e.g., "Si-12.23").
-    /// * `val_type` - The type of value to retrieve ("open", "high", "low", "close").
+    /// * `val_type` - The type of value to retrieve ("open", "high", "low", "close", "volume").
     /// * `n` - The number of latest bars to retrieve values from.
     ///
     /// # Returns
@@ -222,8 +222,11 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
                         "close" => {
                             Some(&soa_data.get_closes().unwrap()[start_index..self.current_index])
                         }
-                        // This method returns &[f64]; volume values are f64 as well, so they are
-                        // reachable through `get_latest_bars_volume_values`.
+                        // Volume is `f64` since v3.1.0, so the documented generic API serves it with
+                        // the same window as `close`; `get_latest_bars_volume_values` is only a shortcut.
+                        "volume" => {
+                            Some(&soa_data.get_volumes().unwrap()[start_index..self.current_index])
+                        }
                         _ => {
                             eprintln!(
                                 "Warning: Unknown value type '{}' for symbol '{}'",
@@ -308,5 +311,145 @@ impl farukon_core::data_handler::DataHandler for SOADataHandler {
     /// * `value` - The new value for the continue flag.
     fn set_continue_backtest(&mut self, value: bool) {
         self.continue_backtest = value;
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use data_engine::ohlcv_soa_generated::{
+        OHLCVListSOA, OHLCVListSOAArgs, OHLCVSOA, OHLCVSOAArgs, finish_ohlcvlist_soa_buffer,
+    };
+    use farukon_core::data_handler::DataHandler;
+    use farukon_core::index::{FullIndex, TimeIndexEntry};
+    use farukon_core::settings;
+
+    pub(crate) const SYMBOL: &str = "Si-12.23";
+    /// Divisible by 60: the combined timeline rounds timestamps down to the 1-minute window,
+    /// and a misaligned start would make every aligned bar a zero-volume padding bar.
+    const START: u64 = 1_700_000_040;
+
+    /// Writes a one-symbol dataset (`<symbol>.soa.bin` + `<symbol>.soa.idx`) holding `volumes`
+    /// into a fresh temp directory and loads a `GlobalDataStore` from it. The `1min` timeframe
+    /// takes the raw-copy path, so bar `i` keeps `volumes[i]` verbatim.
+    ///
+    /// Shared with `data_handler_arc.rs`: both handlers must expose the same contract.
+    pub(crate) fn store_with_volumes(
+        volumes: &[f64],
+    ) -> std::sync::Arc<data_engine::global_data_storage::GlobalDataStore> {
+        let dir = std::env::temp_dir().join(format!(
+            "farukon-data-handler-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let bar_count = volumes.len();
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let timestamps: Vec<u64> = (0..bar_count as u64).map(|i| START + i * 60).collect();
+        let timestamps = fbb.create_vector(&timestamps);
+        let opens: Vec<f64> = (0..bar_count).map(|i| 100.0 + i as f64).collect();
+        let highs: Vec<f64> = (0..bar_count).map(|i| 110.0 + i as f64).collect();
+        let lows: Vec<f64> = (0..bar_count).map(|i| 90.0 + i as f64).collect();
+        let closes: Vec<f64> = (0..bar_count).map(|i| 105.0 + i as f64).collect();
+        let opens = fbb.create_vector(&opens);
+        let highs = fbb.create_vector(&highs);
+        let lows = fbb.create_vector(&lows);
+        let closes = fbb.create_vector(&closes);
+        let volumes_vector = fbb.create_vector(volumes);
+        let soa = OHLCVSOA::create(
+            &mut fbb,
+            &OHLCVSOAArgs {
+                timestamps: Some(timestamps),
+                opens: Some(opens),
+                highs: Some(highs),
+                lows: Some(lows),
+                closes: Some(closes),
+                volumes: Some(volumes_vector),
+            },
+        );
+        let list = OHLCVListSOA::create(&mut fbb, &OHLCVListSOAArgs { data: Some(soa) });
+        finish_ohlcvlist_soa_buffer(&mut fbb, list);
+        std::fs::write(dir.join(format!("{}.soa.bin", SYMBOL)), fbb.finished_data())
+            .expect("write .soa.bin");
+
+        let index = FullIndex {
+            time_index: (0..bar_count as u64)
+                .map(|i| TimeIndexEntry {
+                    timestamp: START + i * 60,
+                    index: i,
+                })
+                .collect(),
+            daily_index: vec![],
+            timeframe_index: std::collections::HashMap::new(),
+        };
+        std::fs::write(
+            dir.join(format!("{}.soa.idx", SYMBOL)),
+            bincode::serialize(&index).expect("serialize index"),
+        )
+        .expect("write .soa.idx");
+
+        let settings = settings::StrategySettings {
+            threads: Some(1),
+            strategy_name: "test".to_string(),
+            strategy_path: String::new(),
+            exit_results_path: String::new(),
+            strategy_weight: 1.0,
+            slippage: settings::ParamSpec::Discrete(vec![]),
+            data: settings::DataSettings {
+                data_path: dir.to_string_lossy().into_owned(),
+                timeframe: "1min".to_string(),
+            },
+            symbols: vec![SYMBOL.to_string()],
+            strategy_params: std::collections::HashMap::new(),
+            pos_sizer_params: settings::PosSizer {
+                pos_sizer_name: "1".to_string(),
+                pos_sizer_params: std::collections::HashMap::new(),
+                pos_sizer_value: settings::ParamSpec::Discrete(vec![]),
+            },
+            margin_params: settings::MarginParams {
+                min_margin: 0.0,
+                margin_call_type: String::new(),
+            },
+            portfolio_settings_for_strategy: settings::PortfolioSettingsForStrategy {
+                metrics_calculation_mode: settings::MetricsMode::Offline,
+            },
+            optimizer_type: settings::OptimizerType::GridSearch,
+            commission_plans: None,
+        };
+        let store = data_engine::global_data_storage::GlobalDataStore::load(&settings)
+            .expect("temp dataset must load");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        std::sync::Arc::new(store)
+    }
+
+    /// `get_latest_bars_values` is documented for `"volume"`: the generic API must serve the `f64`
+    /// volume slice over the same window as `"close"` (it used to fall into the unknown-type
+    /// branch and return `None`).
+    #[test]
+    fn generic_bars_values_returns_volume_slice() {
+        let mut handler = SOADataHandler::new(store_with_volumes(&[0.25, 0.5, 0.125]));
+        for _ in 0..3 {
+            handler.update_bars();
+        }
+
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 2),
+            Some(&[0.5, 0.125][..])
+        );
+        // `n` larger than the processed bars still yields the whole window.
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 10),
+            Some(&[0.25, 0.5, 0.125][..])
+        );
+        // The dedicated volume accessor and the generic one agree.
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 2),
+            handler.get_latest_bars_volume_values(SYMBOL, 2)
+        );
     }
 }

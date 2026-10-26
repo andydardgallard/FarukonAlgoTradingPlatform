@@ -442,6 +442,18 @@ pub unsafe fn root_as_ohlcvlist_soa_unchecked(buf: &[u8]) -> OHLCVListSOA {
 pub unsafe fn size_prefixed_root_as_ohlcvlist_soa_unchecked(buf: &[u8]) -> OHLCVListSOA {
     flatbuffers::size_prefixed_root_unchecked::<OHLCVListSOA>(buf)
 }
+pub const OHLCVLIST_SOA_IDENTIFIER: &str = "OHS1";
+
+#[inline]
+pub fn ohlcvlist_soa_buffer_has_identifier(buf: &[u8]) -> bool {
+    flatbuffers::buffer_has_identifier(buf, OHLCVLIST_SOA_IDENTIFIER, false)
+}
+
+#[inline]
+pub fn ohlcvlist_soa_size_prefixed_buffer_has_identifier(buf: &[u8]) -> bool {
+    flatbuffers::buffer_has_identifier(buf, OHLCVLIST_SOA_IDENTIFIER, true)
+}
+
 pub const OHLCVLIST_SOA_EXTENSION: &str = "bin";
 
 #[inline]
@@ -449,7 +461,7 @@ pub fn finish_ohlcvlist_soa_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
     root: flatbuffers::WIPOffset<OHLCVListSOA<'a>>,
 ) {
-    fbb.finish(root, None);
+    fbb.finish(root, Some(OHLCVLIST_SOA_IDENTIFIER));
 }
 
 #[inline]
@@ -457,5 +469,5 @@ pub fn finish_size_prefixed_ohlcvlist_soa_buffer<'a, 'b, A: flatbuffers::Allocat
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
     root: flatbuffers::WIPOffset<OHLCVListSOA<'a>>,
 ) {
-    fbb.finish_size_prefixed(root, None);
+    fbb.finish_size_prefixed(root, Some(OHLCVLIST_SOA_IDENTIFIER));
 }

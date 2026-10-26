@@ -11,7 +11,7 @@ def convert_str_toDateTime(string_dateTime: str) -> datetime.datetime:
     return converted_dateTime
 
 def plot_graphs(path: str) -> None:
-    with open(f'{path}/equity_series.csv', '+r') as fin:
+    with open(f'{path}/equity_series.csv', 'r') as fin:
         data_equity = pd.read_csv(fin, sep= ';', header= 0, index_col= "datetime")
 
     x = data_equity.index.to_list()
@@ -19,7 +19,7 @@ def plot_graphs(path: str) -> None:
 
     capital = data_equity["capital"]
     pnl = capital - capital.iloc[0]
-    returns = data_equity["capital"].pct_change().cumsum()
+    returns = capital / capital.iloc[0] - 1.0
     drawdown_pct = data_equity["drawdown_pct"].to_list()
     drawdowns = data_equity["drawdown"]
 
@@ -60,7 +60,7 @@ def plot_graphs(path: str) -> None:
 
     ax[1, 1].plot(x, drawdowns, color)
     ax[1, 1].set_xlabel('dates')
-    ax[1, 1].set_ylabel('Drawdown_prc, %', color= color, rotation= -90, labelpad= 15)
+    ax[1, 1].set_ylabel('Drawdown', color= color, rotation= -90, labelpad= 15)
     ax[1, 1].yaxis.set_label_position("right")
     ax[1, 1].yaxis.tick_right()
     ax[1, 1].tick_params(axis= 'y', labelcolor= color)

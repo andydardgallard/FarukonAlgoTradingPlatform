@@ -585,15 +585,14 @@ impl OptimizationRunner {
             results_guard.clone()
         };
 
-        // save results
-        self.save_grid_search_optimization_results(&final_results)?;
-
-        // A failed candidate invalidates the generation statistics: report it instead of
-        // writing misleading numbers.
-        let candidate_error = candidate_error.lock().unwrap().take();
-        if let Some(error) = candidate_error {
-            return Err(error.context("genetic search aborted: a candidate failed"));
-        }
+        // A failed candidate invalidates both the accumulated metrics and the generation
+        // statistics: report it before anything is written, so no plausible partial results file
+        // is left behind.
+        self.save_results_after_successful_candidates(
+            &final_results,
+            &candidate_error,
+            "genetic search aborted: a candidate failed",
+        )?;
 
         ga.save_generation_stats_to_csv(&stats, &self.strategy_settings)?;
 
@@ -740,6 +739,11 @@ impl OptimizationRunner {
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let candidate_error_worker = std::sync::Arc::clone(&candidate_error);
 
+        // Statistics are appended per iteration while the run executes; they stay only if the
+        // whole search is accepted. Any other exit path (`?`, `Err`, unwind) drops the guard
+        // uncommitted and takes the partial statistics CSV with it.
+        let stats_guard = farukon_core::optimization::LshadeStatsCsvGuard::new(&strategy_settings);
+
         lshade.run(&strategy_settings.clone(), move |params| {
             let mode = &common_settings.mode;
             let global_data_storage_mode = &common_settings.global_data_storage_mode;
@@ -808,16 +812,62 @@ impl OptimizationRunner {
             results_guard.clone()
         };
 
-        // Save results using existing method
-        self.save_grid_search_optimization_results(&final_results)?;
-
-        // A failed candidate means the produced statistics are not trustworthy: report it.
-        let candidate_error = candidate_error.lock().unwrap().take();
-        if let Some(error) = candidate_error {
-            return Err(error.context("LSHADE-RSP search aborted: a candidate failed"));
-        }
+        // A failed candidate means the accumulated metrics are incomplete: report it instead of
+        // saving a plausible partial `optimization_results.csv` or keeping the partial
+        // `lshade_optimization_results.csv` produced during the run.
+        self.finish_lshade_rsp_search(&final_results, &candidate_error, stats_guard)?;
 
         anyhow::Ok(())
+    }
+
+    /// Finalizes a completed LSHADE-RSP run.
+    ///
+    /// The candidate gate decides whether the run is accepted; only an accepted run keeps the
+    /// per-iteration statistics CSV written during the run. A candidate failure returns the error
+    /// without writing the results CSV, and the guard removes the statistics file.
+    fn finish_lshade_rsp_search(
+        &self,
+        results: &[farukon_core::optimization::OptimizationResult],
+        candidate_error: &std::sync::Mutex<Option<anyhow::Error>>,
+        stats_guard: farukon_core::optimization::LshadeStatsCsvGuard,
+    ) -> anyhow::Result<()> {
+        self.save_results_after_successful_candidates(
+            results,
+            candidate_error,
+            "LSHADE-RSP search aborted: a candidate failed",
+        )?;
+        stats_guard.commit();
+        anyhow::Ok(())
+    }
+
+    /// Saves an optimizer's accumulated candidate results only when no candidate failed.
+    ///
+    /// A failed candidate leaves its metrics out of the accumulation, so writing them would leave a
+    /// plausible but partial `optimization_results.csv` behind that later analysis cannot tell from
+    /// a complete run. The first candidate failure is reported instead and nothing is written.
+    ///
+    /// Both the Genetic Algorithm and LSHADE-RSP route their save through this gate, so the check
+    /// structurally precedes every write of the result set.
+    ///
+    /// # Arguments
+    /// * `results` - The accumulated results of the candidates that succeeded.
+    /// * `candidate_error` - The first candidate failure, if any (consumed by this call).
+    /// * `abort_context` - The optimizer-specific message attached to that failure.
+    ///
+    /// # Returns
+    /// * `anyhow::Result<()>` - `Ok(())` after the results were written, otherwise the candidate
+    ///   failure with `abort_context` attached and no file touched.
+    fn save_results_after_successful_candidates(
+        &self,
+        results: &[farukon_core::optimization::OptimizationResult],
+        candidate_error: &std::sync::Mutex<Option<anyhow::Error>>,
+        abort_context: &str,
+    ) -> anyhow::Result<()> {
+        if let Some(error) = candidate_error.lock().unwrap().take() {
+            return Err(error.context(abort_context.to_string()));
+        }
+
+        self.save_grid_search_optimization_results(results)
     }
 
     /// Saves the results of a Grid Search optimization to a CSV file.
@@ -1184,5 +1234,194 @@ mod tests {
             error.to_string().contains("unknown_metric"),
             "error must name the metric: {error}"
         );
+    }
+
+    /// Builds a runner whose results go to `exit_results_path` (the tests use a temp directory).
+    fn test_runner(exit_results_path: &std::path::Path) -> OptimizationRunner {
+        let (mut strategy_settings, instruments) = crate::portfolio::tests::fractional_test_setup();
+        strategy_settings.exit_results_path = exit_results_path.to_string_lossy().into_owned();
+        strategy_settings.strategy_params.insert(
+            "fast_ma".to_string(),
+            farukon_core::settings::ParamSpec::Discrete(vec![serde_json::Value::from(10.0)]),
+        );
+
+        let common_settings = farukon_core::settings::CommonSettings {
+            mode: "Optimize".to_string(),
+            initial_capital: 10_000.0,
+            commission_plans_path: String::new(),
+            instrument_info_path: String::new(),
+            global_data_storage_mode: "arc".to_string(),
+        };
+
+        OptimizationRunner::new(
+            &10_000.0,
+            &common_settings,
+            &strategy_settings,
+            &instruments,
+        )
+    }
+
+    /// Regression (finding C8): a failed GA/LSHADE candidate must not leave an
+    /// `optimization_results.csv` behind.
+    ///
+    /// Both optimizer paths saved the accumulated candidate metrics *before* looking at the stored
+    /// candidate failure, so a run that later reported an error had already written a plausible but
+    /// partial results file. The save is now gated on the candidate check, and both optimizer paths
+    /// go through that gate.
+    #[test]
+    fn failed_candidate_leaves_no_optimization_results_csv() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("farukon_candidate_failure_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let results_path = temp_dir.join("optimization_results.csv");
+        let runner = test_runner(&temp_dir);
+
+        let results = vec![
+            OptimizationResult::new()
+                .with_parameters(test_candidate())
+                .with_results(test_metrics(-0.1, -1000.0)),
+        ];
+
+        // A failed candidate: the error is reported and no results file appears.
+        let candidate_error = std::sync::Mutex::new(Some(anyhow::anyhow!(
+            "backtest failed for candidate fast_ma=10"
+        )));
+        let error = runner
+            .save_results_after_successful_candidates(
+                &results,
+                &candidate_error,
+                "genetic search aborted: a candidate failed",
+            )
+            .expect_err("a failed candidate must abort the save");
+        assert!(
+            !results_path.exists(),
+            "a failed candidate must leave no partial optimization_results.csv"
+        );
+        let message = format!("{:#}", error);
+        assert!(
+            message.contains("genetic search aborted: a candidate failed"),
+            "missing abort context: {message}"
+        );
+        assert!(
+            message.contains("backtest failed for candidate fast_ma=10"),
+            "missing root cause: {message}"
+        );
+
+        // Without a failure the same gate writes the file, so the assertion above is not vacuous.
+        let candidate_error = std::sync::Mutex::new(None);
+        runner
+            .save_results_after_successful_candidates(
+                &results,
+                &candidate_error,
+                "genetic search aborted: a candidate failed",
+            )
+            .expect("a run without failures must save its results");
+        assert!(
+            results_path.exists(),
+            "the gate must not suppress the results of a successful run"
+        );
+
+        // Both the GA and the LSHADE-RSP path save through the gate; the LSHADE path finalizes
+        // through `finish_lshade_rsp_search`, which also owns its statistics CSV.
+        let source = include_str!("optimizers.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]")
+            .expect("the tests module marks the end of the production code")];
+        assert_eq!(
+            production
+                .matches("self.save_results_after_successful_candidates(")
+                .count(),
+            2,
+            "the Genetic Algorithm and LSHADE-RSP must both gate their save on the candidate check"
+        );
+        assert_eq!(
+            production.matches("self.finish_lshade_rsp_search(").count(),
+            1,
+            "the LSHADE-RSP path must finalize through the gated helper"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Regression (finding C8): a failed LSHADE-RSP candidate must leave neither the results CSV
+    /// nor the per-iteration statistics CSV behind, even though the statistics are appended while
+    /// the run executes.
+    #[test]
+    fn failed_candidate_leaves_no_lshade_stats_csv() {
+        use farukon_core::optimization::LshadeStatsCsvGuard;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "farukon_lshade_candidate_failure_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("temp dir");
+        let runner = test_runner(&temp_dir);
+        let stats_path =
+            farukon_core::optimization::lshade_stats_csv_path(&runner.strategy_settings);
+        let results_path = temp_dir.join("optimization_results.csv");
+        let results = vec![
+            OptimizationResult::new()
+                .with_parameters(test_candidate())
+                .with_results(test_metrics(-0.1, -1000.0)),
+        ];
+
+        let write_partial_stats = || {
+            std::fs::write(&stats_path, "strategy_name;iteration\nTest_Strategy;1\n")
+                .expect("partial statistics CSV")
+        };
+
+        // The run wrote statistics before the candidate failure was known; the failing gate must
+        // remove them together with the (never written) results file.
+        write_partial_stats();
+        let candidate_error = std::sync::Mutex::new(Some(anyhow::anyhow!(
+            "backtest failed for candidate fast_ma=10"
+        )));
+        let error = runner
+            .finish_lshade_rsp_search(
+                &results,
+                &candidate_error,
+                LshadeStatsCsvGuard::new(&runner.strategy_settings),
+            )
+            .expect_err("a failed candidate must abort the LSHADE-RSP search");
+        assert!(
+            !stats_path.exists(),
+            "a failed candidate must leave no partial lshade_optimization_results.csv"
+        );
+        assert!(
+            !results_path.exists(),
+            "a failed candidate must leave no partial optimization_results.csv"
+        );
+        let message = format!("{:#}", error);
+        assert!(
+            message.contains("LSHADE-RSP search aborted: a candidate failed"),
+            "missing abort context: {message}"
+        );
+        assert!(
+            message.contains("backtest failed for candidate fast_ma=10"),
+            "missing root cause: {message}"
+        );
+
+        // Without a failure the same path keeps the statistics and writes the results, so the
+        // assertions above are not vacuous.
+        write_partial_stats();
+        let candidate_error = std::sync::Mutex::new(None);
+        runner
+            .finish_lshade_rsp_search(
+                &results,
+                &candidate_error,
+                LshadeStatsCsvGuard::new(&runner.strategy_settings),
+            )
+            .expect("a run without failures must be accepted");
+        assert!(
+            stats_path.exists(),
+            "an accepted run must keep its statistics CSV"
+        );
+        assert!(
+            results_path.exists(),
+            "an accepted run must write its results CSV"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

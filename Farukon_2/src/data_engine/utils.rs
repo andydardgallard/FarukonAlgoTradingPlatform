@@ -136,6 +136,85 @@ fn bytes_to_slice<T: Copy>(bytes: &[u8]) -> &[T] {
     }
 }
 
+/// Minimum length of a FlatBuffer header carrying a file identifier:
+/// a 4-byte root offset followed by a 4-byte identifier.
+const FILE_IDENTIFIER_HEADER_LEN: usize = 8;
+
+/// Parses the root `OHLCVListSOA` of a `.soa.bin` buffer, refusing files written
+/// before the volume contract.
+///
+/// The fixed schema (`ohlcv_soa.fbs`) declares `volumes: [double]` and stamps every
+/// buffer with `file_identifier "OHS1"`. A buffer without that identifier was written
+/// by the old producer, which stored volume as `uint64`: its bytes would be silently
+/// reinterpreted as `f64`, so such a file is rejected with a migration instruction
+/// instead of being loaded as corrupt data.
+///
+/// # Arguments
+/// * `buf` - The raw (memory-mapped) bytes of a `.soa.bin` file.
+/// * `source` - The file path, used in error messages.
+///
+/// # Returns
+/// * `anyhow::Result<data_engine::ohlcv_soa_generated::OHLCVListSOA<'_>>` - The verified root object.
+fn parse_ohlcv_list_soa_buffer<'a>(
+    buf: &'a [u8],
+    source: &str,
+) -> anyhow::Result<data_engine::ohlcv_soa_generated::OHLCVListSOA<'a>> {
+    // `buffer_has_identifier` asserts a minimum buffer length, so check it first.
+    if buf.len() < FILE_IDENTIFIER_HEADER_LEN
+        || !data_engine::ohlcv_soa_generated::ohlcvlist_soa_buffer_has_identifier(buf)
+    {
+        return Err(anyhow::anyhow!(
+            "MIGRATION REQUIRED: '{}' is not an OHLCV SOA v2 buffer (the '{}' file identifier is missing). \
+             Files written by the old csv-to-flatbuffer store volume as uint64 and would be misread as f64. \
+             Regenerate this file with the fixed csv-to-flatbuffer (schema ohlcv_soa.fbs: volumes as double, \
+             file_identifier \"{}\") before running Farukon.",
+            source,
+            data_engine::ohlcv_soa_generated::OHLCVLIST_SOA_IDENTIFIER,
+            data_engine::ohlcv_soa_generated::OHLCVLIST_SOA_IDENTIFIER
+        ));
+    }
+
+    let list = data_engine::ohlcv_soa_generated::root_as_ohlcvlist_soa(buf)
+        .map_err(|e| anyhow::anyhow!("Failed to read OHLCV SOA buffer '{}': {}", source, e))?;
+
+    anyhow::Ok(list)
+}
+
+/// Validates that the OHLCV vectors of one symbol all have the same number of bars.
+///
+/// Timestamps and the open/high/low/close/volume vectors are parallel arrays: a length
+/// difference means the file is corrupt, and truncating to the smallest length would
+/// silently misalign prices against timestamps (and volume against bars).
+///
+/// # Arguments
+/// * `source` - The file path, used in error messages.
+/// * `lengths` - Pairs of `(vector name, length)` for all six vectors.
+///
+/// # Returns
+/// * `anyhow::Result<usize>` - The common bar count, or a descriptive error on mismatch.
+fn validate_vector_lengths(source: &str, lengths: &[(&str, usize)]) -> anyhow::Result<usize> {
+    let mut iter = lengths.iter();
+    let Some(&(first_name, first_len)) = iter.next() else {
+        return anyhow::Ok(0);
+    };
+
+    for &(name, len) in iter {
+        if len != first_len {
+            return Err(anyhow::anyhow!(
+                "Corrupt OHLCV SOA data in '{}': vector '{}' holds {} bars but vector '{}' holds {}. \
+                 Timestamps and the open/high/low/close/volume vectors must all have the same length.",
+                source,
+                name,
+                len,
+                first_name,
+                first_len
+            ));
+        }
+    }
+
+    anyhow::Ok(first_len)
+}
+
 /// Resamples raw SOA FlatBuffer data to a target timeframe using the pre-computed index.
 /// This function performs the core aggregation logic (e.g., Open-High-Low-Close, volume sum) using SIMD where possible.
 /// It relies on the `timeframe_index` within `FullIndex` which contains pre-aggregated timestamps for the target timeframe.
@@ -153,14 +232,16 @@ fn resample_data(
     full_index: &farukon_core::index::FullIndex,
     _symbol_timeline: &std::collections::HashSet<chrono::DateTime<chrono::Utc>>, // Не используем
     resample_timeframe_sec: u64,
+    source: &str,
 ) -> anyhow::Result<farukon_core::data_handler::SOAData> {
     let mut resampled_soa_data = farukon_core::data_handler::SOAData::new();
     // Get the nested `OHLCVSOA` object from the list.
     let data_soa = ohlcv_list_soa
         .data()
-        .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing in '{}'", source))?;
 
     // Get raw byte slices from the FlatBuffer vectors.
+    let raw_timestamps = data_soa.timestamps().map(|v| v.bytes()).unwrap_or(&[]);
     let raw_opens = data_soa.opens().map(|v| v.bytes()).unwrap_or(&[]);
     let raw_highs = data_soa.highs().map(|v| v.bytes()).unwrap_or(&[]);
     let raw_lows = data_soa.lows().map(|v| v.bytes()).unwrap_or(&[]);
@@ -168,11 +249,26 @@ fn resample_data(
     let raw_volumes = data_soa.volumes().map(|v| v.bytes()).unwrap_or(&[]);
 
     // Convert raw byte slices to typed slices for efficient access.
+    let timestamps_slice = bytes_to_slice::<u64>(raw_timestamps);
     let opens_slice = bytes_to_slice::<f64>(raw_opens);
     let highs_slice = bytes_to_slice::<f64>(raw_highs);
     let lows_slice = bytes_to_slice::<f64>(raw_lows);
     let closes_slice = bytes_to_slice::<f64>(raw_closes);
     let volumes_slice = bytes_to_slice::<f64>(raw_volumes);
+
+    // All vectors are parallel arrays: reject a length mismatch up front instead of
+    // silently aggregating only as many bars as the shortest vector holds.
+    let bar_count = validate_vector_lengths(
+        source,
+        &[
+            ("timestamps", timestamps_slice.len()),
+            ("opens", opens_slice.len()),
+            ("highs", highs_slice.len()),
+            ("lows", lows_slice.len()),
+            ("closes", closes_slice.len()),
+            ("volumes", volumes_slice.len()),
+        ],
+    )?;
 
     // Map the resample timeframe (in seconds) to the key used in `FullIndex.timeframe_index`.
     let timeframe_key = match resample_timeframe_sec {
@@ -236,8 +332,9 @@ fn resample_data(
             let mut simd_min = wide::f64x4::splat(f64::INFINITY);
 
             let mut i = start_idx;
-            // Ensure we don't go out of bounds of the raw slices.
-            let end_safe = std::cmp::min(end_idx + 1, highs_slice.len());
+            // All vectors were validated to hold `bar_count` bars, so this bound is safe
+            // for every one of them (not just the highs).
+            let end_safe = std::cmp::min(end_idx + 1, bar_count);
 
             // Ensure we don't go out of bounds of the raw slices.
             while i + 3 < end_safe {
@@ -352,11 +449,12 @@ fn resample_data(
 /// * `anyhow::Result<farukon_core::data_handler::SOAData>` - The raw data in SOA format or an error.
 fn copy_raw_data_without_resampling(
     ohlcv_list_soa: &data_engine::ohlcv_soa_generated::OHLCVListSOA<'_>,
+    source: &str,
 ) -> anyhow::Result<farukon_core::data_handler::SOAData> {
     // Get the nested `OHLCVSOA` object from the list.
     let data_soa = ohlcv_list_soa
         .data()
-        .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("OHLCVSOA data missing in '{}'", source))?;
 
     // Get raw byte slices and convert them to typed slices.
     let raw_timestamps = data_soa
@@ -384,18 +482,23 @@ fn copy_raw_data_without_resampling(
         .map(|v| bytes_to_slice::<f64>(v.bytes()))
         .unwrap_or(&[]);
 
-    // Find the minimum length among all vectors to ensure they are aligned.
-    let min_len = raw_timestamps
-        .len()
-        .min(raw_opens.len())
-        .min(raw_highs.len())
-        .min(raw_lows.len())
-        .min(raw_closes.len())
-        .min(raw_volumes.len());
+    // All vectors are parallel arrays: a length mismatch is corrupt data, never a
+    // reason to silently truncate every vector to the shortest one.
+    let bar_count = validate_vector_lengths(
+        source,
+        &[
+            ("timestamps", raw_timestamps.len()),
+            ("opens", raw_opens.len()),
+            ("highs", raw_highs.len()),
+            ("lows", raw_lows.len()),
+            ("closes", raw_closes.len()),
+            ("volumes", raw_volumes.len()),
+        ],
+    )?;
 
     // Convert raw timestamps (u64) to DateTime<chrono::Utc>.
-    let mut timestamps = Vec::with_capacity(min_len);
-    for &ts in &raw_timestamps[..min_len] {
+    let mut timestamps = Vec::with_capacity(bar_count);
+    for &ts in &raw_timestamps[..bar_count] {
         let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(ts as i64, 0)
             .ok_or_else(|| anyhow::anyhow!("Invalid timestamp {}", ts))?;
         timestamps.push(datetime);
@@ -404,11 +507,11 @@ fn copy_raw_data_without_resampling(
     // Create the SOAData structure from the aligned slices.
     let soa_data = farukon_core::data_handler::SOAData::from_slice(
         &timestamps,
-        &raw_opens[0..min_len],
-        &raw_highs[0..min_len],
-        &raw_lows[0..min_len],
-        &raw_closes[0..min_len],
-        &raw_volumes[0..min_len],
+        &raw_opens[0..bar_count],
+        &raw_highs[0..bar_count],
+        &raw_lows[0..bar_count],
+        &raw_closes[0..bar_count],
+        &raw_volumes[0..bar_count],
     );
 
     anyhow::Ok(soa_data)
@@ -439,7 +542,8 @@ fn process_symbol(
     // Load .bin file via mmap (zero-copy access).
     let file = std::fs::File::open(&bin_file_path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    let ohlcv_list_soa = data_engine::ohlcv_soa_generated::root_as_ohlcvlist_soa(&mmap)?;
+    // The `OHS1` identifier is required: legacy (uint64-volume) files are rejected here.
+    let ohlcv_list_soa = parse_ohlcv_list_soa_buffer(&mmap, &bin_file_path)?;
 
     // Load .idx file (deserialized via bincode).
     let idx_data = std::fs::read(&idx_file_path)?;
@@ -451,7 +555,7 @@ fn process_symbol(
     // Resample data if necessary, otherwise copy raw data.
     let resampled_soa_data = if resample_timeframe_sec == 60 {
         // If target timeframe is 1 minute, just copy the raw data.
-        copy_raw_data_without_resampling(&ohlcv_list_soa)?
+        copy_raw_data_without_resampling(&ohlcv_list_soa, &bin_file_path)?
     } else {
         // Otherwise, perform resampling using the index.
         resample_data(
@@ -459,6 +563,7 @@ fn process_symbol(
             &full_index,
             &symbol_timeline,
             resample_timeframe_sec,
+            &bin_file_path,
         )?
     };
 
@@ -549,14 +654,17 @@ pub fn create_combined_timeline(
     })
 }
 
-/// Creates a `MarketBar` filled with NaN values for prices and 0 for volume.
-/// This is used as a placeholder when no data is available for a specific symbol at a specific time in the combined timeline.
+/// Creates a `MarketBar` for a real bar of `soa_data` at the given timestamp.
+/// Prices and the volume are copied from `source_idx`; missing values fall back to NaN
+/// (prices) and 0.0 (volume).
 ///
 /// # Arguments
-/// * `datetime` - The timestamp for the new bar.
+/// * `soa_data` - The resampled SOA data for the single symbol.
+/// * `source_idx` - The index of the bar to copy.
+/// * `datetime` - The timestamp to stamp on the new bar.
 ///
 /// # Returns
-/// * `farukon_core::data_handler::MarketBar` - The constructed NaN bar.
+/// * `farukon_core::data_handler::MarketBar` - The constructed bar.
 fn create_bar_from_source(
     soa_data: &farukon_core::data_handler::SOAData,
     source_idx: usize,
@@ -569,6 +677,28 @@ fn create_bar_from_source(
         .with_low(*soa_data.get_low(source_idx).unwrap_or(&f64::NAN))
         .with_close(*soa_data.get_close(source_idx).unwrap_or(&f64::NAN))
         .with_volume(*soa_data.get_volume(source_idx).unwrap_or(&0.0))
+}
+
+/// Creates a padding bar for a timestamp at which the symbol has no bar of its own.
+///
+/// Prices are forward-filled from `source_idx`, but the volume is `0.0`: the volume of
+/// the source bar was already booked at the source bar's own timestamp, and a padding bar
+/// must never add it a second time (that would inflate the symbol's traded volume and
+/// attribute one bar's turnover to another bar of the combined timeline).
+///
+/// # Arguments
+/// * `soa_data` - The resampled SOA data for the single symbol.
+/// * `source_idx` - The index of the last known bar of that symbol.
+/// * `datetime` - The timestamp to pad.
+///
+/// # Returns
+/// * `farukon_core::data_handler::MarketBar` - The forward-filled bar with zero volume.
+fn create_padded_bar(
+    soa_data: &farukon_core::data_handler::SOAData,
+    source_idx: usize,
+    datetime: chrono::DateTime<chrono::Utc>,
+) -> farukon_core::data_handler::MarketBar {
+    create_bar_from_source(soa_data, source_idx, datetime).with_volume(0.0)
 }
 
 /// Creates a `MarketBar` filled with NaN values for prices and 0 for volume.
@@ -593,7 +723,8 @@ fn create_nan_bar(
 
 /// Aligns the resampled data for a single symbol to the global combined timeline using padding.
 /// If the symbol has data for a specific timestamp in the combined timeline, that data is used.
-/// If not, the last known data point is carried forward (padding), or NaN/0 is used if no prior data exists.
+/// If not, the prices of the last known bar are carried forward with volume `0.0` (padding),
+/// or NaN prices / 0 volume are used if no prior data exists.
 /// This function ensures all symbols have data points aligned to the same timeline for synchronized backtesting.
 ///
 /// # Arguments
@@ -628,7 +759,7 @@ fn align_symbol_data(
             aligned_soa_data.add_bar(&bar);
         } else if is_trading_started {
             if let Some(idx) = last_valid_index {
-                let bar = create_bar_from_source(soa_data, idx, target_datetime);
+                let bar = create_padded_bar(soa_data, idx, target_datetime);
                 aligned_soa_data.add_bar(&bar);
             } else {
                 let nan_bar = create_nan_bar(target_datetime);
@@ -684,22 +815,35 @@ mod tests {
     use super::*;
     use data_engine::ohlcv_soa_generated::{
         OHLCVListSOA, OHLCVListSOAArgs, OHLCVSOA, OHLCVSOAArgs, finish_ohlcvlist_soa_buffer,
-        root_as_ohlcvlist_soa,
+        ohlcvlist_soa_buffer_has_identifier, root_as_ohlcvlist_soa,
     };
+    use farukon_core::data_handler::{MarketBar, SOAData};
     use farukon_core::index::{FullIndex, TimeIndexEntry};
 
     const START: u64 = 1_700_000_000;
 
-    /// Builds an in-memory `OHLCVListSOA` buffer with the given volumes (fractional on purpose).
-    fn soa_buffer(volumes: &[f64]) -> Vec<u8> {
-        let bar_count = volumes.len() as u64;
+    /// Builds an `OHLCVListSOA` buffer from explicit volumes.
+    ///
+    /// `price_len` sets the length of the timestamp and OHLC vectors, `volumes` the length
+    /// of the volume vector — they are equal for well-formed data and deliberately differ
+    /// in the corruption test. `with_identifier` selects the v2 (`OHS1`) finish helper or
+    /// the legacy identifier-less finish, which is how pre-v2 files look.
+    fn soa_buffer_with_lengths(
+        price_len: usize,
+        volumes: &[f64],
+        with_identifier: bool,
+    ) -> Vec<u8> {
         let mut fbb = flatbuffers::FlatBufferBuilder::new();
-        let timestamps: Vec<u64> = (0..bar_count).map(|i| START + i * 60).collect();
+        let timestamps: Vec<u64> = (0..price_len as u64).map(|i| START + i * 60).collect();
         let timestamps = fbb.create_vector(&timestamps);
-        let opens = fbb.create_vector(&[100.0_f64, 101.0, 102.0][..volumes.len()]);
-        let highs = fbb.create_vector(&[110.0_f64, 111.0, 112.0][..volumes.len()]);
-        let lows = fbb.create_vector(&[90.0_f64, 91.0, 92.0][..volumes.len()]);
-        let closes = fbb.create_vector(&[105.0_f64, 106.0, 107.0][..volumes.len()]);
+        let opens: Vec<f64> = (0..price_len).map(|i| 100.0 + i as f64).collect();
+        let highs: Vec<f64> = (0..price_len).map(|i| 110.0 + i as f64).collect();
+        let lows: Vec<f64> = (0..price_len).map(|i| 90.0 + i as f64).collect();
+        let closes: Vec<f64> = (0..price_len).map(|i| 105.0 + i as f64).collect();
+        let opens = fbb.create_vector(&opens);
+        let highs = fbb.create_vector(&highs);
+        let lows = fbb.create_vector(&lows);
+        let closes = fbb.create_vector(&closes);
         let volumes_vector = fbb.create_vector(volumes);
 
         let soa = OHLCVSOA::create(
@@ -714,8 +858,18 @@ mod tests {
             },
         );
         let list = OHLCVListSOA::create(&mut fbb, &OHLCVListSOAArgs { data: Some(soa) });
-        finish_ohlcvlist_soa_buffer(&mut fbb, list);
+        if with_identifier {
+            finish_ohlcvlist_soa_buffer(&mut fbb, list);
+        } else {
+            // Pre-v2 layout: no file identifier at all.
+            fbb.finish(list, None);
+        }
         fbb.finished_data().to_vec()
+    }
+
+    /// Builds an in-memory `OHLCVListSOA` buffer with the given volumes (fractional on purpose).
+    fn soa_buffer(volumes: &[f64]) -> Vec<u8> {
+        soa_buffer_with_lengths(volumes.len(), volumes, true)
     }
 
     /// Index over the three raw bars of [`soa_buffer`] plus one 5-minute window at `START`.
@@ -732,15 +886,43 @@ mod tests {
         }
     }
 
+    /// A timestamp `offset` seconds after [`START`].
+    fn datetime_at(offset: u64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::<chrono::Utc>::from_timestamp((START + offset) as i64, 0)
+            .expect("valid timestamp")
+    }
+
+    /// Builds `SOAData` from `(offset seconds after START, open, high, low, close, volume)` tuples.
+    fn soa_from_bars(bars: &[(u64, f64, f64, f64, f64, f64)]) -> SOAData {
+        let mut data = SOAData::new();
+        for &(offset, open, high, low, close, volume) in bars {
+            let bar = MarketBar::new()
+                .with_datetime(datetime_at(offset))
+                .with_open(open)
+                .with_high(high)
+                .with_low(low)
+                .with_close(close)
+                .with_volume(volume);
+            data.add_bar(&bar);
+        }
+        data
+    }
+
     /// Volumes are `f64`: a fractional volume must load and resample (sum) without truncation.
     #[test]
     fn fractional_volumes_load_and_resample() {
         let buffer = soa_buffer(&[0.25, 0.5, 0.125]);
-        let list = root_as_ohlcvlist_soa(&buffer).expect("valid buffer");
+        let list = parse_ohlcv_list_soa_buffer(&buffer, "X.soa.bin").expect("valid buffer");
         let index = soa_index();
 
-        let resampled = resample_data(&list, &index, &std::collections::HashSet::new(), 300)
-            .expect("resampling must succeed");
+        let resampled = resample_data(
+            &list,
+            &index,
+            &std::collections::HashSet::new(),
+            300,
+            "X.soa.bin",
+        )
+        .expect("resampling must succeed");
 
         assert_eq!(resampled.len(), 1);
         let volume = *resampled.get_volume(0).expect("one resampled bar");
@@ -757,13 +939,143 @@ mod tests {
     #[test]
     fn fractional_volumes_survive_raw_copy() {
         let buffer = soa_buffer(&[0.25, 0.5, 0.125]);
-        let list = root_as_ohlcvlist_soa(&buffer).expect("valid buffer");
+        let list = parse_ohlcv_list_soa_buffer(&buffer, "X.soa.bin").expect("valid buffer");
 
-        let copied = copy_raw_data_without_resampling(&list).expect("copy must succeed");
+        let copied =
+            copy_raw_data_without_resampling(&list, "X.soa.bin").expect("copy must succeed");
 
         assert_eq!(copied.len(), 3);
         assert_eq!(*copied.get_volume(0).unwrap(), 0.25);
         assert_eq!(*copied.get_volume(1).unwrap(), 0.5);
         assert_eq!(*copied.get_volume(2).unwrap(), 0.125);
+    }
+
+    /// A buffer without the `OHS1` identifier (a legacy uint64-volume file) is rejected
+    /// with a migration error; the identifier-carrying buffer is accepted.
+    #[test]
+    fn buffer_without_identifier_is_rejected_with_migration_hint() {
+        let legacy = soa_buffer_with_lengths(3, &[10.0, 20.0, 30.0], false);
+        assert!(
+            root_as_ohlcvlist_soa(&legacy).is_ok(),
+            "a legacy buffer passes flatbuffer verification — only the identifier check catches it"
+        );
+        assert!(!ohlcvlist_soa_buffer_has_identifier(&legacy));
+
+        let err = parse_ohlcv_list_soa_buffer(&legacy, "Si-12.23.soa.bin")
+            .expect_err("a legacy buffer must be rejected");
+        let message = format!("{}", err);
+        assert!(
+            message.contains("MIGRATION"),
+            "expected a migration hint, got: {}",
+            message
+        );
+        assert!(
+            message.contains("OHS1"),
+            "expected the missing identifier to be named, got: {}",
+            message
+        );
+        assert!(
+            message.contains("csv-to-flatbuffer"),
+            "expected the producer to be named, got: {}",
+            message
+        );
+        assert!(
+            message.contains("Si-12.23.soa.bin"),
+            "expected the file path to be named, got: {}",
+            message
+        );
+
+        // A buffer too short to even hold a file identifier is rejected, not a panic.
+        assert!(parse_ohlcv_list_soa_buffer(&[], "empty.soa.bin").is_err());
+
+        let current = soa_buffer(&[0.25, 0.5, 0.125]);
+        assert!(ohlcvlist_soa_buffer_has_identifier(&current));
+        let list = parse_ohlcv_list_soa_buffer(&current, "Si-12.23.soa.bin")
+            .expect("an identifier-carrying buffer must be accepted");
+        assert_eq!(
+            list.data().expect("OHLCVSOA data").volumes().unwrap().len(),
+            3
+        );
+    }
+
+    /// Differing vector lengths are corrupt data: both the raw-copy and the resampling
+    /// path reject it instead of silently truncating to the shortest vector.
+    #[test]
+    fn mismatched_vector_lengths_are_rejected() {
+        let buffer = soa_buffer_with_lengths(3, &[0.25, 0.5], true);
+        let list = parse_ohlcv_list_soa_buffer(&buffer, "M.soa.bin").expect("valid buffer");
+
+        let copy_err = copy_raw_data_without_resampling(&list, "M.soa.bin")
+            .expect_err("raw copy must reject a length mismatch");
+        let copy_message = format!("{}", copy_err);
+        assert!(
+            copy_message.contains("volumes") && copy_message.contains("timestamps"),
+            "expected the mismatched vectors to be named, got: {}",
+            copy_message
+        );
+
+        let resample_err = resample_data(
+            &list,
+            &soa_index(),
+            &std::collections::HashSet::new(),
+            300,
+            "M.soa.bin",
+        )
+        .expect_err("resampling must reject a length mismatch");
+        let resample_message = format!("{}", resample_err);
+        assert!(
+            resample_message.contains("volumes") && resample_message.contains("M.soa.bin"),
+            "expected the mismatched vectors and the path to be named, got: {}",
+            resample_message
+        );
+    }
+
+    /// Padding bars (created because another symbol advanced the combined timeline)
+    /// forward-fill prices only — their volume is 0.0, never the source bar's volume.
+    #[test]
+    fn padding_bars_forward_fill_prices_with_zero_volume() {
+        // `slow` trades every second bar; `fast` trades every bar and therefore advances
+        // the combined timeline past `slow`'s last bar.
+        let slow = soa_from_bars(&[
+            (0, 100.0, 110.0, 90.0, 105.0, 5.0),
+            (120, 101.0, 111.0, 91.0, 106.0, 6.0),
+        ]);
+        let fast = soa_from_bars(&[
+            (0, 200.0, 210.0, 190.0, 205.0, 1.0),
+            (60, 201.0, 211.0, 191.0, 206.0, 2.0),
+            (120, 202.0, 212.0, 192.0, 207.0, 3.0),
+        ]);
+        let combined: Vec<_> = [0_u64, 60, 120].iter().map(|&o| datetime_at(o)).collect();
+
+        let aligned_slow = align_symbol_data(&slow, &combined);
+        let aligned_fast = align_symbol_data(&fast, &combined);
+
+        assert_eq!(aligned_slow.len(), 3);
+        assert_eq!(
+            aligned_slow.get_volumes().unwrap().as_slice(),
+            &[5.0, 0.0, 6.0],
+            "the padding bar must not carry the previous bar's volume"
+        );
+        // Prices of the padding bar are forward-filled from the last real bar.
+        assert_eq!(*aligned_slow.get_open(1).unwrap(), 100.0);
+        assert_eq!(*aligned_slow.get_high(1).unwrap(), 110.0);
+        assert_eq!(*aligned_slow.get_low(1).unwrap(), 90.0);
+        assert_eq!(*aligned_slow.get_close(1).unwrap(), 105.0);
+        // Real bars keep their own volume and timestamps are untouched.
+        assert_eq!(
+            *aligned_slow.get_timestamp(1).unwrap(),
+            datetime_at(60),
+            "the padding bar keeps the combined-timeline timestamp"
+        );
+
+        // The always-trading symbol has no padding bars: its volumes are its own.
+        assert_eq!(
+            aligned_fast.get_volumes().unwrap().as_slice(),
+            &[1.0, 2.0, 3.0]
+        );
+
+        // Total volume of `slow` is exactly the volume of its two real bars.
+        let total: f64 = aligned_slow.get_volumes().unwrap().iter().sum();
+        assert!((total - 11.0).abs() < 1e-12, "unexpected total: {}", total);
     }
 }

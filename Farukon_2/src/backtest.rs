@@ -115,6 +115,8 @@ impl Backtest {
     ///
     /// In Debug mode, prints detailed state for every event.
     /// On negative capital, stops backtest immediately.
+    /// A failing strategy is not a stop condition: the error is returned, so the caller never
+    /// settles a partial equity curve and never reports its metrics as a successful backtest.
     /// When the data is exhausted, the events still queued by the final bar are drained without
     /// advancing the data, so the last bar's exits, fills and commissions are not lost.
     fn run_backtest(&mut self) -> anyhow::Result<()> {
@@ -131,17 +133,26 @@ impl Backtest {
 
             self.process_pending_events()?;
 
-            // Run strategy logic on new market data
-
-            if let Err(e) = self.dynamic_strategy.calculate_signals(
-                &*self.data_handler,
-                self.portfolio.get_current_positions(),
-                self.portfolio.get_all_holdings(),
+            // Run strategy logic on new market data.
+            // A failing strategy aborts the whole run: falling through to the final settlement
+            // below would turn the partial equity curve into metrics that look like a successful
+            // backtest, and every optimizer would accept them as a candidate result.
+            let strategy_result = calculate_strategy_signals(
+                || {
+                    self.dynamic_strategy.calculate_signals(
+                        &*self.data_handler,
+                        self.portfolio.get_current_positions(),
+                        self.portfolio.get_all_holdings(),
+                        &self.strategy_settings.symbols,
+                    )
+                },
+                &self.strategy_settings.strategy_name,
                 &self.strategy_settings.symbols,
-            ) {
-                eprintln!("Error in Strategy::calculate_signals: {}", e);
+            );
+            if let Err(error) = strategy_result {
+                // Cleanup: the candidate's data handler must not be advanced any further.
                 self.data_handler.set_continue_backtest(false);
-                break;
+                return Err(error);
             }
 
             // Update portfolio time index (equity, positions, holdings)
@@ -244,6 +255,33 @@ impl Backtest {
 
         anyhow::Ok(result)
     }
+}
+
+/// Runs one bar's strategy step and annotates a failure with the strategy name and the symbols it
+/// was asked to trade.
+///
+/// A failure here invalidates the whole run: the caller returns the error instead of settling the
+/// events queued so far, because a settlement would produce a partial equity curve whose metrics
+/// are indistinguishable from a successful backtest.
+///
+/// # Returns
+/// * `anyhow::Result<()>` - `Ok(())` when the strategy handled the bar, otherwise its error with
+///   the strategy/symbol context attached.
+fn calculate_strategy_signals<F>(
+    calculate_signals: F,
+    strategy_name: &str,
+    symbols: &[String],
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<()>,
+{
+    calculate_signals().with_context(|| {
+        format!(
+            "strategy '{}' failed in calculate_signals for symbols [{}]",
+            strategy_name,
+            symbols.join(", ")
+        )
+    })
 }
 
 /// Processes every event currently queued in the channel, without blocking.
@@ -844,6 +882,59 @@ mod tests {
             portfolio.get_latest_holdings().unwrap().capital,
             capital_open_position,
             "an empty settle pass must not re-book the last bar's market PnL"
+        );
+    }
+
+    /// Regression (finding C1): a strategy that fails in `calculate_signals` must fail the backtest.
+    ///
+    /// The pre-fix loop printed the error, set `continue_backtest = false` and `break`-ed, so the
+    /// run then settled the final events and returned `Ok` with the metrics of a partial equity
+    /// curve — every optimizer accepted those as a successful candidate result.
+    #[test]
+    fn failing_calculate_signals_fails_the_backtest() {
+        let symbol = SYMBOL.to_string();
+
+        let error = calculate_strategy_signals(
+            || {
+                Err(anyhow::anyhow!(
+                    "Strategy calculate_signals failed with code: -1"
+                ))
+            },
+            "MA_cross",
+            std::slice::from_ref(&symbol),
+        )
+        .expect_err("a strategy failure must not be swallowed");
+        let message = format!("{:#}", error);
+        assert!(
+            message.contains("MA_cross"),
+            "the error must name the strategy: {message}"
+        );
+        assert!(
+            message.contains(SYMBOL),
+            "the error must name the symbols: {message}"
+        );
+        assert!(
+            message.contains("calculate_signals failed with code: -1"),
+            "the root cause must be preserved: {message}"
+        );
+
+        // A successful bar passes through untouched.
+        calculate_strategy_signals(|| anyhow::Ok(()), "MA_cross", &[symbol])
+            .expect("a successful calculate_signals must not produce an error");
+
+        // The loop must propagate that error instead of breaking into the final settlement.
+        let source = include_str!("backtest.rs");
+        // Only the production part of the file (everything before the tests) is inspected.
+        let production = &source[..source
+            .find("fn output_performance")
+            .expect("output_performance marks the end of the loop")];
+        assert!(
+            production.contains("return Err(error);"),
+            "run_backtest must return the strategy error instead of continuing to settlement"
+        );
+        assert!(
+            !production.contains("Error in Strategy::calculate_signals"),
+            "run_backtest must not merely print the strategy error"
         );
     }
 }

@@ -188,12 +188,12 @@ impl farukon_core::data_handler::DataHandler for SOADataHandlerArc {
         }
     }
 
-    /// Retrieves a slice of a specific value (open, high, low, close) from the last `n` bars for the specified symbol based on the current index.
+    /// Retrieves a slice of a specific value (open, high, low, close, volume) from the last `n` bars for the specified symbol based on the current index.
     /// This is the most efficient way (zero-copy) to access multiple historical values of a single field.
     ///
     /// # Arguments
     /// * `symbol` - The trading symbol (e.g., "Si-12.23").
-    /// * `val_type` - The type of value to retrieve ("open", "high", "low", "close").
+    /// * `val_type` - The type of value to retrieve ("open", "high", "low", "close", "volume").
     /// * `n` - The number of latest bars to retrieve values from.
     ///
     /// # Returns
@@ -222,8 +222,11 @@ impl farukon_core::data_handler::DataHandler for SOADataHandlerArc {
                         "close" => {
                             Some(&soa_data.get_closes().unwrap()[start_index..self.current_index])
                         }
-                        // This method returns &[f64]; volume values are f64 as well, so they are
-                        // reachable through `get_latest_bars_volume_values`.
+                        // Volume is `f64` since v3.1.0, so the documented generic API serves it with
+                        // the same window as `close`; `get_latest_bars_volume_values` is only a shortcut.
+                        "volume" => {
+                            Some(&soa_data.get_volumes().unwrap()[start_index..self.current_index])
+                        }
                         _ => {
                             eprintln!(
                                 "Warning: Unknown value type '{}' for symbol '{}'",
@@ -308,5 +311,35 @@ impl farukon_core::data_handler::DataHandler for SOADataHandlerArc {
     /// * `value` - The new value for the continue flag.
     fn set_continue_backtest(&mut self, value: bool) {
         self.continue_backtest = value;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_engine::data_handler::tests::{SYMBOL, store_with_volumes};
+    use farukon_core::data_handler::DataHandler;
+
+    /// Same contract as the deep-copy handler: the documented generic API must serve the `f64`
+    /// volume slice over the same window as `"close"` instead of returning `None`.
+    #[test]
+    fn arc_generic_bars_values_returns_volume_slice() {
+        let mut handler = SOADataHandlerArc::new(store_with_volumes(&[0.25, 0.5, 0.125]));
+        for _ in 0..3 {
+            handler.update_bars();
+        }
+
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 2),
+            Some(&[0.5, 0.125][..])
+        );
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 10),
+            Some(&[0.25, 0.5, 0.125][..])
+        );
+        assert_eq!(
+            handler.get_latest_bars_values(SYMBOL, "volume", 2),
+            handler.get_latest_bars_volume_values(SYMBOL, 2)
+        );
     }
 }

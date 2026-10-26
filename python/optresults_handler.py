@@ -261,24 +261,39 @@ def plot_set_get_xaxis(args) -> pd.DataFrame:
     
     return data
 
-## Columns that describe settings/structure of a run, not its performance metrics
-COMPARE_STRUCTURAL_COLUMNS = {
-    "strategy_name",
-    "avg_price_period",
-    "channel_period",
-    "prct_width_channel",
-    "sma_period",
-    "width_channel",
-    "pos_sizer_name",
-    "pos_sizer_value",
-    "slippage",
-}
+## Performance metric columns written by the optimizers
+## (`PerformanceMetrics::to_stats_list` in farukon_core/src/performance.rs).
+## These are the only columns compared and plotted as metrics: every other column of an
+## optimization-results CSV describes the run's settings (strategy parameters such as
+## short_window/long_window, the position sizer name/value, slippage, strategy_name), and a
+## settings column has no meaningful metric difference. The list is a whitelist on purpose —
+## an unknown column is treated as a setting, never as a metric.
+COMPARE_METRIC_COLUMNS = (
+    "Total_Return",
+    "Total_Return_%",
+    "APR",
+    "Max_Drawdown",
+    "Max_Drawdown_DateTime",
+    "Max_Drawdown_pct",
+    "APR/Drawdown_factor",
+    "Recovery_Factor",
+    "Composite",
+    "Deals_Count",
+)
+
+def metric_columns(data: pd.DataFrame, xaxis: str) -> list:
+    """Metric columns of a results CSV (both numeric and textual), without the x axis."""
+    return [
+        column for column in data.columns
+        if column in COMPARE_METRIC_COLUMNS and column != xaxis
+    ]
 
 def numeric_metric_columns(data: pd.DataFrame, xaxis: str) -> list:
-    """Numeric metric columns: numbers without settings/structure columns and without xaxis."""
+    """Numeric metric columns: metrics that hold numbers, without the x axis."""
+    numeric = set(data.select_dtypes(include= [np.number]).columns)
     return [
-        column for column in data.select_dtypes(include= [np.number]).columns
-        if column not in COMPARE_STRUCTURAL_COLUMNS and column != xaxis
+        column for column in metric_columns(data, xaxis)
+        if column in numeric
     ]
 
 def plot_set(args) -> None:
@@ -287,6 +302,10 @@ def plot_set(args) -> None:
     results = results.drop_duplicates().reset_index(drop= True)
     
     results_list = numeric_metric_columns(results, args.xaxis)
+    if not results_list:
+        print(f"No performance metric columns found in {args.file}: {', '.join(map(str, results.columns))}")
+        return
+
     sorted_results = results.sort_values(
         by=args.xaxis,
         ascending=True
@@ -359,15 +378,13 @@ def compare_files(args) -> None:
         how= "inner",
     )
 
-    metric_columns = [
-        column for column in first_data.columns
+    compared_metrics = [
+        column for column in metric_columns(first_data, args.xaxis)
         if column in second_data.columns
-        and column not in COMPARE_STRUCTURAL_COLUMNS
-        and column != args.xaxis
     ]
     ## Textual metrics (e.g. Max_Drawdown_DateTime) are printed, but have no numeric difference
     numeric_metrics = {
-        column for column in metric_columns
+        column for column in compared_metrics
         if column in numeric_metric_columns(first_data, args.xaxis)
         and column in numeric_metric_columns(second_data, args.xaxis)
     }
@@ -381,7 +398,7 @@ def compare_files(args) -> None:
 
     for _, row in merged.iterrows():
         strategy = row["strategy_name"]
-        for metric in metric_columns:
+        for metric in compared_metrics:
             first_value = row[f"{metric}_file"]
             second_value = row[f"{metric}_file_compare"]
 
@@ -399,7 +416,7 @@ def compare_files(args) -> None:
                 f"{difference}"
             )
 
-    plot_compare(merged, [metric for metric in metric_columns if metric in numeric_metrics], [
+    plot_compare(merged, [metric for metric in compared_metrics if metric in numeric_metrics], [
         f"{row['strategy_name']} ({args.xaxis}={format_compare_value(row[args.xaxis])})"
         for _, row in merged.iterrows()
     ])

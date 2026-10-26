@@ -323,7 +323,11 @@ impl PerformanceManager {
     ) {
         let n = equity_series.len();
 
-        if n < 2 {
+        // Only an empty curve carries no information. A one-point curve is a valid (degenerate)
+        // result: it has zero returns and zero drawdowns, but the final return metrics, the deal
+        // count and the drawdown timestamp must still be computed rather than left at their
+        // defaults.
+        if n == 0 {
             return;
         }
 
@@ -388,12 +392,26 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
             break;
         }
 
-        let prev_values = wide::f64x4::from([
+        let prev_lanes = [
             equity[start - 1],
             equity[start],
             equity[start + 1],
             equity[start + 2],
-        ]);
+        ];
+        // The scalar tail treats a zero previous equity as a zero return; the SIMD lane must do the
+        // same. A raw division by the zero lane produced Inf/NaN and poisoned every headline metric
+        // of an account that ever hit zero equity, so zero lanes divide by 1.0 and are overwritten
+        // with 0.0 below.
+        let mut safe_prev_lanes = prev_lanes;
+        let mut zero_prev_lanes = [false; 4];
+        for (lane, zero) in safe_prev_lanes.iter_mut().zip(zero_prev_lanes.iter_mut()) {
+            if *lane == 0.0 {
+                *lane = 1.0;
+                *zero = true;
+            }
+        }
+
+        let prev_values = wide::f64x4::from(safe_prev_lanes);
 
         let curr_values = wide::f64x4::from([
             equity[start],
@@ -404,7 +422,12 @@ fn calculate_returns_simd(equity: &[f64]) -> Vec<f64> {
 
         let ret_values = (curr_values / prev_values) - wide::f64x4::splat(1.0);
 
-        let result_array: [f64; 4] = ret_values.into();
+        let mut result_array: [f64; 4] = ret_values.into();
+        for (ret, zero) in result_array.iter_mut().zip(zero_prev_lanes) {
+            if zero {
+                *ret = 0.0;
+            }
+        }
         returns[start..start + 4].copy_from_slice(&result_array);
     }
 
@@ -858,5 +881,95 @@ mod tests {
         };
 
         assert!(metrics.get_composite_score().is_finite());
+    }
+
+    /// A one-point equity curve is a valid result of a very short run. It used to return early and
+    /// keep `PerformanceMetrics::default()`, losing the deal count and the drawdown timestamp.
+    #[test]
+    fn calculate_final_handles_a_single_point_curve() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+
+        let equity = [100.0];
+        let datetimes = datetimes_for(1);
+
+        pm.calculate_final(&equity, &datetimes, datetimes[0], datetimes[0], 7);
+
+        // No interval to compound over: one zero return and zero drawdowns.
+        assert_eq!(pm.returns, vec![0.0]);
+        assert_eq!(pm.get_drawdons(), &vec![0.0]);
+        assert_eq!(pm.get_drawdowns_pct(), &vec![0.0]);
+
+        // The final metrics are computed, not left at their defaults.
+        let metrics = pm.get_current_performance_metrics();
+        assert_eq!(metrics.get_deals_count(), &7);
+        assert_eq!(metrics.get_max_drawdown_datetime(), &Some(datetimes[0]));
+        assert_eq!(metrics.get_total_return(), &0.0);
+        assert_eq!(metrics.get_total_return_percent(), &0.0);
+        assert_eq!(metrics.get_max_drawdown(), &0.0);
+    }
+
+    /// An empty curve still carries no information and must leave the metrics untouched.
+    #[test]
+    fn calculate_final_ignores_an_empty_curve() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+        let datetimes = datetimes_for(1);
+
+        pm.calculate_final(&[], &[], datetimes[0], datetimes[0], 7);
+
+        let metrics = pm.get_current_performance_metrics();
+        assert_eq!(metrics.get_deals_count(), &0);
+        assert_eq!(metrics.get_max_drawdown_datetime(), &None);
+    }
+
+    /// A zero previous equity inside a SIMD chunk must yield a zero return, exactly like the scalar
+    /// tail does, instead of `Inf`/`NaN`.
+    #[test]
+    fn simd_returns_treat_a_zero_denominator_as_zero_return() {
+        // n = 6: the single SIMD chunk covers indices 1..=4, so the zero at index 1 is one of its
+        // denominators and index 5 is handled by the scalar tail.
+        let equity = [100.0, 0.0, 50.0, 60.0, 70.0, 80.0];
+
+        let returns = super::calculate_returns_simd(&equity);
+
+        assert_eq!(returns.len(), equity.len());
+        assert_eq!(returns[0], 0.0);
+        assert_eq!(returns[1], -1.0);
+        assert_eq!(
+            returns[2], 0.0,
+            "zero previous equity must produce a zero return, got {}",
+            returns[2]
+        );
+        assert!((returns[3] - 0.2).abs() < 1e-12);
+        assert!((returns[4] - (70.0 / 60.0 - 1.0)).abs() < 1e-12);
+        assert!((returns[5] - (80.0 / 70.0 - 1.0)).abs() < 1e-12);
+        assert!(
+            returns.iter().all(|r| r.is_finite()),
+            "returns must stay finite, got {:?}",
+            returns
+        );
+    }
+
+    /// The same zero in a SIMD chunk must not poison the headline metrics of a finished run.
+    #[test]
+    fn calculate_final_keeps_metrics_finite_with_a_zero_equity_point() {
+        let mut pm = PerformanceManager::new(100.0, &test_strategy_settings());
+
+        let equity = [100.0, 0.0, 50.0, 60.0, 70.0, 80.0];
+        let datetimes = datetimes_for(equity.len());
+
+        pm.calculate_final(
+            &equity,
+            &datetimes,
+            datetimes[0],
+            *datetimes.last().unwrap(),
+            1,
+        );
+
+        assert!(pm.returns.iter().all(|r| r.is_finite()));
+        let metrics = pm.get_current_performance_metrics();
+        assert!(metrics.get_total_return().is_finite());
+        assert!(metrics.get_total_return_percent().is_finite());
+        assert!(metrics.get_apr().is_finite());
+        assert!(metrics.get_max_drawdown().is_finite());
     }
 }

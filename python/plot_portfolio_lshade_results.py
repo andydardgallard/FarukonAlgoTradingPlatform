@@ -1,8 +1,38 @@
+import hashlib
 import os
 import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+
+def sanitize_file_name(name: str) -> str:
+    """File-name-safe form of a strategy name.
+
+    Path separators, drive colons and other reserved characters become ``_`` so that a
+    strategy name can never escape the results folder or make the file unopenable.
+    """
+    cleaned = "".join(
+        char if (char.isalnum() or char in "-_.") else "_"
+        for char in str(name)
+    )
+    return cleaned.strip("._") or "strategy"
+
+
+def name_digest(name: str) -> str:
+    """Short stable digest of the ORIGINAL strategy name.
+
+    ``sanitize_file_name`` is many-to-one (``a/b`` and ``a\\b`` both become ``a_b``), so a
+    sanitized name alone would let two strategies overwrite each other's plot. The digest is
+    taken from the original name, hence it differs whenever the originals differ.
+    """
+    return hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:8]
+
+
+def plot_file_name(name: str) -> str:
+    """Unique output file name for one strategy: sanitized name plus the original's digest."""
+    return "lshade_convergence_{}-{}.png".format(sanitize_file_name(name), name_digest(name))
+
 
 def plot_portfolio_lshade_results(folder) -> None:
     data_path = os.path.join(folder, "lshade_optimization_results.csv")
@@ -17,7 +47,7 @@ def plot_portfolio_lshade_results(folder) -> None:
             sep=';',
         )
 
-    strategies = set(plot_data["strategy_name"])
+    strategies = sorted(set(plot_data["strategy_name"]))
 
     for strategy in strategies:
         df = plot_data[plot_data["strategy_name"] == strategy].reset_index(drop=True)
@@ -57,7 +87,7 @@ def plot_portfolio_lshade_results(folder) -> None:
         ax2.grid(True)
 
         # Save or show
-        out_path = os.path.join(folder, "lshade_convergence.png")
+        out_path = os.path.join(folder, plot_file_name(strategy))
         try:
             fig.savefig(out_path, dpi=150)
             print(f"Saved: {out_path}")

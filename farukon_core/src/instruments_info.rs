@@ -204,10 +204,69 @@ impl InstrumentsInfoRegistry {
         let mut result: std::collections::HashMap<String, InstrumentInfo> =
             std::collections::HashMap::new();
         for symbol in symbol_list {
-            let instrument_info = self.get_instrument_info(symbol).unwrap();
+            // A symbol missing from the registry is a configuration error the caller must be able
+            // to report: unwrapping here turned a typo in the strategy's symbol list into a panic.
+            let instrument_info = self.get_instrument_info(symbol).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Instrument '{}' is not present in the instrument registry (instruments_info.json); check the strategy's symbol list",
+                    symbol,
+                )
+            })?;
             result.insert(symbol.clone(), instrument_info.clone());
         }
 
         anyhow::Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instrument() -> InstrumentInfo {
+        InstrumentInfo {
+            exchange: "FORTS".to_string(),
+            instrument_type: "futures".to_string(),
+            contract_precision: 0,
+            margin: 1.0,
+            commission_type: "currency".to_string(),
+            trade_from_date: "2025-01-01 00:00:00".to_string(),
+            expiration_date: "2025-12-31 00:00:00".to_string(),
+            marginal_costs: 0.0,
+            step: 1.0,
+            step_price: 1.0,
+        }
+    }
+
+    fn registry() -> InstrumentsInfoRegistry {
+        InstrumentsInfoRegistry(std::collections::HashMap::from([(
+            "Si".to_string(),
+            InstrumentBaseInfo::from([("Si-12.23".to_string(), instrument())]),
+        )]))
+    }
+
+    /// A symbol missing from the registry used to panic; the caller must get an error that names
+    /// the offending symbol so a config typo is fixable.
+    #[test]
+    fn unknown_symbol_is_an_error_naming_the_symbol() {
+        let error = registry()
+            .get_instrument_info_for_strategy(&["Si-12.24".to_string()])
+            .expect_err("an unknown symbol must not panic");
+
+        let message = format!("{error}");
+        assert!(
+            message.contains("Si-12.24"),
+            "error must name the missing symbol, got: {message}"
+        );
+    }
+
+    #[test]
+    fn known_symbols_are_resolved() {
+        let resolved = registry()
+            .get_instrument_info_for_strategy(&["Si-12.23".to_string()])
+            .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved.contains_key("Si-12.23"));
     }
 }

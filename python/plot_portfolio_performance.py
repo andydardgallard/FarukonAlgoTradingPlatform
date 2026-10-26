@@ -39,7 +39,7 @@ def plot_equity(data, title, overlay=None):
 
     capital = data["capital"]
     pnl = capital - capital.iloc[0]
-    returns = capital.pct_change().cumsum()
+    returns = capital / capital.iloc[0] - 1.0
     drawdown_pct = data["drawdown_pct"]
     drawdowns = data["drawdown"]
 
@@ -84,7 +84,7 @@ def plot_equity(data, title, overlay=None):
 
     ax[1, 1].plot(x, drawdowns, color)
     ax[1, 1].set_xlabel("dates")
-    ax[1, 1].set_ylabel("Drawdown_prc, %", color=color, rotation=-90, labelpad=15)
+    ax[1, 1].set_ylabel("Drawdown", color=color, rotation=-90, labelpad=15)
     ax[1, 1].yaxis.set_label_position("right")
     ax[1, 1].yaxis.tick_right()
     ax[1, 1].tick_params(axis="y", labelcolor=color)
@@ -176,7 +176,8 @@ def main():
 
     if has_portfolio:
         overlay = [
-            (_to_datetime_index(data.index), data["capital"].pct_change().cumsum())
+            (_to_datetime_index(data.index),
+             data["capital"] / data["capital"].iloc[0] - 1.0)
             for _, data in strategies
         ]
         plot_equity(_read_equity(portfolio_path), "equity_curve_portfolio",
