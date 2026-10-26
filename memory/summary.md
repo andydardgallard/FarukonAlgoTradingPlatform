@@ -8,7 +8,9 @@ repo_path: ../FarukonAlgoTradingPlatform/code
 ## Текущее состояние
 Project Farukon (Rust workspace: `farukon_core` lib, `Farukon_2` bin, `strategy_lib` cdylib; Python tools in `python/` incl. stdlib-runnable `python/tests/`). Version `3.1.0` (minor; single source of truth `VERSION`, mirrored in workspace Cargo.toml).
 
-Latest run (2026-10-26, run_id 20261026-aefd4f09, task_type implement): all 29 pre-publication findings fixed + owner tasks A-D (market-data volume u64->f64; correlation chart; LSHADE Best_Individual CSV column; SYMI-on-RTS business tests). Reviewer approve at iteration 4 (3 criticals found and fixed in rework: final-bar fill booking, double-count, multi-fill accumulation). Regression 75 tests green, clippy/fmt clean, acceptance SUCCESS 8/8 verify MET. Commit 1324753f on branch code-factory/fix-prepublication-20261026. Open backlog: 0 — the project is ready for the GitHub push.
+Latest run (2026-10-26, run_id 20261026-2f16ea3a, task_type review, report-only): combined review of farukon_v3.1.0 + csv-to-flatbuffer — verdict request_changes, 40 merged findings (critical 30, major 7, minor 3) over 4 shards, 50/50 quotes verified, run acceptance SUCCESS 5/5. Headline: the producer writes volume as u64 (`ulong`) in both .fbs schemas while the consumer v3.1.0 reads f64 — same 64-bit width, so verification passes and volume bits are silently reinterpreted; freshly converted data is currently INCOMPATIBLE with Farukon. Follow-up task generated at `.code-factory/review/fix-tasks.yaml`. Tree untouched. Open backlog: 1 (the follow-up task, severity critical).
+
+Previous run (2026-10-26, run_id 20261026-aefd4f09, task_type implement): all 29 pre-publication findings fixed + owner tasks A-D (market-data volume u64->f64; correlation chart; LSHADE Best_Individual CSV column; SYMI-on-RTS business tests). Reviewer approve at iteration 4. Regression 75 tests green, clippy/fmt clean, acceptance SUCCESS 8/8 verify MET. Commit 1324753f on branch code-factory/fix-prepublication-20261026.
 
 Note: market data now lives in `Tickers_fbs/soa/RTS/` (f64 volumes, converted this run; old CNY/Si deleted by the owner and committed as deletions). Data files are gitignored — a fresh clone needs the data copied in. The local start.sh on disk is the factory launcher; the tracked start.sh is the Farukon build/run script.
 
@@ -27,6 +29,7 @@ BREAKING v3.0.0: strategy ABI — `create_strategy` takes an emission callback p
 - Проба E1 (1 кандидат 1m, mimalloc + новый ABI): EXIT=0, полный прогон 1169.9 s.
 
 ## Последняя история
+- 2026-10-26: Combined review farukon+csv-to-flatbuffer (run 20261026-2f16ea3a) — request_changes, 40 findings (volume u64/f64 contract break confirmed), fix-tasks.yaml generated, backlog 0 → 1.
 - 2026-10-26: Fix run (run 20261026-aefd4f09) — 29 findings + owner A-D, approve iter 4, v3.1.0, backlog 1 -> 0.
 - 2026-10-26: Pre-publication whole-repo review (run 20261026-b300cde5) — request_changes, 29 findings (17 critical), fix-tasks.yaml generated, backlog 0 → 1.
 - 2026-09-29: Thread-scaling fix (run 20260929-f24b5e53) — success, v3.0.0 (major, ABI break), 6.13x/12.12x на бенчмарках, backlog 2 → 0.

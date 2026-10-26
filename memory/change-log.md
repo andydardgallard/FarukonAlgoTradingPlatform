@@ -129,3 +129,27 @@ unfinished:
 closed:
   - item: Implement the 29 pre-publication findings from .code-factory/review/fix-tasks.yaml (17 critical correctness defects in optimizers/execution/performance/sizing + 9 major)
     evidence: acceptance SUCCESS 8/8 verify MET (.code-factory/state/acceptance.md exit 0), reviewer approve at iteration 4 (.code-factory/logs/code-review.md), 75/75 tests green, commit 1324753f
+
+## 2026-10-26 — Combined review of farukon_v3.1.0 + csv-to-flatbuffer (run 20261026-2f16ea3a)
+
+title: Full detailed review of the two projects working in combination
+project: code
+timestamp: 2026-10-26T22:50:00Z
+commit: 4c4d0190 (tree untouched — report-only review)
+run_id: 20261026-2f16ea3a
+branch: main
+task_type: review
+goal: Verify the csv-to-flatbuffer -> Farukon market-data pipeline end to end, with special attention to candle data types (volume u64/f64).
+changed_files: none (report-only: only .code-factory/ artifacts and this memory record were written; proven by git status on both repos [verified: .code-factory/state/acceptance.md AC4/AC5])
+created_files: .code-factory/logs/code-review.md, code-review-merged.json, code-review-shards/*.json, .code-factory/review/fix-tasks.yaml, .code-factory/report.md (all gitignored run artifacts)
+results: integration=not-run regression=pass business=not-run review=request_changes — 40 merged findings (critical 30, major 7, minor 3) over 4 shards (farukon Rust core, farukon python/configs, csv-to-flatbuffer whole repo, cross-repo integration contract) [verified: .code-factory/logs/code-review-merged.json, merge_findings.py exit 1]; run acceptance SUCCESS 5/5 verify MET [verified: .code-factory/state/acceptance.md exit 0]; headline answer: PRODUCER writes volumes as ulong/u64 in both schemas (ohlcv_soa.fbs:29, ohlcv.fbs:27, csv_processor.rs:25 vol: u64, no scaling) while CONSUMER v3.1.0 reads f64 (vendored ohlcv_soa_generated.rs:135, farukon_core/src/data_handler.rs) — equal 64-bit widths pass flatbuffers verification, so volume bits are silently reinterpreted; freshly converted data is currently incompatible with Farukon [verified: 50/50 verbatim quotes, verify_quotes.py exit 0]; no file_identifier/schema-version guard exists on either side (major) [verified: integration shard findings]; csv-to-flatbuffer has zero automated tests [verified: cargo test exit 0 with 0 tests + analyzer grep]; baseline green: farukon 75/75 cargo tests + 2 python suites [verified: .code-factory/logs/baseline.md, FRESH ledger regression=pass]
+decisions: re-run of the same-day review 20261026-a65b9a6e on the owner's explicit choice; the earlier run's artifacts were archived under .code-factory/archive/ and its identical task hash would have collided on run_id, so the parsed task carries a re-run comment yielding run_id 20261026-2f16ea3a [verified: .code-factory/state/task.yaml first line]; report-only rule enforced — AGENTS.md fingerprint drift (stale since the v3.1.0 fix run) was recorded as a finding instead of regenerating a tracked file [verified: project_fingerprint.py --all output in .code-factory/logs/baseline.md notes]; review verdict is final for the run, no reviewer budget spent on rework (review runs do not iterate) [inferred: references/code-review.md §5]; calibration gate ran against the factory root (prompt digest a77413b07865, exit 0) because farukon has no .agents/skill-base of its own [verified: calibrate_reviewer.py status output]
+assumptions: the uncommitted csv-to-flatbuffer codegen refresh (newer flatc, no schema change) is the owner's work in progress and was reviewed as-is; the sibling csv-to-flatbuffer checkout at ../csv-to-flatbuffer is the producer the owner means; findings in the producer repo are handed over in the same fix-tasks.yaml although its repo_path is farukon — the owner runs the follow-up per repository
+models_used: main_agent=kimi-code/k3; analyzer=kimi-code/k3.1-pro (2); reviewer=kimi-code/k3.1-pro (4 shards); planner=kimi-code/k3 (not delegated - delivery plan written by main agent)
+factory_version: 12.17.0
+
+unfinished:
+  - item: Close the 40 review findings via the generated follow-up task .code-factory/review/fix-tasks.yaml (30 critical incl. the u64/f64 volume contract break, destructive output-dir wipe, swallowed conversion errors, PnL accounting on partial exits/multi-fills)
+    reason: report-only review — findings are handed over, never fixed in the review run; the owner decides when to run the follow-up implement task
+    severity: critical
+    follow_up: true
