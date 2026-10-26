@@ -159,7 +159,7 @@ unfinished:
 title: Fix the 40 review findings across BOTH repositories (farukon_v3.1.0 + csv-to-flatbuffer) — review run 20261026-2f16ea3a
 project: code
 timestamp: 2026-10-26T23:59:00Z
-commit: PENDING (this entry is written before the commit; the commit hash lands in the summary on the next run)
+commit: dcf7f73d (consumer, v3.2.0) + d14884e (producer csv-to-flatbuffer)
 run_id: 20261026-3f117829
 branch: code-factory/fix-40-findings-20261026 (consumer), code-factory/fix-contract-and-findings-20261026 (producer)
 task_type: implement
